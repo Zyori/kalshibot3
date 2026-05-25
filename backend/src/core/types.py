@@ -1,0 +1,153 @@
+"""Project-wide enums and type aliases.
+
+Single source of truth for every controlled vocabulary the app uses. Strings stored
+in the DB reference these enums — if you find yourself writing `"open"` in code,
+import `BetStatus.OPEN` instead.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+from typing import NewType
+
+# === Branded scalars ===
+# Python doesn't enforce NewType at runtime, but mypy does. Using these in signatures
+# makes "this int is a count of contracts" vs "this int is a price in cents"
+# visible to the type checker and self-documenting to humans.
+
+Cents = NewType("Cents", int)
+"""Monetary value in integer cents. Kalshi contract prices are 1-99."""
+
+Contracts = NewType("Contracts", int)
+"""Count of Kalshi contracts. Always a non-negative integer."""
+
+BasisPoints = NewType("BasisPoints", int)
+"""Hundredths of a percent. 10000 = 100%, 25 = 0.25%."""
+
+
+# === Sport ===
+
+class Sport(StrEnum):
+    SOCCER = "soccer"
+    NFL = "nfl"
+
+
+# === Bet ===
+
+class BetSide(StrEnum):
+    """Direction of a Kalshi position. Matches Kalshi's own vocabulary."""
+
+    YES = "yes"
+    NO = "no"
+
+
+class BetStatus(StrEnum):
+    """Lifecycle status of a bet. Three terminal states only.
+
+    Transitions: OPEN → (WON | LOST | CANCELLED). No transitions out of terminal.
+    """
+
+    OPEN = "open"
+    WON = "won"
+    LOST = "lost"
+    CANCELLED = "cancelled"
+
+
+class ExitType(StrEnum):
+    """How a bet reached its terminal state. Set only when status is terminal."""
+
+    HELD_TO_SETTLEMENT = "held_to_settlement"
+    CLOSED_EARLY = "closed_early"
+    HEDGED = "hedged"
+    PARTIAL_CLOSE = "partial_close"
+
+
+class BetSource(StrEnum):
+    """Who proposed the bet."""
+
+    HUMAN = "human"
+    AI = "ai"
+    COLLABORATIVE = "collaborative"
+    EXTERNAL = "external"
+    """A bet placed directly on kalshi.com, reconciled into our ledger."""
+
+
+class Strategy(StrEnum):
+    """Strategic intent behind the bet."""
+
+    MEAN_REVERSION = "mean_reversion"
+    MEAN_CONFIRMATION = "mean_confirmation"
+    LOCK_PARLAY = "lock_parlay"
+    UNDERDOG = "underdog"
+    MOON_PARLAY = "moon_parlay"
+    DRAW_VALUE = "draw_value"
+    LIVE_EVENT = "live_event"
+    MANUAL = "manual"
+
+
+class Confidence(StrEnum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class Timing(StrEnum):
+    """When the bet was placed relative to the game."""
+
+    PRE_MATCH = "pre_match"
+    LIVE = "live"
+    FUTURES = "futures"
+
+
+# === Market ===
+
+class MarketStatus(StrEnum):
+    OPEN = "open"
+    CLOSED = "closed"
+    SETTLED = "settled"
+
+
+class MarketSettlement(StrEnum):
+    YES = "yes"
+    NO = "no"
+
+
+# === Game ===
+
+class GameStatus(StrEnum):
+    SCHEDULED = "scheduled"
+    LIVE = "live"
+    FINISHED = "finished"
+
+
+class GamePeriod(StrEnum):
+    """Match period. Soccer-specific values; will be extended per sport."""
+
+    FIRST_HALF = "1H"
+    HALFTIME = "HT"
+    SECOND_HALF = "2H"
+    EXTRA_TIME = "ET"
+    PENALTIES = "PEN"
+    FULLTIME = "FT"
+
+
+# === Suggestion ===
+
+class SuggestionStatus(StrEnum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+
+
+class Urgency(StrEnum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+# === Chat ===
+
+class ChatRole(StrEnum):
+    USER = "user"
+    ASSISTANT = "assistant"
