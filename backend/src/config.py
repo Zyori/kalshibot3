@@ -13,6 +13,12 @@ from pathlib import Path
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# .env lives at the repo root (../../.. from this file: src/config.py → backend/ → repo).
+# Resolving relative to __file__ makes the lookup cwd-independent — running from
+# backend/, the repo root, or via systemd all behave identically.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_ENV_FILE = _REPO_ROOT / ".env"
+
 
 class Environment(StrEnum):
     """Which Kalshi API the app talks to. Switching requires a process restart."""
@@ -25,7 +31,7 @@ class Settings(BaseSettings):
     """All runtime configuration. Loaded from .env (or process env)."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
