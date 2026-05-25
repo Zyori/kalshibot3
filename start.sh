@@ -50,10 +50,16 @@ for log in "$BACKEND_LOG" "$DASHBOARD_LOG"; do
     echo "  Rotated $log"
   fi
 done
-# Prune old logs
-log_count=$(ls -1 "$LOG_DIR"/*.log 2>/dev/null | wc -l | tr -d ' ')
-if [ "$log_count" -gt "$MAX_LOG_HISTORY" ]; then
-  ls -1t "$LOG_DIR"/*.log | tail -n +"$((MAX_LOG_HISTORY + 1))" | xargs rm -f
+# Prune old logs. shopt nullglob makes the glob expand to nothing instead of
+# literal "*.log" when there are no matches, and we tolerate ls failing under
+# pipefail by capturing its output in a way that can't fail the script.
+shopt -s nullglob
+existing_logs=("$LOG_DIR"/*.log)
+shopt -u nullglob
+if [ "${#existing_logs[@]}" -gt "$MAX_LOG_HISTORY" ]; then
+  # ls -t sorts newest-first; tail +N drops the first N-1 (newest), leaving
+  # the older ones, which we delete.
+  ls -1t "${existing_logs[@]}" | tail -n +"$((MAX_LOG_HISTORY + 1))" | xargs rm -f
   echo "  Pruned old logs (keeping last $MAX_LOG_HISTORY)"
 fi
 
