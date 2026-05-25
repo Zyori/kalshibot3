@@ -1,0 +1,57 @@
+/*
+ * kalshibot3 theme — Tailwind v4 CSS-first config.
+ *
+ * Palette ported from V1 (Kalshi-Bot/dashboard/src/styles.css), with one
+ * semantic adjustment per the plan:
+ *   - green   = money gained
+ *   - red     = money lost  (NEVER alerts or suggestions)
+ *   - amber   = action / proposed (suggestions, "stage this bet")
+ *
+ * All monetary values must use `font-mono tabular-nums`. The mono font is
+ * the default body font here, which makes that easy.
+ */
+
+@import "tailwindcss";
+
+@theme {
+  /* === Surfaces (dark, four levels) === */
+  --color-bg: #0f1117;
+  --color-bg-panel: #151923;
+  --color-bg-card: #1a1d27;
+  --color-bg-hover: #22252f;
+  --color-border: #2a2d37;
+
+  /* === Text === */
+  --color-text: #e4e4e7;
+  --color-text-muted: #71717a;
+
+  /* === Semantic === */
+  --color-gain: #22c55e;      /* green — money gained */
+  --color-loss: #ef4444;      /* red — money lost (only) */
+  --color-action: #f59e0b;    /* amber — action/proposed */
+  --color-info: #22d3ee;      /* cyan — neutral info */
+  --color-accent: #3b82f6;    /* blue — active nav, links */
+
+  /* === Typography === */
+  --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* Global resets */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
