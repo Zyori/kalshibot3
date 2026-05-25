@@ -1,8 +1,53 @@
+# Secrets and keys — NEVER commit
 .env
+.env.local
+.env.*.local
 *.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# Local databases
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 data/
+
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
 .venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Node / frontend
 node_modules/
+dashboard/dist/
+dashboard/.vite/
+.npm/
+
+# Logs and runtime state
+*.log
+logs/
+*.pid
+*.lock
+.bot.lock
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude session artifacts
 .claude/
