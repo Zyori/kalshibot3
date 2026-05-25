@@ -38,8 +38,9 @@ dashboard/.vite/
 *.log
 logs/
 *.pid
-*.lock
 .bot.lock
+# NOTE: uv.lock and package-lock.json are intentionally NOT ignored —
+# they pin exact dep versions and must be committed for reproducible builds.
 
 # OS / editor
 .DS_Store
