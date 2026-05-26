@@ -29,6 +29,16 @@ See `docs/plans/2026-05-25-001-feat-kalshi-betting-assistant-dashboard-plan.md` 
 - **Comments are for non-obvious "why," not "what."** Identifier names cover the what. Only comment when the code's intent isn't clear from reading it, when there's a constraint or invariant a future reader couldn't guess, or when something would surprise them.
 - **Type everything.** Python: full type hints, `mypy --strict` clean where practical. TypeScript: no `any` without a comment justifying it.
 
+## How to think before writing code
+
+Working on real money. The app must be correct, not "shipped." No shortcuts that paper over architectural problems.
+
+- **Don't rationalize around constraints — verify them.** If a design pushes you toward an obviously bad pattern (unbounded resource growth, polling something that pushes, "make the existing thing work" when the existing thing is wrong), stop. The constraint that forced you there is probably wrong, misremembered, or solvable. Check the docs, read the reference repos, write a 5-line probe — *don't design around a constraint you haven't confirmed is real*.
+- **Steady state, not happy-day state.** Before proposing a design, ask: what does this look like after a month of use? A season? With reconnects, restarts, and edge cases? "It's fine for now" usually means "it will break later and you won't be here to see why." Monotonic growth, unbounded queues, ever-expanding subscriptions, caches without eviction — all flag-worthy. If you'd be embarrassed to defend the design in a code review, don't write it.
+- **Push back on your own designs before asking the user to.** "Confirming you're okay with X" where X smells bad is outsourcing the smell-check. Catch it yourself. The user's job is the product, not catching your architectural lapses.
+- **When you hit "the existing pattern doesn't fit," that's a signal, not a problem to design around.** The instinct to make the current code work is strong and usually wrong when the current code was built on a wrong assumption. Stop, re-derive the right shape from first principles, then change the code to match — even if it's a larger change than expected.
+- **No shortcuts to make a smoke test pass.** If the path to "it works" requires accepting something you wouldn't accept in a real review, the path is wrong. Fix the underlying thing.
+
 ## File map (target structure)
 
 ```
