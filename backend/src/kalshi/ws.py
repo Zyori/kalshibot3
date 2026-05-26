@@ -33,9 +33,11 @@ from src.kalshi.ws_wire import (
     Fill,
     KalshiWsMessage,
     MarketLifecycle,
+    Ok,
     OrderbookDelta,
     OrderbookSnapshot,
     Subscribed,
+    Unsubscribed,
     UserOrder,
     parse_kalshi_ws_message,
 )
@@ -77,7 +79,18 @@ class KalshiWsClient:
 
         self._ws: ClientConnection | None = None
         self._market_tickers: set[str] = set()
-        """Markets we want orderbook_delta for. Persisted across reconnects."""
+        """Markets we want orderbook_delta for. Persisted across reconnects so
+        a fresh socket can replay subscriptions."""
+        self._orderbook_sid: int | None = None
+        """Server-assigned sid for the orderbook_delta subscription. Kalshi
+        allocates exactly one sid per (channel, connection) — all market
+        tickers we subscribe to share this sid. We mutate the ticker set on
+        it with `update_subscription action=add_markets|delete_markets`.
+        Verified against live Kalshi 2026-05-26 — see commit message for
+        the wire-format probe results."""
+        self._next_request_id: int = int(time.time() * 1000)
+        """Monotonic counter for outbound message ids. Time-seeded so values
+        don't collide across reconnects within the same second."""
         self._personal_channels_active = False
         self._sequence_numbers: dict[int, int] = {}
         """sid -> last seq we saw. Detects dropped messages."""
@@ -99,53 +112,104 @@ class KalshiWsClient:
         self.live_state.connected = True
         self._last_message_at = time.monotonic()
         self._sequence_numbers.clear()
+        # Sids are session-scoped: a new socket invalidates every prior sid.
+        self._orderbook_sid = None
         log.info("kalshi_ws_connected", url=self.ws_url)
         await self._replay_subscriptions()
 
     async def add_market_subscriptions(self, tickers: Iterable[str]) -> None:
-        """Add tickers to the orderbook_delta subscription. Idempotent."""
+        """Add tickers to orderbook_delta. Idempotent.
+
+        First call (no sid yet): sends `subscribe` to allocate the sid and
+        register the initial ticker set. Subsequent calls: sends
+        `update_subscription action=add_markets` to extend the existing sid.
+        """
         new = set(tickers) - self._market_tickers
         if not new:
             return
         self._market_tickers |= new
-        if self._ws is not None:
-            await self._send_subscribe("orderbook_delta", list(new))
+        if self._ws is None:
+            return
+        if self._orderbook_sid is None:
+            await self._send_initial_orderbook_subscribe(sorted(new))
+        else:
+            await self._send_update_subscription("add_markets", sorted(new))
+
+    async def remove_market_subscriptions(self, tickers: Iterable[str]) -> None:
+        """Drop tickers from the orderbook_delta sid. Idempotent.
+
+        Sends `update_subscription action=delete_markets`. If we'd be removing
+        every ticker, sends an `unsubscribe` instead so the sid is released
+        cleanly (a sid with zero tickers is a hanging session-resource on
+        Kalshi's side — better to drop and re-allocate on next add).
+        """
+        targets = set(tickers) & self._market_tickers
+        if not targets:
+            return
+        self._market_tickers -= targets
+        if self._ws is None or self._orderbook_sid is None:
+            return
+        if not self._market_tickers:
+            await self._send_unsubscribe_sid(self._orderbook_sid)
+            self._orderbook_sid = None
+        else:
+            await self._send_update_subscription("delete_markets", sorted(targets))
 
     async def _ensure_personal_channels(self) -> None:
         """Subscribe to fill + user_orders. Both are account-wide (no tickers)."""
         if self._personal_channels_active or self._ws is None:
             return
-        await self._send_subscribe("fill", [])
-        await self._send_subscribe("user_orders", [])
+        await self._send_personal_subscribe("fill")
+        await self._send_personal_subscribe("user_orders")
         self._personal_channels_active = True
 
     async def _replay_subscriptions(self) -> None:
         self._personal_channels_active = False
         await self._ensure_personal_channels()
         if self._market_tickers:
-            await self._send_subscribe("orderbook_delta", list(self._market_tickers))
+            await self._send_initial_orderbook_subscribe(sorted(self._market_tickers))
 
-    async def _send_subscribe(self, channel: str, tickers: list[str]) -> None:
-        """Kalshi caps tickers per subscribe call; batch if needed."""
+    def _alloc_request_id(self) -> int:
+        self._next_request_id += 1
+        return self._next_request_id
+
+    async def _send_initial_orderbook_subscribe(self, tickers: list[str]) -> None:
+        if self._ws is None or not tickers:
+            return
+        rid = self._alloc_request_id()
+        await self._ws.send(json.dumps({
+            "id": rid, "cmd": "subscribe",
+            "params": {"channels": ["orderbook_delta"], "market_tickers": tickers},
+        }))
+        log.info("kalshi_ws_subscribe_sent", tickers=len(tickers))
+
+    async def _send_update_subscription(self, action: str, tickers: list[str]) -> None:
+        if self._ws is None or self._orderbook_sid is None or not tickers:
+            return
+        rid = self._alloc_request_id()
+        await self._ws.send(json.dumps({
+            "id": rid, "cmd": "update_subscription",
+            "params": {"sids": [self._orderbook_sid], "action": action, "market_tickers": tickers},
+        }))
+        log.info("kalshi_ws_update_subscription_sent", action=action, tickers=len(tickers), sid=self._orderbook_sid)
+
+    async def _send_unsubscribe_sid(self, sid: int) -> None:
         if self._ws is None:
             return
-        # Personal channels with no tickers send a single message.
-        if not tickers:
-            await self._ws.send(json.dumps({
-                "id": int(time.time() * 1000),
-                "cmd": "subscribe",
-                "params": {"channels": [channel]},
-            }))
-            log.info("kalshi_ws_subscribed_personal", channel=channel)
+        rid = self._alloc_request_id()
+        await self._ws.send(json.dumps({
+            "id": rid, "cmd": "unsubscribe", "params": {"sids": [sid]},
+        }))
+        log.info("kalshi_ws_unsubscribe_sent", sid=sid)
+
+    async def _send_personal_subscribe(self, channel: str) -> None:
+        if self._ws is None:
             return
-        for i in range(0, len(tickers), SUBSCRIBE_BATCH_SIZE):
-            batch = tickers[i : i + SUBSCRIBE_BATCH_SIZE]
-            await self._ws.send(json.dumps({
-                "id": int(time.time() * 1000) + i,
-                "cmd": "subscribe",
-                "params": {"channels": [channel], "market_tickers": batch},
-            }))
-        log.info("kalshi_ws_subscribed", channel=channel, count=len(tickers))
+        rid = self._alloc_request_id()
+        await self._ws.send(json.dumps({
+            "id": rid, "cmd": "subscribe", "params": {"channels": [channel]},
+        }))
+        log.info("kalshi_ws_subscribed_personal", channel=channel)
 
     def _check_sequence(self, sid: int, seq: int) -> None:
         """Log (don't recover) sequence gaps. A real gap means we missed an
@@ -213,7 +277,23 @@ class KalshiWsClient:
             if self._fill_handler is not None:
                 asyncio.create_task(self._fill_handler(msg))
         elif isinstance(msg, Subscribed):
+            # Capture the sid for the orderbook channel — this is THE sid we
+            # mutate via update_subscription for the entire connection life.
+            # Personal channels (fill, user_orders) also produce Subscribed
+            # acks; we record their channel name for visibility but don't
+            # otherwise track their sids (we never mutate them).
+            if msg.msg.channel == "orderbook_delta" and self._orderbook_sid is None:
+                self._orderbook_sid = msg.msg.sid
             log.info("kalshi_ws_subscribed_ack", channel=msg.msg.channel, sid=msg.msg.sid)
+        elif isinstance(msg, Unsubscribed):
+            if self._orderbook_sid is not None and msg.sid == self._orderbook_sid:
+                self._orderbook_sid = None
+            log.info("kalshi_ws_unsubscribed_ack", sid=msg.sid)
+        elif isinstance(msg, Ok):
+            # update_subscription ack. msg.market_tickers is the full set
+            # remaining on the sid after the mutation — useful for sanity
+            # checking that our local _market_tickers matches the server.
+            log.info("kalshi_ws_update_ack", sid=msg.sid, server_tickers=len(msg.msg.market_tickers))
 
     def set_fill_handler(self, handler) -> None:  # noqa: ANN001 — callable contract
         """Register an async callback fired on every Fill message.

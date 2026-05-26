@@ -31,8 +31,19 @@ router = APIRouter()
 log = get_logger(__name__)
 
 
-def _feed_market_to_dict(m: Any) -> dict[str, Any]:
-    """Serialize a FeedMarket for the wire. Cents stay as cents, times ISO."""
+def _feed_market_to_dict(m: Any, live_state: Any) -> dict[str, Any]:
+    """Serialize a FeedMarket for the wire.
+
+    Prices come from `live_state.books` — the single source of truth that
+    both the WS deltas (SOON/LIVE tier) and the REST poller (FAR tier)
+    write into. The static fields on FeedMarket (yes_bid_cents,
+    yes_ask_cents from Kalshi's /events summary) are ignored because they
+    lie — Kalshi returns null for those on soccer markets even when there
+    is a real orderbook (see commit message on the tiering rework).
+    """
+    book = live_state.books.get(m.ticker)
+    yes_bid = book.yes_best_bid if book else None
+    yes_ask = book.yes_best_ask if book else None
     return {
         "ticker": m.ticker,
         "event_ticker": m.event_ticker,
@@ -42,8 +53,8 @@ def _feed_market_to_dict(m: Any) -> dict[str, Any]:
         "status": m.status,
         "open_time": m.open_time.isoformat() if m.open_time else None,
         "close_time": m.close_time.isoformat() if m.close_time else None,
-        "yes_bid_cents": m.yes_bid_cents,
-        "yes_ask_cents": m.yes_ask_cents,
+        "yes_bid_cents": yes_bid,
+        "yes_ask_cents": yes_ask,
         "volume": m.volume,
         "bucket": m.bucket,
     }
@@ -57,10 +68,11 @@ async def get_feed(request: Request) -> dict[str, Any]:
         return {"live": [], "upcoming": [], "recent": [], "refreshed_at": None}
 
     feed = supervisor.market_discovery.get_feed()
+    live_state = supervisor.live_state
     return {
-        "live": [_feed_market_to_dict(m) for m in feed.live],
-        "upcoming": [_feed_market_to_dict(m) for m in feed.upcoming],
-        "recent": [_feed_market_to_dict(m) for m in feed.recent],
+        "live": [_feed_market_to_dict(m, live_state) for m in feed.live],
+        "upcoming": [_feed_market_to_dict(m, live_state) for m in feed.upcoming],
+        "recent": [_feed_market_to_dict(m, live_state) for m in feed.recent],
         "refreshed_at": feed.refreshed_at.isoformat() if feed.refreshed_at else None,
     }
 

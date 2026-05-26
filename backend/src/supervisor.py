@@ -18,11 +18,14 @@ import contextlib
 
 import websockets
 
+from datetime import datetime, timezone
+
 from src.core.db import get_session_factory
 from src.core.logging import get_logger
 from src.core.ws_manager import BroadcastManager
-from src.ingestion.market_discovery import MarketDiscovery
+from src.ingestion.market_discovery import MarketDiscovery, MarketFeed
 from src.kalshi.live_state import LiveState
+from src.kalshi.rest import KalshiRestClient
 from src.kalshi.ws import (
     BACKOFF_BASE_S,
     BACKOFF_MAX_S,
@@ -30,6 +33,8 @@ from src.kalshi.ws import (
 )
 from src.kalshi.ws_wire import Fill, KalshiWsMessage
 from src.services.bet_service import record_fill
+from src.services.market_refresher import MarketRefresher
+from src.services.market_tier import MarketTier, classify
 from src.services.position_sync import PositionSyncer
 
 log = get_logger(__name__)
@@ -56,7 +61,12 @@ class Supervisor:
 
         self.market_discovery = MarketDiscovery()
         self.market_discovery.register_refresh_callback(self._on_discovery_refresh)
+        self.market_refresher = MarketRefresher(self.live_state)
         self.position_syncer = PositionSyncer()
+
+        # Track each ticker's last-known tier so we can detect transitions
+        # (FAR→SOON, LIVE→DONE, etc.) and run the right hand-off logic.
+        self._last_tier: dict[str, MarketTier] = {}
 
         self._tasks: list[asyncio.Task] = []
 
@@ -76,16 +86,88 @@ class Supervisor:
         except Exception:  # noqa: BLE001
             log.exception("position_sync_after_fill_failed")
 
-    async def _on_discovery_refresh(self, live_tickers: set[str]) -> None:
-        """Keep WS orderbook subscriptions in sync with the live-feed.
+    async def _on_discovery_refresh(self, feed: MarketFeed) -> None:
+        """Classify every known ticker by tier and dispatch to the right path.
 
-        We only add — never unsubscribe — because Kalshi WS doesn't expose
-        a per-ticker unsubscribe and removed tickers naturally stop emitting
-        deltas once their markets settle. The LiveState book entries for
-        stale tickers eventually age out via the next snapshot or never
-        receive updates again, which is harmless.
+        Tier policy (see services/market_tier.py):
+          FAR    REST poll on adaptive cadence (MarketRefresher)
+          SOON   WS subscribed (KalshiWS)
+          LIVE   WS subscribed (KalshiWS)
+          DONE   unsubscribe + drop from polling
+
+        Transitions matter:
+          FAR→SOON   force one REST snapshot then WS subscribe, so the user
+                     never sees a stale book during the hand-off window.
+          LIVE→DONE  unsubscribe to keep the WS subscription set bounded.
+
+        Avoiding the previous bug: never grows the WS subscription set
+        unbounded — DONE tickers get explicit unsubscribes via per-ticker
+        sid tracking in the WS client.
         """
-        await self.kalshi_ws.add_market_subscriptions(live_tickers)
+        now = datetime.now(timezone.utc)
+
+        # All buckets feed the classifier. Discovery already classified by
+        # Kalshi status (live/upcoming/recent); the tier classifier looks at
+        # the kickoff estimate, which lives in `open_time` after discovery
+        # populates it from the ticker date.
+        all_markets = list(feed.live) + list(feed.upcoming) + list(feed.recent)
+
+        far_tickers: list[tuple[str, float | None]] = []
+        subscribe_tickers: set[str] = set()
+        done_tickers: set[str] = set()
+        far_to_soon_transitions: list[str] = []
+
+        for m in all_markets:
+            tier_result = classify(kickoff=m.open_time, now=now)
+            tier = tier_result.tier
+            prev = self._last_tier.get(m.ticker)
+
+            if tier is MarketTier.FAR:
+                far_tickers.append((m.ticker, tier_result.seconds_to_kickoff))
+            elif tier in (MarketTier.SOON, MarketTier.LIVE):
+                subscribe_tickers.add(m.ticker)
+                if prev is MarketTier.FAR:
+                    far_to_soon_transitions.append(m.ticker)
+            elif tier is MarketTier.DONE:
+                done_tickers.add(m.ticker)
+
+            self._last_tier[m.ticker] = tier
+
+        # Hand-off order matters: drop transitioning tickers from the FAR
+        # poller before letting WS take over, then issue the WS subscribes,
+        # then unsubscribe DONE tickers.
+        for ticker in far_to_soon_transitions:
+            self.market_refresher.drop(ticker)
+
+        self.market_refresher.set_far_tickers(far_tickers)
+
+        await self.kalshi_ws.add_market_subscriptions(subscribe_tickers)
+
+        # Force one REST snapshot per FAR→SOON transition so the user has a
+        # current book the moment the WS subscribe lands, before the first
+        # WS snapshot arrives. Bypasses the FAR scheduler (we already dropped
+        # these tickers from it) and writes straight into LiveState.
+        if far_to_soon_transitions:
+            async with KalshiRestClient() as client:
+                for ticker in far_to_soon_transitions:
+                    try:
+                        await self.market_refresher._poll_one(client, ticker)
+                        # _poll_one re-adds to the FAR schedule on success.
+                        # Drop again — SOON owns this ticker now.
+                        self.market_refresher.drop(ticker)
+                    except Exception:  # noqa: BLE001
+                        log.warning("far_to_soon_snapshot_failed", ticker=ticker)
+
+        if done_tickers:
+            await self.kalshi_ws.remove_market_subscriptions(done_tickers)
+
+        log.info(
+            "tier_dispatch",
+            far=len(far_tickers),
+            subscribed=len(subscribe_tickers),
+            done=len(done_tickers),
+            transitions=len(far_to_soon_transitions),
+        )
 
     async def _ws_consumer_loop(self) -> None:
         """Reconnect-with-backoff loop using the supervisor-owned client."""
@@ -128,6 +210,9 @@ class Supervisor:
             self.market_discovery.run(), name="market_discovery",
         ))
         self._tasks.append(asyncio.create_task(
+            self.market_refresher.run(), name="market_refresher",
+        ))
+        self._tasks.append(asyncio.create_task(
             self.position_syncer.run(), name="position_sync",
         ))
         log.info("supervisor_started", tasks=len(self._tasks))
@@ -136,6 +221,7 @@ class Supervisor:
         """Cancel every task and await its cleanup."""
         await self.position_syncer.stop()
         await self.market_discovery.stop()
+        await self.market_refresher.stop()
         await self.broadcast.stop()
         for t in self._tasks:
             t.cancel()

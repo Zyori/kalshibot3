@@ -101,8 +101,6 @@ class FeedMarket:
     open_time: datetime | None
     close_time: datetime | None
 
-    yes_bid_cents: int | None
-    yes_ask_cents: int | None
     volume: int | None
 
     bucket: str = "unknown"
@@ -171,8 +169,6 @@ def _event_to_feed_markets(event: Event, series: str) -> list[FeedMarket]:
             open_time=None,  # Event.markets doesn't carry open_time directly;
                              # close_time is the relevant signal for filtering.
             close_time=m.close_time,
-            yes_bid_cents=m.yes_bid,
-            yes_ask_cents=m.yes_ask,
             volume=m.volume,
         ))
     return rows
@@ -248,12 +244,14 @@ class MarketDiscovery:
             live=len(live), upcoming=len(upcoming), recent=len(recent),
         )
 
-        # Fire callbacks with the current set of live tickers — supervisor
-        # uses this to update WS subscriptions.
-        live_tickers = {r.ticker for r in live}
+        # Fire callbacks with the full feed — supervisor's tier classifier
+        # needs every ticker plus its kickoff estimate (open_time), not just
+        # the LIVE bucket. Discovery doesn't make tier policy decisions; it
+        # just hands over the bucketed list.
+        feed_snapshot = self._feed
         for cb in self._on_refresh:
             try:
-                await cb(live_tickers)
+                await cb(feed_snapshot)
             except Exception:  # noqa: BLE001
                 log.exception("market_discovery_callback_failed")
 

@@ -141,15 +141,45 @@ class Subscribed(WireBase):
     msg: SubscribedPayload
 
 
+# === Unsubscribed ACK ===
+# Wire shape (verified against live Kalshi 2026-05-26):
+#   {"type": "unsubscribed", "id": <our request id>, "sid": <sid>, "seq": N}
+# Sid is at the top level here, not nested under msg.
+
+
+class Unsubscribed(WireBase):
+    type: Literal["unsubscribed"]
+    id: int | None = None
+    sid: int
+
+
+# === update_subscription ACK ===
+# Wire shape (verified against live Kalshi 2026-05-26):
+#   {"type": "ok", "id": <our request id>, "sid": <sid>, "seq": N,
+#    "msg": {"market_tickers": [<full ticker set after the mutation>]}}
+# Issued in response to update_subscription add_markets / delete_markets.
+
+
+class OkPayload(WireBase):
+    market_tickers: list[str] = []
+
+
+class Ok(WireBase):
+    type: Literal["ok"]
+    id: int | None = None
+    sid: int | None = None
+    msg: OkPayload = OkPayload()
+
+
 # === Discriminated union ===
 
 KalshiWsMessage = Annotated[
-    Union[OrderbookSnapshot, OrderbookDelta, Fill, UserOrder, MarketLifecycle, Subscribed],
+    Union[OrderbookSnapshot, OrderbookDelta, Fill, UserOrder, MarketLifecycle, Subscribed, Unsubscribed, Ok],
     Field(discriminator="type"),
 ]
 
 KNOWN_TYPES: frozenset[str] = frozenset(
-    {"orderbook_snapshot", "orderbook_delta", "fill", "user_order", "market_lifecycle", "subscribed"}
+    {"orderbook_snapshot", "orderbook_delta", "fill", "user_order", "market_lifecycle", "subscribed", "unsubscribed", "ok"}
 )
 
 
@@ -288,6 +318,22 @@ def parse_kalshi_ws_message(raw: dict) -> KalshiWsMessage | None:
                 sid=msg.get("sid", 0),
                 channel=msg.get("channel", ""),
             ),
+        )
+
+    if msg_type == "unsubscribed":
+        return Unsubscribed(
+            type="unsubscribed",
+            id=raw.get("id"),
+            sid=raw["sid"],
+        )
+
+    if msg_type == "ok":
+        msg = raw.get("msg") or {}
+        return Ok(
+            type="ok",
+            id=raw.get("id"),
+            sid=raw.get("sid"),
+            msg=OkPayload(market_tickers=list(msg.get("market_tickers") or [])),
         )
 
     return None
