@@ -161,6 +161,16 @@ async def place_order(
     )
     await session.commit()
 
+    # Kick a position sync — Kalshi's REST may have filled the order
+    # immediately, in which case our POSITION table needs to know now,
+    # not 60s later when the next poll cycle hits.
+    supervisor = getattr(request.app.state, "supervisor", None)
+    if supervisor is not None:
+        # Don't await — the caller doesn't need to wait for reconciliation
+        # to get its response. Failures log themselves inside _tick.
+        import asyncio as _asyncio
+        _asyncio.create_task(supervisor.position_syncer.trigger())
+
     return {
         "bet_id": bet.id,
         "kalshi_order_id": resp.order.order_id,

@@ -18,6 +18,7 @@ import contextlib
 
 import websockets
 
+from src.core.db import get_session_factory
 from src.core.logging import get_logger
 from src.core.ws_manager import BroadcastManager
 from src.ingestion.market_discovery import MarketDiscovery
@@ -27,7 +28,9 @@ from src.kalshi.ws import (
     BACKOFF_MAX_S,
     KalshiWsClient,
 )
-from src.kalshi.ws_wire import KalshiWsMessage
+from src.kalshi.ws_wire import Fill, KalshiWsMessage
+from src.services.bet_service import record_fill
+from src.services.position_sync import PositionSyncer
 
 log = get_logger(__name__)
 
@@ -48,10 +51,30 @@ class Supervisor:
         self.kalshi_ws = KalshiWsClient(
             self.live_state, broadcast_queue=self.kalshi_to_browser
         )
+        # Fill handler: persist each fill as a BET row via bet_service.
+        self.kalshi_ws.set_fill_handler(self._on_fill)
+
         self.market_discovery = MarketDiscovery()
         self.market_discovery.register_refresh_callback(self._on_discovery_refresh)
+        self.position_syncer = PositionSyncer()
 
         self._tasks: list[asyncio.Task] = []
+
+    async def _on_fill(self, fill: Fill) -> None:
+        """Persist a fill to the DB. Cross-market isolation lives inside
+        record_fill — non-soccer fills are logged and dropped."""
+        factory = get_session_factory()
+        try:
+            async with factory() as session:
+                await record_fill(session, fill)
+                await session.commit()
+        except Exception:  # noqa: BLE001
+            log.exception("fill_persist_failed", trade_id=fill.msg.trade_id)
+        # Trigger a position sync — a fill almost certainly changed our position.
+        try:
+            await self.position_syncer.trigger()
+        except Exception:  # noqa: BLE001
+            log.exception("position_sync_after_fill_failed")
 
     async def _on_discovery_refresh(self, live_tickers: set[str]) -> None:
         """Keep WS orderbook subscriptions in sync with the live-feed.
@@ -104,10 +127,14 @@ class Supervisor:
         self._tasks.append(asyncio.create_task(
             self.market_discovery.run(), name="market_discovery",
         ))
+        self._tasks.append(asyncio.create_task(
+            self.position_syncer.run(), name="position_sync",
+        ))
         log.info("supervisor_started", tasks=len(self._tasks))
 
     async def stop(self) -> None:
         """Cancel every task and await its cleanup."""
+        await self.position_syncer.stop()
         await self.market_discovery.stop()
         await self.broadcast.stop()
         for t in self._tasks:

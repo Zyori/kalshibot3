@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # === Conversion helpers — single source of truth ===
@@ -72,7 +72,9 @@ class Market(WireModelLoose):
     ticker: str
     event_ticker: str | None = None
     title: str
-    status: Literal["initialized", "active", "closed", "settled", "determined"]
+    status: Literal["initialized", "active", "closed", "settled", "determined", "finalized"]
+    """`finalized` appears on real production markets — observed 2026-05-26
+    on KXMLSGAME, KXCANPLGAME, and other settled domestic-league games."""
     yes_sub_title: str | None = None
     no_sub_title: str | None = None
 
@@ -120,16 +122,66 @@ class OrderbookResponse(WireModelLoose):
 # === Portfolio: positions, fills, orders ===
 
 class PortfolioPosition(WireModelLoose):
-    """`GET /portfolio/positions` row."""
+    """`GET /portfolio/positions` row.
+
+    Real production wire format (verified 2026-05-26):
+      position_fp              "783.90"       float-string, signed
+      market_exposure_dollars  "39.195000"    dollar-string
+      realized_pnl_dollars     "4.552000"
+      fees_paid_dollars        "3.807000"
+      total_traded_dollars     "1250.743000"
+
+    The docs show int-cents fields; production uses dollar-strings with _fp /
+    _dollars suffixes. Validators normalize both shapes into integer cents
+    so the rest of the codebase keeps its cents invariant.
+    """
 
     ticker: str
-    position: int = Field(description="Signed: positive = YES exposure, negative = NO.")
-    market_exposure: int = Field(description="Exposure in cents.")
+    position: int = Field(
+        default=0,
+        description="Signed: positive = YES exposure, negative = NO. Truncated to int.",
+    )
+    market_exposure: int = Field(default=0, description="Exposure in cents.")
     realized_pnl: int = Field(default=0, description="Realized PnL in cents.")
     fees_paid: int = Field(default=0, description="Fees in cents.")
     total_traded: int = Field(default=0)
     resting_orders_count: int = Field(default=0)
     last_updated_ts: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_wire_format(cls, data: object) -> object:
+        """Accept Kalshi's dollar-string + _fp suffix wire format.
+
+        Looks for `position_fp`, `market_exposure_dollars`, etc. and rewrites
+        them into the int-cents fields the rest of this class expects. Passes
+        through unchanged if the caller already gave us the canonical shape.
+        """
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)  # don't mutate the caller's dict
+
+        if "position" not in out and "position_fp" in out:
+            raw = out["position_fp"]
+            try:
+                out["position"] = int(float(raw))
+            except (TypeError, ValueError):
+                out["position"] = 0
+
+        for cents_key, dollar_key in [
+            ("market_exposure", "market_exposure_dollars"),
+            ("realized_pnl", "realized_pnl_dollars"),
+            ("fees_paid", "fees_paid_dollars"),
+            ("total_traded", "total_traded_dollars"),
+        ]:
+            if cents_key not in out and dollar_key in out:
+                raw = out[dollar_key]
+                try:
+                    out[cents_key] = int(round(float(raw) * 100))
+                except (TypeError, ValueError):
+                    out[cents_key] = 0
+
+        return out
 
 
 class PositionsResponse(WireModelLoose):

@@ -11,6 +11,9 @@ StartLimitIntervalSec=60
 Type=simple
 User=root
 WorkingDirectory=/var/www/lutz-bot/backend
+# PYTHONUNBUFFERED makes our structured-logging output reach journald in
+# real time instead of sitting in a stdio buffer until the process exits.
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/var/www/lutz-bot/backend/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8000 --workers 1
 StandardOutput=journal
 StandardError=journal

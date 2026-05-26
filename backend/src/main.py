@@ -25,11 +25,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api import ws as ws_endpoint
-from src.api.routes import health, markets, orders
+from src.api.routes import health, markets, orders, positions
 from src.config import get_settings
 from src.core.db import dispose_engine, get_engine
 from src.core.exceptions import AuthenticationError, KalshiError
-from src.core.logging import get_logger
+from src.core.logging import configure_logging, get_logger
 from src.kalshi.rest import KalshiRestClient
 from src.supervisor import Supervisor
 
@@ -91,8 +91,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.settings = settings
 
     # 1. Ensure the SQLite parent directory exists, then run migrations.
+    # Alembic's env.py calls fileConfig() which disables existing loggers
+    # unless told otherwise. We configure our own logging AFTER this so it
+    # survives. (Both Alembic and our logger end up reachable.)
     settings.database_path.parent.mkdir(parents=True, exist_ok=True)
     await _run_migrations()
+
+    configure_logging()
 
     # 2. Prime the SQLAlchemy engine — the connect-event listener that sets
     # PRAGMAs needs to run before any session does work.
@@ -143,6 +148,7 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api")
 app.include_router(markets.router, prefix="/api")
 app.include_router(orders.router, prefix="/api")
+app.include_router(positions.router, prefix="/api")
 app.include_router(ws_endpoint.router)
 
 

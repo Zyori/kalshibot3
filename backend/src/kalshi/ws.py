@@ -70,6 +70,10 @@ class KalshiWsClient:
         self.auth = KalshiAuth(settings.kalshi_key_id, settings.kalshi_key_path)
         self.live_state = live_state
         self.broadcast_queue = broadcast_queue
+        # Optional callback fired on every Fill — lets the supervisor wire
+        # bet_service.record_fill without dragging DB imports into ws.py.
+        self.on_fill: "asyncio.Future | None" = None  # set externally
+        self._fill_handler: "Any | None" = None
 
         self._ws: ClientConnection | None = None
         self._market_tickers: set[str] = set()
@@ -202,11 +206,23 @@ class KalshiWsClient:
         elif isinstance(msg, UserOrder):
             self.live_state.apply_user_order(msg)
         elif isinstance(msg, Fill):
-            # BET-row creation lives in bet_service (chunk 12). LiveState
-            # just touches its timestamp for liveness reporting.
+            # LiveState only notes the liveness timestamp. The supervisor
+            # wires a fill handler (bet_service.record_fill) via set_fill_handler
+            # so DB persistence happens without dragging DB imports here.
             self.live_state.apply_fill(msg)
+            if self._fill_handler is not None:
+                asyncio.create_task(self._fill_handler(msg))
         elif isinstance(msg, Subscribed):
             log.info("kalshi_ws_subscribed_ack", channel=msg.msg.channel, sid=msg.msg.sid)
+
+    def set_fill_handler(self, handler) -> None:  # noqa: ANN001 — callable contract
+        """Register an async callback fired on every Fill message.
+
+        Signature: `async def handler(fill: Fill) -> None`. Exceptions inside
+        the handler propagate via the spawned task and don't affect the WS
+        loop (asyncio tasks log their own unhandled exceptions).
+        """
+        self._fill_handler = handler
 
     async def close(self) -> None:
         self.live_state.connected = False
