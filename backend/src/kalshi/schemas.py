@@ -91,7 +91,12 @@ class Market(WireModelLoose):
     expected_expiration_time: datetime | None = None
 
     settlement_value: int | None = Field(default=None, ge=0, le=100)
-    result: Literal["yes", "no", ""] | None = None
+    result: Literal["yes", "no", "", "scalar"] | None = None
+    """`scalar` appears on all markets in finalized 3-way moneyline events
+    (observed 2026-05-26 on KXMLSGAME, KXSERIEBGAME, KXEFLCHAMPIONSHIPGAME,
+    KXDIMAYORGAME, KXBOLPDIVGAME). It does not encode a winner — Kalshi
+    just doesn't populate this field for these events. Settled-position
+    outcomes come from the settlements endpoint, not from this field."""
 
 
 class MarketsResponse(WireModelLoose):
