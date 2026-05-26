@@ -27,6 +27,7 @@ import PriceHistoryChart from '../components/trading/PriceHistoryChart'
 import Skeleton from '../components/Skeleton'
 import TopOfBook from '../components/trading/TopOfBook'
 import type { MarketBook } from '../contexts/WebSocketProvider'
+import { bestAsk, bestBid } from '../lib/book'
 import { formatET, outcomeLabel } from '../lib/format'
 
 type ChildPosition = {
@@ -94,6 +95,35 @@ export default function EventView() {
       setSearchParams({ market: activeTicker }, { replace: true })
     }
   }, [activeTicker, requestedTab, setSearchParams])
+
+  // Seed every child's book cache once the event loads. Without this, only
+  // the active tab gets a snapshot — non-active tabs show '—/—' until a WS
+  // delta happens to mention them, which can be a long wait on quiet markets.
+  // We fire all snapshots in parallel; MarketPanel's per-tab seeder skips
+  // re-fetching if the cache is already populated.
+  const queryClient = useQueryClient()
+  useEffect(() => {
+    if (!data?.markets) return
+    for (const m of data.markets) {
+      const existing = queryClient.getQueryData<MarketBook>(['book', m.ticker])
+      if (existing && (Object.keys(existing.yes).length || Object.keys(existing.no).length)) {
+        continue
+      }
+      fetch(`/api/markets/${encodeURIComponent(m.ticker)}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((snap: { yes: Array<{ price: number; qty: number }>; no: Array<{ price: number; qty: number }> } | null) => {
+          if (!snap) return
+          const cur = queryClient.getQueryData<MarketBook>(['book', m.ticker])
+          if (cur && (Object.keys(cur.yes).length || Object.keys(cur.no).length)) return
+          queryClient.setQueryData<MarketBook>(['book', m.ticker], {
+            ticker: m.ticker,
+            yes: Object.fromEntries(snap.yes.map((l) => [l.price, l.qty])),
+            no: Object.fromEntries(snap.no.map((l) => [l.price, l.qty])),
+          })
+        })
+        .catch(() => {})
+    }
+  }, [data?.markets, queryClient])
 
   return (
     <div className="space-y-4">
@@ -221,40 +251,73 @@ function TabStrip({
 }) {
   return (
     <div className="flex flex-wrap gap-1 border-b border-border">
-      {markets.map((m) => {
-        const active = m.ticker === activeTicker
-        const label = outcomeLabel(m.yes_sub_title) || m.ticker
-        return (
-          <button
-            key={m.ticker}
-            type="button"
-            onClick={() => onPick(m.ticker)}
-            className={`relative -mb-px rounded-t-md border-x border-t px-4 py-2 text-sm ${
-              active
-                ? 'border-border bg-bg-card text-text'
-                : 'border-transparent text-text-muted hover:bg-bg-hover hover:text-text'
-            }`}
-          >
-            <span>{label}</span>
-            <span className="ml-2 font-mono text-xs text-text-muted">
-              {m.yes_bid_cents ?? '—'}/{m.yes_ask_cents ?? '—'}¢
-            </span>
-            {m.position && (
-              <span className="ml-2 rounded-full bg-action/10 px-2 py-0.5 text-[10px] text-action">
-                pos {m.position.quantity}
-              </span>
-            )}
-          </button>
-        )
-      })}
+      {markets.map((m) => (
+        <TabButton
+          key={m.ticker}
+          market={m}
+          active={m.ticker === activeTicker}
+          onClick={() => onPick(m.ticker)}
+        />
+      ))}
     </div>
   )
 }
 
+function TabButton({
+  market: m,
+  active,
+  onClick,
+}: {
+  market: ChildMarket
+  active: boolean
+  onClick: () => void
+}) {
+  // Per-tab top-of-book from the live cache so the labels tick in real time.
+  // Falls back to the event-endpoint snapshot if the cache hasn't been seeded
+  // yet for this child (e.g. before the user has visited that tab).
+  const queryClient = useQueryClient()
+  const { data: book } = useQuery<MarketBook | undefined>({
+    queryKey: ['book', m.ticker],
+    queryFn: () => undefined,
+    enabled: false,
+  })
+  void queryClient
+  const bid = bestBid(book, 'yes') ?? m.yes_bid_cents
+  const ask = bestAsk(book, 'yes') ?? m.yes_ask_cents
+  const label = outcomeLabel(m.yes_sub_title) || m.ticker
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`relative -mb-px rounded-t-md border-x border-t px-4 py-2 text-sm ${
+        active
+          ? 'border-border bg-bg-card text-text'
+          : 'border-transparent text-text-muted hover:bg-bg-hover hover:text-text'
+      }`}
+    >
+      <span>{label}</span>
+      <span className="ml-2 font-mono text-xs text-text-muted">
+        {bid ?? '—'}/{ask ?? '—'}¢
+      </span>
+      {m.position && (
+        <span className="ml-2 rounded-full bg-action/10 px-2 py-0.5 text-[10px] text-action">
+          pos {m.position.quantity}
+        </span>
+      )}
+    </button>
+  )
+}
+
+type MarketDetailResponse = {
+  ticker: string
+  yes: Array<{ price: number; qty: number }>
+  no: Array<{ price: number; qty: number }>
+}
+
 function MarketPanel({ ticker }: { ticker: string }) {
-  // Reuses the existing trading components — they're already correct per-ticker
-  // and read from the WS-fed ['book', ticker] cache. Switching tabs flips
-  // the ticker prop; the components pick up the right book and resubscribe.
+  // Reuses the existing trading components, which read from the
+  // ['book', ticker] cache that WebSocketProvider keeps fresh via deltas.
+  // Switching tabs flips the ticker prop and we re-seed below.
   const queryClient = useQueryClient()
   const { data: liveBook } = useQuery<MarketBook | undefined>({
     queryKey: ['book', ticker],
@@ -262,22 +325,37 @@ function MarketPanel({ ticker }: { ticker: string }) {
     enabled: false,
   })
 
-  // When a tab activates, ensure the backend WS is subscribed. The event
-  // endpoint subscribes all children on first GET, but a long-lived page
-  // that re-renders later (e.g. tab switch after the supervisor's tier
-  // classifier dropped the ticker) benefits from a defensive re-subscribe
-  // via the per-market detail endpoint, which also enrolls SOON tickers.
+  // On tab activation, fetch the full per-market snapshot so the depth
+  // ladder + top-of-book have data immediately — without this, tabs that
+  // haven't received a WS snapshot yet render blank until the next delta
+  // happens to mention them. The fetch also enrolls the ticker for WS
+  // subscription if it wasn't already (the route side-effects that).
+  const snapshot = useQuery<MarketDetailResponse>({
+    queryKey: ['market_snapshot', ticker],
+    queryFn: async () => {
+      const res = await fetch(`/api/markets/${encodeURIComponent(ticker)}`)
+      if (!res.ok) throw new Error(`/api/markets: ${res.status}`)
+      return res.json()
+    },
+    // Snapshot once per tab activation; WS deltas keep it fresh after.
+    staleTime: Infinity,
+  })
+
+  // Seed the live-book cache from the snapshot if nothing's there yet.
+  // Don't clobber a fresher cache (e.g. WS deltas that beat the REST
+  // round-trip).
   useEffect(() => {
-    fetch(`/api/markets/${encodeURIComponent(ticker)}`).catch(() => {
-      // Read failure is non-fatal; the WS will catch up or the event
-      // endpoint's next refresh will re-subscribe.
+    if (!snapshot.data) return
+    const existing = queryClient.getQueryData<MarketBook>(['book', ticker])
+    if (existing && (Object.keys(existing.yes).length || Object.keys(existing.no).length)) {
+      return
+    }
+    queryClient.setQueryData<MarketBook>(['book', ticker], {
+      ticker,
+      yes: Object.fromEntries(snapshot.data.yes.map((l) => [l.price, l.qty])),
+      no: Object.fromEntries(snapshot.data.no.map((l) => [l.price, l.qty])),
     })
-    // We intentionally don't seed the book cache from this response — the
-    // event endpoint already gave us per-ticker top-of-book in the parent
-    // query, and the WS deltas are the source of truth from here forward.
-    // queryClient access kept to avoid the lint warning about useQuery.
-    void queryClient
-  }, [ticker, queryClient])
+  }, [snapshot.data, ticker, queryClient])
 
   return (
     <div className="space-y-4">
