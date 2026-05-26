@@ -75,9 +75,30 @@ async def _upsert_position(
     avg_entry_price_cents: int,
 ) -> None:
     """UPSERT one POSITION row. avg_entry_price_cents comes from market
-    exposure / quantity rounded to cents."""
+    exposure / quantity rounded to cents.
+
+    Side-flip cleanup: a market can't hold both YES and NO exposure
+    simultaneously (Kalshi nets them — buying YES against a NO position
+    just closes contracts). If we previously cached the opposite side
+    and the current position is on this side, the cached row is stale
+    and must be deleted. Skipping this leaves zombie positions in the
+    UI (the bug that surfaced 2026-05-26 when the user closed a NO
+    position and opened a YES one on the same ticker).
+    """
     side, qty = _signed_position_to_side_and_qty(p.position)
     market_id = await _get_or_create_market_id(session, ticker=p.ticker)
+    opposite_side = BetSide.NO if side is BetSide.YES else BetSide.YES
+
+    # Drop any cached row on the opposite side — the current Kalshi snapshot
+    # says it's not held.
+    opposite = await session.scalar(
+        select(Position).where(
+            Position.market_id == market_id,
+            Position.side == opposite_side,
+        )
+    )
+    if opposite is not None:
+        await session.delete(opposite)
 
     existing = await session.scalar(
         select(Position).where(
