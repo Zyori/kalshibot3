@@ -3,6 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 
 import DepthLadder from '../components/trading/DepthLadder'
+import OpenOrdersCard from '../components/trading/OpenOrdersCard'
+import OrderPanel from '../components/trading/OrderPanel'
 import PriceHistoryChart from '../components/trading/PriceHistoryChart'
 import TopOfBook from '../components/trading/TopOfBook'
 import type { MarketBook } from '../contexts/WebSocketProvider'
@@ -105,11 +107,10 @@ export default function MarketView() {
 
           <PriceHistoryChart ticker={decoded} />
 
-          <Box>
-            Order panel lands in chunk 12. Until then, this page is
-            read-only — the book and chart should update live without a
-            page reload.
-          </Box>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <OrderPanel ticker={decoded} book={liveBook} />
+            <OpenOrdersCard ticker={decoded} />
+          </div>
         </>
       )}
     </div>

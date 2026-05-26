@@ -25,7 +25,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api import ws as ws_endpoint
-from src.api.routes import health, markets
+from src.api.routes import health, markets, orders
 from src.config import get_settings
 from src.core.db import dispose_engine, get_engine
 from src.core.exceptions import AuthenticationError, KalshiError
@@ -142,6 +142,7 @@ app.add_middleware(
 
 app.include_router(health.router, prefix="/api")
 app.include_router(markets.router, prefix="/api")
+app.include_router(orders.router, prefix="/api")
 app.include_router(ws_endpoint.router)
 
 

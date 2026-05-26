@@ -59,6 +59,19 @@ class MarketBook:
     status: str = "open"
     """Mirrors Kalshi market_lifecycle.status. settled markets reject orders."""
 
+    # Kalshi's `yes` and `no` arrays both hold BIDS — people offering to BUY
+    # that side at the listed price. The implied ASK on one side is derived
+    # from the BIDS on the other side: if someone bids 17¢ for NO, the same
+    # trade viewed from YES is offering to SELL YES at 83¢ (= 100 - 17).
+    #
+    # So:
+    #   yes_best_bid = highest YES bid              (max(yes.levels))
+    #   yes_best_ask = 100 - highest NO bid         (because someone bidding
+    #                                                 17¢ for NO is selling
+    #                                                 YES at 83¢)
+    #   no_best_bid  = highest NO bid               (max(no.levels))
+    #   no_best_ask  = 100 - highest YES bid        (symmetric)
+
     @property
     def yes_best_bid(self) -> int | None:
         """Highest price someone is willing to pay for YES."""
@@ -66,16 +79,20 @@ class MarketBook:
 
     @property
     def yes_best_ask(self) -> int | None:
-        """Lowest price someone is offering YES at."""
-        return self.yes.best_price("ask")
+        """Lowest price someone would sell YES at — derived from NO bids."""
+        best_no_bid = self.no.best_price("bid")
+        return 100 - best_no_bid if best_no_bid is not None else None
 
     @property
     def no_best_bid(self) -> int | None:
+        """Highest price someone is willing to pay for NO."""
         return self.no.best_price("bid")
 
     @property
     def no_best_ask(self) -> int | None:
-        return self.no.best_price("ask")
+        """Lowest price someone would sell NO at — derived from YES bids."""
+        best_yes_bid = self.yes.best_price("bid")
+        return 100 - best_yes_bid if best_yes_bid is not None else None
 
 
 @dataclass

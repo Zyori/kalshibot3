@@ -54,17 +54,21 @@ class TestOrderbookIngestion:
         assert book.last_update > 0
 
     def test_best_prices_after_snapshot(self) -> None:
+        """Kalshi's `yes` and `no` arrays BOTH hold bids. The implied ask on
+        one side is `100 - best_bid_on_other_side`."""
         s = LiveState()
-        s.apply_orderbook_snapshot(_snapshot("KX-1", [(42, 100), (41, 50), (40, 25)], [(58, 60), (59, 30)]))
+        s.apply_orderbook_snapshot(_snapshot(
+            "KX-1",
+            yes_levels=[(42, 100), (41, 50), (40, 25)],  # YES bids
+            no_levels=[(58, 60), (59, 30)],              # NO bids
+        ))
         book = s.books["KX-1"]
-        # YES bids: highest someone will pay is the highest price level.
-        assert book.yes_best_bid == 42
-        # YES asks: lowest someone offers — wait, this is a single side, not
-        # bid/ask. In Kalshi the YES book represents bids for YES; asks for YES
-        # are on the NO book inverted. Best YES "ask" in our model is min(YES),
-        # which we expose as yes_best_ask for use as a worst-case price.
-        assert book.yes_best_ask == 40
-        assert book.no_best_bid == 59
+        assert book.yes_best_bid == 42  # max(YES bids)
+        # Best YES ask = 100 - max(NO bids) = 100 - 59 = 41
+        # (someone bidding 59¢ for NO is selling YES at 41¢)
+        assert book.yes_best_ask == 41
+        assert book.no_best_bid == 59  # max(NO bids)
+        # Best NO ask = 100 - max(YES bids) = 100 - 42 = 58
         assert book.no_best_ask == 58
 
     def test_delta_adds_liquidity(self) -> None:
