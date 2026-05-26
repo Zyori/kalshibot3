@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from 'react-router'
 
 import EnvironmentBanner from './EnvironmentBanner'
+import WsIndicator from './WsIndicator'
 
 /**
  * Top-level layout shell. Header with nav + environment banner, content slot below.
@@ -13,7 +14,10 @@ export default function Layout() {
       <header className="border-b border-border bg-bg-panel">
         <div className="mx-auto flex max-w-screen-2xl items-center justify-between px-6 py-3">
           <div className="flex items-center gap-6">
-            <h1 className="text-base font-semibold text-text">kalshibot3</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-base font-semibold text-text">kalshibot3</h1>
+              <WsIndicator />
+            </div>
             <nav className="flex gap-1">
               <NavTab to="/" label="Overview" end />
               <NavTab to="/sport/soccer" label="Soccer" />

@@ -24,12 +24,14 @@ from alembic.config import Config as AlembicConfig
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.api import ws as ws_endpoint
 from src.api.routes import health
 from src.config import get_settings
 from src.core.db import dispose_engine, get_engine
 from src.core.exceptions import AuthenticationError, KalshiError
 from src.core.logging import get_logger
 from src.kalshi.rest import KalshiRestClient
+from src.supervisor import Supervisor
 
 log = get_logger(__name__)
 
@@ -99,6 +101,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 3. Probe Kalshi auth (non-fatal).
     await _probe_kalshi_auth(app)
 
+    # 4. Spin up the supervisor: Kalshi WS consumer + browser broadcaster.
+    # Only start if auth probe succeeded — without auth, the WS connect
+    # would just reconnect-loop forever logging errors.
+    app.state.supervisor = Supervisor()
+    app.state.live_state = app.state.supervisor.live_state
+    app.state.broadcast = app.state.supervisor.broadcast
+    if app.state.kalshi_auth_ok:
+        await app.state.supervisor.start()
+    else:
+        log.warning("supervisor_skipped_kalshi_auth_failed")
+
     log.info(
         "startup_complete",
         environment=settings.environment.value,
@@ -107,6 +120,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
 
+    await app.state.supervisor.stop()
     await dispose_engine()
     log.info("shutdown_complete")
 
@@ -127,6 +141,7 @@ app.add_middleware(
 )
 
 app.include_router(health.router, prefix="/api")
+app.include_router(ws_endpoint.router)
 
 
 @app.get("/")

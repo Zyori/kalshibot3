@@ -53,10 +53,31 @@ async def health(request: Request) -> dict[str, Any]:
         "error": getattr(app_state, "kalshi_auth_error", None),
     }
 
+    # WS liveness: did we hear from Kalshi recently? "Connected" alone isn't
+    # enough — Kalshi can keep the socket open while sending nothing.
+    live_state = getattr(app_state, "live_state", None)
+    if live_state is None:
+        ws_state: dict[str, Any] = {"ok": False, "reason": "supervisor not started"}
+    else:
+        import time
+        idle_s = (
+            (time.monotonic() - live_state.last_ws_message_at)
+            if live_state.last_ws_message_at
+            else None
+        )
+        ws_state = {
+            "ok": live_state.connected and (idle_s is None or idle_s < 60),
+            "connected": live_state.connected,
+            "idle_seconds": round(idle_s, 1) if idle_s is not None else None,
+            "markets_watched": len(live_state.books),
+            "open_orders": len(live_state.open_orders),
+        }
+
     return {
         "app": "kalshibot3",
         "environment": settings.environment.value,
         "status": "alive",
         "db": {"ok": db_ok, "error": db_error},
         "kalshi": kalshi,
+        "ws": ws_state,
     }
