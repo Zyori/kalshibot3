@@ -91,9 +91,11 @@ done
 
 # Catch-all: kill anything matching our process signatures.
 # Patterns chosen to be broad enough to catch manual invocations.
+# `vite build` covers both the initial build and `vite build --watch`.
 for pattern in \
   "uvicorn.*src\.main:app" \
-  "vite.*--port.*${DASHBOARD_PORT}" \
+  "vite build" \
+  "vite.*--port" \
   "node.*dashboard.*vite"; do
   pids=$(pgrep -f "$pattern" 2>/dev/null || true)
   if [ -n "$pids" ]; then
@@ -105,7 +107,7 @@ done
 sleep 2
 
 # Force-kill survivors
-for pattern in "uvicorn.*src\.main:app" "vite.*--port.*${DASHBOARD_PORT}"; do
+for pattern in "uvicorn.*src\.main:app" "vite build" "vite.*--port"; do
   remaining=$(pgrep -f "$pattern" 2>/dev/null || true)
   if [ -n "$remaining" ]; then
     echo "  Force-killing stubborn processes: $remaining"
@@ -141,9 +143,28 @@ echo "$BACKEND_PID" > backend.pid
 echo "  Backend started, PID: $BACKEND_PID"
 
 echo ""
-echo "=== Starting dashboard ==="
+echo "=== Building dashboard (initial) ==="
+# Production build into dashboard/dist. nginx serves this directory at
+# https://lutz.bot. We always do one clean build at launch so the served
+# bundle reflects current source on the first request; the watcher below
+# then rebuilds on every save.
 cd dashboard
-npm run dev > "../$DASHBOARD_LOG" 2>&1 &
+npm run build >> "../$DASHBOARD_LOG" 2>&1
+build_status=$?
+cd ..
+if [ $build_status -ne 0 ]; then
+  echo "FATAL: dashboard initial build failed. See $DASHBOARD_LOG."
+  exit 1
+fi
+echo "  Initial build OK (dashboard/dist/)"
+
+echo ""
+echo "=== Starting dashboard watcher ==="
+# `vite build --watch` rebuilds dashboard/dist on every source change. No dev
+# server, no HMR — nginx serves the static dist directly at https://lutz.bot.
+# Browser reload picks up changes.
+cd dashboard
+npm run watch >> "../$DASHBOARD_LOG" 2>&1 &
 DASHBOARD_PID=$!
 cd ..
 echo "$DASHBOARD_PID" > dashboard.pid
@@ -180,5 +201,6 @@ echo "  Single instance verified: PID $BACKEND_PID"
 
 echo ""
 echo "=== Running ==="
-echo "  Backend:   http://127.0.0.1:$BACKEND_PORT (PID $BACKEND_PID, log: $BACKEND_LOG)"
-echo "  Dashboard: http://127.0.0.1:$DASHBOARD_PORT (PID $DASHBOARD_PID, log: $DASHBOARD_LOG)"
+echo "  App URL:    https://lutz.bot"
+echo "  Backend:    127.0.0.1:$BACKEND_PORT (PID $BACKEND_PID, log: $BACKEND_LOG)"
+echo "  Dashboard:  vite build --watch (PID $DASHBOARD_PID, log: $DASHBOARD_LOG)"
