@@ -178,7 +178,7 @@ function MarketRow({ market, compact }: { market: FeedMarket; compact: boolean }
   return (
     <li>
       <Link
-        to={`/market/${encodeURIComponent(market.ticker)}`}
+        to={`/event/${encodeURIComponent(market.event_ticker)}?market=${encodeURIComponent(market.ticker)}`}
         className="grid items-center gap-3 rounded-md border border-border bg-bg-card px-3 py-2 transition-colors hover:bg-bg-hover"
         style={{ gridTemplateColumns: '1fr auto auto' }}
       >
