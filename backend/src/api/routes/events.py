@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.db import get_session
 from src.core.logging import get_logger
 from src.models import Market, Position
-from src.sports.soccer import is_soccer_ticker
+from src.sports.soccer import is_soccer_ticker, league_display_name
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -134,6 +134,7 @@ async def get_event(
         "event_ticker": event_ticker,
         "event_title": head.event_title,
         "series": head.series,
+        "league": league_display_name(head.series),
         "open_time": head.open_time.isoformat() if head.open_time else None,
         "close_time": head.close_time.isoformat() if head.close_time else None,
         "bucket": head.bucket,

@@ -54,6 +54,7 @@ type EventDetail = {
   event_ticker: string
   event_title: string | null
   series: string
+  league: string | null
   open_time: string | null
   close_time: string | null
   bucket: 'live' | 'upcoming' | 'recent'
@@ -165,7 +166,12 @@ function EventHeader({
         <Link to="/" className="text-xs text-text-muted hover:text-text">
           ← Markets
         </Link>
-        <h2 className="mt-1 truncate text-lg font-semibold text-text">
+        {detail?.league && (
+          <div className="mt-1 text-xs font-semibold uppercase tracking-wide text-action">
+            {detail.league}
+          </div>
+        )}
+        <h2 className="mt-0.5 truncate text-lg font-semibold text-text">
           {detail?.event_title ?? decoded}
         </h2>
         {detail && (

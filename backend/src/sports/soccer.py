@@ -12,77 +12,93 @@ Ported from V2 (Kalshi-Mean-Reversion-Bot/backend/src/ingestion/kalshi_rest.py).
 
 from __future__ import annotations
 
-# Per-game (match-result) series — each prefix matches event_tickers Kalshi
-# publishes as "{PREFIX}-{date}{home}{away}" with markets for each side.
-SOCCER_GAME_SERIES: tuple[str, ...] = (
+# Per-game (match-result) series — Kalshi prefix → human league name.
+# The prefix matches event_tickers Kalshi publishes as
+# "{PREFIX}-{date}{home}{away}" with markets for each side.
+#
+# Display names are what we show in the UI (header strip, feed cards, ledger).
+# Keep them tight — single-line, no parenthetical noise.
+SOCCER_GAME_SERIES_NAMES: dict[str, str] = {
     # Top 5 European leagues
-    "KXEPLGAME",          # English Premier League
-    "KXLALIGAGAME",       # La Liga
-    "KXSERIEAGAME",       # Serie A (Italy)
-    "KXBUNDESLIGAGAME",   # Bundesliga
-    "KXLIGUE1GAME",       # Ligue 1
+    "KXEPLGAME": "Premier League",
+    "KXLALIGAGAME": "La Liga",
+    "KXSERIEAGAME": "Serie A",
+    "KXBUNDESLIGAGAME": "Bundesliga",
+    "KXLIGUE1GAME": "Ligue 1",
     # Other major European leagues
-    "KXLALIGA2GAME",      # La Liga 2
-    "KXSERIEBGAME",       # Serie B (Italy)
-    "KXBUNDESLIGA2GAME",  # 2. Bundesliga
-    "KXEREDIVISIEGAME",   # Eredivisie (Netherlands)
-    "KXBELGIANPLGAME",    # Belgian Pro League
-    "KXSCOTTISHPREMGAME", # Scottish Premiership
-    "KXSWISSLEAGUEGAME",  # Swiss Super League
-    "KXSUPERLIGGAME",     # Turkish Süper Lig
-    "KXCZEFLGAME",        # Czech First League
-    "KXEKSTRAKLASAGAME",  # Polish Ekstraklasa
-    "KXDENSUPERLIGAGAME", # Danish Superliga
-    "KXSLGREECEGAME",     # Greek Super League
-    "KXHNLGAME",          # Croatia HNL
-    "KXEWSLGAME",         # England Women's Super League
+    "KXLALIGA2GAME": "La Liga 2",
+    "KXSERIEBGAME": "Serie B",
+    "KXBUNDESLIGA2GAME": "2. Bundesliga",
+    "KXEREDIVISIEGAME": "Eredivisie",
+    "KXBELGIANPLGAME": "Belgian Pro League",
+    "KXSCOTTISHPREMGAME": "Scottish Premiership",
+    "KXSWISSLEAGUEGAME": "Swiss Super League",
+    "KXSUPERLIGGAME": "Süper Lig",
+    "KXCZEFLGAME": "Czech First League",
+    "KXEKSTRAKLASAGAME": "Ekstraklasa",
+    "KXDENSUPERLIGAGAME": "Danish Superliga",
+    "KXSLGREECEGAME": "Greek Super League",
+    "KXHNLGAME": "Croatia HNL",
+    "KXEWSLGAME": "Women's Super League",
     # English domestic cups & second tier
-    "KXEFLCHAMPIONSHIPGAME",  # EFL Championship
-    "KXEFLL1GAME",        # EFL League One
-    "KXEFLCUPGAME",       # EFL Cup
-    "KXFACUPGAME",        # FA Cup
-    "KXCOPADELREYGAME",   # Copa del Rey (Spain)
-    "KXCOPPAITALIAGAME",  # Coppa Italia
-    "KXDFBPOKALGAME",     # DFB-Pokal (Germany)
+    "KXEFLCHAMPIONSHIPGAME": "EFL Championship",
+    "KXEFLL1GAME": "EFL League One",
+    "KXEFLCUPGAME": "EFL Cup",
+    "KXFACUPGAME": "FA Cup",
+    "KXCOPADELREYGAME": "Copa del Rey",
+    "KXCOPPAITALIAGAME": "Coppa Italia",
+    "KXDFBPOKALGAME": "DFB-Pokal",
     # Americas
-    "KXMLSGAME",          # MLS
-    "KXNWSLGAME",         # NWSL
-    "KXUSLGAME",          # USL Championship
-    "KXCANPLGAME",        # Canadian Premier League
-    "KXUSOPENCUPGAME",    # US Open Cup
-    "KXLIGAMXGAME",       # Liga MX
-    "KXARGPREMDIVGAME",   # Argentina Primera División
-    "KXCOPADOBRASILGAME", # Copa do Brasil
-    "KXCHLLDPGAME",       # Chile Liga de Primera
-    "KXURYPDGAME",        # Uruguay Primera División
-    "KXPERLIGA1GAME",     # Peru Liga 1
-    "KXDIMAYORGAME",      # Colombia Liga DIMAYOR
-    "KXBOLPDIVGAME",      # Bolivia Premier Division
-    "KXECULPGAME",        # Ecuador Liga Pro
-    "KXVENFUTVEGAME",     # Venezuela Liga FUTVE
-    "KXAPFDDHGAME",       # APF División de Honor (Paraguay)
+    "KXMLSGAME": "MLS",
+    "KXNWSLGAME": "NWSL",
+    "KXUSLGAME": "USL Championship",
+    "KXCANPLGAME": "Canadian Premier League",
+    "KXUSOPENCUPGAME": "US Open Cup",
+    "KXLIGAMXGAME": "Liga MX",
+    "KXARGPREMDIVGAME": "Argentina Primera División",
+    "KXCOPADOBRASILGAME": "Copa do Brasil",
+    "KXCHLLDPGAME": "Chile Liga de Primera",
+    "KXURYPDGAME": "Uruguay Primera División",
+    "KXPERLIGA1GAME": "Peru Liga 1",
+    "KXDIMAYORGAME": "Colombia Liga DIMAYOR",
+    "KXBOLPDIVGAME": "Bolivia Premier Division",
+    "KXECULPGAME": "Ecuador Liga Pro",
+    "KXVENFUTVEGAME": "Venezuela Liga FUTVE",
+    "KXAPFDDHGAME": "Paraguay División de Honor",
     # Asia / Oceania / MENA
-    "KXJLEAGUEGAME",      # Japan J League
-    "KXKLEAGUEGAME",      # Korea K League
-    "KXCHNSLGAME",        # Chinese Super League
-    "KXALEAGUEGAME",      # Australia A-League
-    "KXSAUDIPLGAME",      # Saudi Pro League
-    "KXUAEPLGAME",        # UAE Pro League
+    "KXJLEAGUEGAME": "J League",
+    "KXKLEAGUEGAME": "K League",
+    "KXCHNSLGAME": "Chinese Super League",
+    "KXALEAGUEGAME": "A-League",
+    "KXSAUDIPLGAME": "Saudi Pro League",
+    "KXUAEPLGAME": "UAE Pro League",
     # UEFA competitions
-    "KXUCLGAME",          # Champions League
-    "KXUELGAME",          # Europa League
-    "KXUECLGAME",         # Europa Conference League
-    "KXUCLWGAME",         # Champions League Women's
-    "KXUEFAGAME",         # Generic UEFA games
+    "KXUCLGAME": "Champions League",
+    "KXUELGAME": "Europa League",
+    "KXUECLGAME": "Conference League",
+    "KXUCLWGAME": "Champions League (Women)",
+    "KXUEFAGAME": "UEFA",
     # FIFA / international
-    "KXWCGAME",           # FIFA World Cup match markets — PRIMARY for 2026
-    "KXCLUBWCGAME",       # Club World Cup match markets
-    "KXFIFAGAME",         # FIFA friendlies / other
-    "KXFIFAUSPULLGAME",   # FIFA US (CONCACAF) pull game
-    "KXINTLFRIENDLYGAME", # International friendlies (national team)
+    "KXWCGAME": "World Cup",
+    "KXCLUBWCGAME": "Club World Cup",
+    "KXFIFAGAME": "FIFA Friendly",
+    "KXFIFAUSPULLGAME": "FIFA US Pull Game",
+    "KXINTLFRIENDLYGAME": "International Friendly",
     # Other / niche
-    "KXBALLERLEAGUEGAME", # Baller League (6-a-side)
-)
+    "KXBALLERLEAGUEGAME": "Baller League",
+}
+
+# Tuple form for code that just needs to iterate the prefixes
+# (market_discovery, is_soccer_ticker). Keys order is stable in Python 3.7+,
+# so this preserves the discovery polling order from before this refactor.
+SOCCER_GAME_SERIES: tuple[str, ...] = tuple(SOCCER_GAME_SERIES_NAMES.keys())
+
+
+def league_display_name(series: str | None) -> str | None:
+    """Map a Kalshi series prefix to its display name. Unknown → None."""
+    if series is None:
+        return None
+    return SOCCER_GAME_SERIES_NAMES.get(series)
 
 # World Cup derivative markets — tournament-level futures, awards, props.
 # Not per-match; bookings here drive different strategy than match results.

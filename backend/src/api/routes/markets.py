@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from src.core.logging import get_logger
 from src.kalshi.rest import KalshiRestClient
-from src.sports.soccer import is_soccer_ticker
+from src.sports.soccer import is_soccer_ticker, league_display_name
 
 
 def _dollar_str_to_cents(s: str) -> int:
@@ -51,6 +51,7 @@ def _feed_market_to_dict(m: Any, live_state: Any) -> dict[str, Any]:
         "market_title": m.market_title,
         "yes_sub_title": m.yes_sub_title,
         "series": m.series,
+        "league": league_display_name(m.series),
         "status": m.status,
         "open_time": m.open_time.isoformat() if m.open_time else None,
         "close_time": m.close_time.isoformat() if m.close_time else None,

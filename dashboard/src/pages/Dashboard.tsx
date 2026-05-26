@@ -12,6 +12,7 @@ type FeedMarket = {
   market_title: string
   yes_sub_title: string | null
   series: string
+  league: string | null
   status: string
   open_time: string | null
   close_time: string | null
@@ -183,7 +184,14 @@ function MarketRow({ market, compact }: { market: FeedMarket; compact: boolean }
         style={{ gridTemplateColumns: '1fr auto auto' }}
       >
         <div className="min-w-0">
-          <div className="truncate text-sm text-text">{market.event_title}</div>
+          <div className="truncate text-sm text-text">
+            {market.league && (
+              <span className="mr-2 text-[10px] font-semibold uppercase tracking-wide text-action">
+                {market.league}
+              </span>
+            )}
+            {market.event_title}
+          </div>
           {!compact && (
             <div className="truncate text-xs text-text-muted">
               {outcomeLabel(market.yes_sub_title)}
