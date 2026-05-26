@@ -102,6 +102,7 @@ export default function OrderPanel({
       queryClient.invalidateQueries({ queryKey: ['open_orders'] })
       queryClient.invalidateQueries({ queryKey: ['open_orders_rest'] })
       queryClient.invalidateQueries({ queryKey: ['positions'] })
+      queryClient.invalidateQueries({ queryKey: ['bankroll_deployed'] })
     },
   })
 

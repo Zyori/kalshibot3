@@ -3,10 +3,12 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
 import DepthLadder from '../components/trading/DepthLadder'
+import InlineError from '../components/InlineError'
 import OpenOrdersCard from '../components/trading/OpenOrdersCard'
 import OrderPanel from '../components/trading/OrderPanel'
 import PositionCard from '../components/trading/PositionCard'
 import PriceHistoryChart from '../components/trading/PriceHistoryChart'
+import Skeleton from '../components/Skeleton'
 import TopOfBook from '../components/trading/TopOfBook'
 import type { MarketBook } from '../contexts/WebSocketProvider'
 import { formatET, outcomeLabel } from '../lib/format'
@@ -92,8 +94,8 @@ export default function MarketView() {
     <div className="space-y-4">
       <MarketHeader decoded={decoded} detail={detail} />
 
-      {isPending && <Box>Loading…</Box>}
-      {isError && <Box tone="loss">{String(error)}</Box>}
+      {isPending && <MarketSkeleton />}
+      {isError && <InlineError message="Couldn't load this market." detail={error} />}
 
       {detail && (
         <>
@@ -118,20 +120,30 @@ export default function MarketView() {
   )
 }
 
-function Box({
-  children,
-  tone = 'muted',
-}: {
-  children: React.ReactNode
-  tone?: 'muted' | 'loss'
-}) {
-  const cls = tone === 'loss' ? 'text-loss' : 'text-text-muted'
+function MarketSkeleton() {
+  // Mirrors the live layout one-for-one so the page doesn't jump when
+  // detail arrives: top-of-book row, depth two-column, chart, position,
+  // order panel + open orders.
   return (
-    <div className={`rounded-md border border-border bg-bg-card p-4 text-sm ${cls}`}>
-      {children}
+    <div className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-2">
+        <Skeleton height={108} />
+        <Skeleton height={108} />
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <Skeleton height={220} />
+        <Skeleton height={220} />
+      </div>
+      <Skeleton height={260} />
+      <Skeleton height={92} />
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Skeleton height={420} />
+        <Skeleton height={120} />
+      </div>
     </div>
   )
 }
+
 
 /**
  * Header for the market detail page. Left side reads naturally

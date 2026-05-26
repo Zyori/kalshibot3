@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
+import InlineError from '../components/InlineError'
 import PnLChart from '../components/charts/PnLChart'
 import StrategyBreakdown from '../components/charts/StrategyBreakdown'
 import { formatET } from '../lib/format'
@@ -121,6 +122,9 @@ export default function Ledger() {
         </p>
       </header>
 
+      {stats.isError && (
+        <InlineError message="Couldn't load stats." detail={stats.error} />
+      )}
       <StatsStrip stats={stats.data} />
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -155,12 +159,16 @@ export default function Ledger() {
         onToggle={(v) => toggle('timing', v)}
       />
 
-      <BetsTable
-        bets={bets.data?.bets ?? []}
-        isLoading={bets.isPending}
-        expandedId={expandedId}
-        onToggleExpand={(id) => setExpandedId((cur) => (cur === id ? null : id))}
-      />
+      {bets.isError ? (
+        <InlineError message="Couldn't load bets." detail={bets.error} />
+      ) : (
+        <BetsTable
+          bets={bets.data?.bets ?? []}
+          isLoading={bets.isPending}
+          expandedId={expandedId}
+          onToggleExpand={(id) => setExpandedId((cur) => (cur === id ? null : id))}
+        />
+      )}
     </div>
   )
 }

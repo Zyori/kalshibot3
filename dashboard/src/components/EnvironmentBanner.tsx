@@ -56,7 +56,55 @@ export default function EnvironmentBanner() {
         <Pill className="border-info text-info">DEMO</Pill>
       )}
       <KalshiPill kalshi={data.kalshi} />
+      <BankrollPill availableCents={data.kalshi.balance_cents} />
     </div>
+  )
+}
+
+type OpenStats = { total_stake_cents: number; total_bets: number }
+
+/**
+ * Available / deployed capital split. Available is Kalshi's reported balance
+ * (cash sitting idle); deployed is the sum of stake on OPEN bets. Helps the
+ * user see how much of their bankroll is currently in flight versus free
+ * to deploy elsewhere.
+ */
+function BankrollPill({ availableCents }: { availableCents: number | null }) {
+  const { data } = useQuery<OpenStats>({
+    queryKey: ['bankroll_deployed'],
+    queryFn: async () => {
+      const res = await fetch('/api/ledger/stats?status=open')
+      if (!res.ok) throw new Error(`/api/ledger/stats: ${res.status}`)
+      return res.json()
+    },
+    refetchInterval: 15_000,
+  })
+
+  if (availableCents === null) return null
+  const deployed = data?.total_stake_cents ?? 0
+  const total = availableCents + deployed
+  return (
+    <Pill
+      className="border-border text-text-muted"
+      title={
+        `Available $${(availableCents / 100).toFixed(2)} · ` +
+        `Deployed $${(deployed / 100).toFixed(2)} on ${data?.total_bets ?? 0} open bets`
+      }
+    >
+      <span className="font-mono tabular-nums">
+        ${(availableCents / 100).toFixed(2)}
+      </span>
+      <span className="mx-1 text-text-muted">/</span>
+      <span className="font-mono tabular-nums text-action">
+        ${(deployed / 100).toFixed(2)}
+      </span>
+      <span className="ml-1 text-[10px] uppercase text-text-muted">free/deployed</span>
+      {total > 0 && (
+        <span className="ml-2 text-[10px] text-text-muted">
+          (total ${(total / 100).toFixed(2)})
+        </span>
+      )}
+    </Pill>
   )
 }
 

@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
+import InlineError from '../components/InlineError'
+import Skeleton from '../components/Skeleton'
 import { formatET, outcomeLabel } from '../lib/format'
 
 type FeedMarket = {
@@ -50,8 +52,10 @@ export default function Dashboard() {
 
       <TickerLookup />
 
-      {isPending && <SectionMessage>Loading…</SectionMessage>}
-      {isError && <SectionMessage tone="loss">Couldn't load the market feed.</SectionMessage>}
+      {isPending && <FeedSkeleton />}
+      {isError && (
+        <InlineError message="Couldn't load the market feed." />
+      )}
 
       {data && (
         <>
@@ -59,7 +63,6 @@ export default function Dashboard() {
             title="Live now"
             empty="No matches currently in play."
             markets={data.live}
-            showWhenEmpty={data.live.length > 0}
           />
           <Section
             title="Upcoming"
@@ -111,6 +114,25 @@ function TickerLookup() {
         Open
       </button>
     </form>
+  )
+}
+
+function FeedSkeleton() {
+  // Mimics one bucket's shape — header row + a handful of card rows. The
+  // pulse animation keeps it feeling alive while the data loads.
+  return (
+    <div className="space-y-8">
+      {[1, 2].map((b) => (
+        <section key={b} className="space-y-3">
+          <Skeleton className="h-5 w-32" />
+          <div className="space-y-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} height={56} />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
   )
 }
 

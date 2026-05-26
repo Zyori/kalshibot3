@@ -82,5 +82,10 @@ export function useOpenOrders(filterTicker?: string) {
   })
 
   const all = Object.values(data ?? {})
-  return filterTicker ? all.filter((o) => o.ticker === filterTicker) : all
+  const orders = filterTicker ? all.filter((o) => o.ticker === filterTicker) : all
+  return {
+    orders,
+    isError: bootstrap.isError,
+    error: bootstrap.error,
+  }
 }

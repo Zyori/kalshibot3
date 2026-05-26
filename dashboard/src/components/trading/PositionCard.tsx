@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
+import InlineError from '../InlineError'
+
 type Position = {
   ticker: string
   side: 'yes' | 'no'
@@ -17,7 +19,7 @@ type PositionsResponse = { positions: Position[] }
  * so a 10s client poll is the right granularity (live enough, not chatty).
  */
 export default function PositionCard({ ticker }: { ticker: string }) {
-  const { data } = useQuery<PositionsResponse>({
+  const { data, isError, error } = useQuery<PositionsResponse>({
     queryKey: ['positions'],
     queryFn: async () => {
       const res = await fetch('/api/positions')
@@ -26,6 +28,10 @@ export default function PositionCard({ ticker }: { ticker: string }) {
     },
     refetchInterval: 10_000,
   })
+
+  if (isError) {
+    return <InlineError message="Couldn't load positions." detail={error} />
+  }
 
   const positions = (data?.positions ?? []).filter((p) => p.ticker === ticker)
 

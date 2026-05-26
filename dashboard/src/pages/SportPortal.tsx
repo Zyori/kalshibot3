@@ -1,6 +1,7 @@
 import { Link, useParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 
+import InlineError from '../components/InlineError'
 import { formatET } from '../lib/format'
 
 type Bet = {
@@ -123,7 +124,12 @@ function HistorySection({ sport }: { sport: string }) {
         </div>
       )}
 
-      {bets.length === 0 ? (
+      {recent.isError || stats.isError ? (
+        <InlineError
+          message="Couldn't load history."
+          detail={recent.error ?? stats.error}
+        />
+      ) : bets.length === 0 ? (
         <div className="rounded-lg border border-border bg-bg-card p-4 text-center text-xs text-text-muted">
           No bets yet for {sport}.
         </div>

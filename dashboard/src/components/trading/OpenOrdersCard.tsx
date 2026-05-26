@@ -1,13 +1,14 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { useOpenOrders } from '../../hooks/useOpenOrders'
+import InlineError from '../InlineError'
 
 /**
  * Lists currently-resting orders for one ticker. Cancel button on each.
  * Driven entirely by the WS user_order stream — no REST polling.
  */
 export default function OpenOrdersCard({ ticker }: { ticker: string }) {
-  const orders = useOpenOrders(ticker)
+  const { orders, isError, error } = useOpenOrders(ticker)
   const queryClient = useQueryClient()
 
   const cancel = useMutation({
@@ -26,8 +27,13 @@ export default function OpenOrdersCard({ ticker }: { ticker: string }) {
       queryClient.invalidateQueries({ queryKey: ['open_orders'] })
       queryClient.invalidateQueries({ queryKey: ['open_orders_rest'] })
       queryClient.invalidateQueries({ queryKey: ['positions'] })
+      queryClient.invalidateQueries({ queryKey: ['bankroll_deployed'] })
     },
   })
+
+  if (isError) {
+    return <InlineError message="Couldn't load open orders." detail={error} />
+  }
 
   if (orders.length === 0) {
     return (
