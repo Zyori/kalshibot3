@@ -29,13 +29,16 @@ from src.core.types import (
     BetSource,
     BetStatus,
     Confidence,
+    ExitType,
+    MarketSettlement,
+    MarketStatus,
     Sport,
     Strategy,
     Timing,
 )
 from src.kalshi.schemas import Order
 from src.kalshi.ws_wire import Fill, UserOrder
-from src.models import Bet
+from src.models import Bet, Market
 from src.sports.soccer import is_soccer_ticker
 
 log = get_logger(__name__)
@@ -179,6 +182,81 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
         trade_id=fill.msg.trade_id,
         new_entry_cents=bet.entry_price_cents,
     )
+
+
+async def settle_bets_for_market(
+    session: AsyncSession,
+    *,
+    ticker: str,
+    settlement_value_cents: int,
+) -> int:
+    """Transition every OPEN BET on this market to WON or LOST.
+
+    `settlement_value_cents` is the YES-side payoff in cents per contract:
+      0   = NO won outright
+      100 = YES won outright
+      anything else is a scalar/partial settle — rare on soccer moneylines;
+            we still compute P&L from it directly.
+
+    P&L formula per bet:
+      YES side: pnl = (settlement - entry) * quantity
+      NO side:  pnl = ((100 - settlement) - (100 - entry)) * quantity
+                    = (entry - settlement) * quantity
+
+    Cross-market isolation: refuses non-soccer tickers. Returns the count
+    of bets transitioned, for logging / health metrics.
+
+    Idempotent: bets already in a terminal state are skipped. Safe to call
+    from both the WS market_lifecycle handler and a periodic sweep.
+    """
+    if not is_soccer_ticker(ticker):
+        log.warning("settle_dropped_non_soccer_ticker", ticker=ticker)
+        return 0
+
+    market = await session.scalar(select(Market).where(Market.kalshi_ticker == ticker))
+    if market is None:
+        # No BETs can exist without a market row (FK), so nothing to settle.
+        return 0
+
+    settled_at = datetime.now(timezone.utc)
+    # Mark the market settled too — single source of truth for "this market is done."
+    market.status = MarketStatus.SETTLED
+    market.settlement_detected_at = settled_at
+    market.settlement = (
+        MarketSettlement.YES if settlement_value_cents >= 50
+        else MarketSettlement.NO
+    )
+
+    open_bets = (
+        await session.execute(
+            select(Bet)
+            .where(Bet.market_id == market.id)
+            .where(Bet.status == BetStatus.OPEN)
+        )
+    ).scalars().all()
+
+    transitioned = 0
+    for bet in open_bets:
+        if bet.side is BetSide.YES:
+            pnl = (settlement_value_cents - bet.entry_price_cents) * bet.quantity
+        else:
+            pnl = (bet.entry_price_cents - settlement_value_cents) * bet.quantity
+        bet.exit_price_cents = settlement_value_cents if bet.side is BetSide.YES else 100 - settlement_value_cents
+        bet.pnl_cents = pnl
+        bet.status = BetStatus.WON if pnl > 0 else BetStatus.LOST
+        bet.exit_type = ExitType.HELD_TO_SETTLEMENT
+        bet.settled_at = settled_at
+        bet.version += 1
+        transitioned += 1
+
+    await session.flush()
+    log.info(
+        "bets_settled",
+        ticker=ticker,
+        settlement_value_cents=settlement_value_cents,
+        transitioned=transitioned,
+    )
+    return transitioned
 
 
 async def _get_or_create_market(session: AsyncSession, *, ticker: str) -> int:

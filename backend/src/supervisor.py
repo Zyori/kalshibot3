@@ -32,8 +32,8 @@ from src.kalshi.ws import (
     BACKOFF_MAX_S,
     KalshiWsClient,
 )
-from src.kalshi.ws_wire import Fill, KalshiWsMessage
-from src.services.bet_service import record_fill
+from src.kalshi.ws_wire import Fill, KalshiWsMessage, MarketLifecycle
+from src.services.bet_service import record_fill, settle_bets_for_market
 from src.services.market_refresher import MarketRefresher
 from src.services.market_tier import MarketTier, classify
 from src.services.position_sync import PositionSyncer
@@ -59,6 +59,9 @@ class Supervisor:
         )
         # Fill handler: persist each fill as a BET row via bet_service.
         self.kalshi_ws.set_fill_handler(self._on_fill)
+        # Lifecycle handler: settle OPEN bets when Kalshi reports the market
+        # as terminal (status=settled with a settlement_value).
+        self.kalshi_ws.set_lifecycle_handler(self._on_market_lifecycle)
 
         self.market_discovery = MarketDiscovery()
         self.market_discovery.register_refresh_callback(self._on_discovery_refresh)
@@ -93,6 +96,36 @@ class Supervisor:
         # Invalidate the cached balance so the next /health refreshes it.
         # Cheap signal; avoids holding a Kalshi REST call inside the fill
         # handler's critical path.
+        if self.app_state is not None:
+            self.app_state._balance_refreshed_at_mono = 0.0
+
+    async def _on_market_lifecycle(self, msg: MarketLifecycle) -> None:
+        """Settle BETs when Kalshi reports a terminal market status.
+
+        Kalshi sends market_lifecycle events on transitions. We only act on
+        ones that carry a settlement_value — that's the signal the market
+        has resolved and we know who paid out. Status alone (e.g.
+        'closed' = trading halted but not settled) doesn't settle bets.
+        """
+        if msg.msg.settlement_value is None:
+            return
+        if msg.msg.status not in ("settled", "determined", "finalized"):
+            # Status without settlement_value is a soft transition (paused,
+            # closed-for-trading). Don't burn DB work on it.
+            return
+        factory = get_session_factory()
+        try:
+            async with factory() as session:
+                await settle_bets_for_market(
+                    session,
+                    ticker=msg.msg.market_ticker,
+                    settlement_value_cents=msg.msg.settlement_value,
+                )
+                await session.commit()
+        except Exception:  # noqa: BLE001
+            log.exception("settle_failed", ticker=msg.msg.market_ticker)
+        # A settlement changes the balance (payout credited). Invalidate
+        # the cached balance so the banner reflects the payout fast.
         if self.app_state is not None:
             self.app_state._balance_refreshed_at_mono = 0.0
 

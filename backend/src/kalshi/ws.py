@@ -76,6 +76,7 @@ class KalshiWsClient:
         # bet_service.record_fill without dragging DB imports into ws.py.
         self.on_fill: "asyncio.Future | None" = None  # set externally
         self._fill_handler: "Any | None" = None
+        self._lifecycle_handler: "Any | None" = None
 
         self._ws: ClientConnection | None = None
         self._market_tickers: set[str] = set()
@@ -267,6 +268,8 @@ class KalshiWsClient:
             self.live_state.apply_orderbook_delta(msg)
         elif isinstance(msg, MarketLifecycle):
             self.live_state.apply_market_lifecycle(msg)
+            if self._lifecycle_handler is not None:
+                asyncio.create_task(self._lifecycle_handler(msg))
         elif isinstance(msg, UserOrder):
             self.live_state.apply_user_order(msg)
         elif isinstance(msg, Fill):
@@ -303,6 +306,16 @@ class KalshiWsClient:
         loop (asyncio tasks log their own unhandled exceptions).
         """
         self._fill_handler = handler
+
+    def set_lifecycle_handler(self, handler) -> None:  # noqa: ANN001 — callable contract
+        """Register an async callback fired on every MarketLifecycle event.
+
+        Signature: `async def handler(msg: MarketLifecycle) -> None`. Used by
+        the supervisor to drive BET settlement when a market hits its
+        terminal state on Kalshi's side. Same exception isolation as
+        set_fill_handler — spawned as its own task.
+        """
+        self._lifecycle_handler = handler
 
     async def close(self) -> None:
         self.live_state.connected = False
