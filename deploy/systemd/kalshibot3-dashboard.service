@@ -1,0 +1,51 @@
+[Unit]
+Description=kalshibot3 dashboard watcher (vite build --watch)
+Documentation=https://github.com/Zyori/kalshibot3
+After=network-online.target
+# Run after the backend is up so the initial /api/health poll has something
+# to talk to. Not a hard requirement — the dashboard works without it — but
+# avoids a "backend offline" flash on first paint after a reboot.
+After=kalshibot3.service
+# Crash-loop ceiling, same policy as the backend.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/lutz-bot/dashboard
+# `npm run watch` runs `vite build --watch`. Use --silent so npm doesn't
+# wrap output in its own decoration before journald sees it.
+ExecStart=/usr/local/bin/npm run --silent watch
+# One-shot rebuild before the watcher takes over, so dist/ is current on
+# first request after a fresh install. `npm run build` exits non-zero on
+# TypeScript or Vite errors, which surfaces as a failed start.
+ExecStartPre=/usr/local/bin/npm run --silent build
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kalshibot3-dashboard
+
+# === Restart policy ===
+# StartLimit* in [Unit] above caps the crash loop.
+Restart=on-failure
+RestartSec=5
+
+# === Sandboxing ===
+ProtectSystem=strict
+ReadWritePaths=/var/www/lutz-bot
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# === Resource ceilings ===
+# Vite's watcher is heavier than the backend (it holds the dep graph in
+# memory). Generous ceiling that's still bounded.
+MemoryMax=1G
+CPUQuota=75%
+TasksMax=400
+
+[Install]
+WantedBy=multi-user.target

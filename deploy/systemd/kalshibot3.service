@@ -1,0 +1,46 @@
+[Unit]
+Description=kalshibot3 backend (FastAPI / uvicorn)
+Documentation=https://github.com/Zyori/kalshibot3
+After=network-online.target
+Wants=network-online.target
+# Crash-loop ceiling: 5 failures inside 60 seconds and systemd gives up.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/lutz-bot/backend
+ExecStart=/var/www/lutz-bot/backend/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8000 --workers 1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kalshibot3
+
+# === Restart policy ===
+# Restart on crash. StartLimit* in [Unit] above caps the crash loop. To
+# recover after a clean give-up:
+#   systemctl reset-failed kalshibot3 && systemctl start kalshibot3
+Restart=on-failure
+RestartSec=5
+
+# === Sandboxing ===
+# Even with a bug, this service cannot touch the rest of /var/www or /etc.
+# zyoritv, dilemmai, florella, nginx, postgres — all untouchable from here.
+ProtectSystem=strict
+ReadWritePaths=/var/www/lutz-bot
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# === Resource ceilings ===
+# Bounded blast radius if the backend ever runs away. Plenty of headroom for
+# the actual workload (current RSS is ~110MB).
+MemoryMax=512M
+CPUQuota=50%
+TasksMax=200
+
+[Install]
+WantedBy=multi-user.target

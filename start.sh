@@ -1,206 +1,69 @@
 #!/usr/bin/env bash
 #
-# Single-instance launcher for kalshibot3 (backend + dashboard).
+# Restart kalshibot3 cleanly. Thin wrapper around systemctl.
 #
-# Why this is paranoid:
-#   On 2026-03-24 (in V1, Kalshi-Bot), two bot instances ran simultaneously because the old
-#   process wasn't killed. Both placed orders against the same markets at the same millisecond,
-#   doubling every position with real money. This script exists to make that impossible.
+# Why: process management lives in systemd, not in this script. systemd
+# guarantees single-instance by design (it tracks our processes by cgroup,
+# not by PID file or pgrep), auto-restarts on crash, and starts the app on
+# boot. The old bash kill-then-launch-then-verify dance is gone — it was
+# fragile (race windows, loose pgrep patterns) and unnecessary.
 #
-# What it does:
-#   1. Lockfile prevents two start.sh invocations from racing.
-#   2. Kills any prior backend/dashboard processes (graceful SIGTERM, then SIGKILL).
-#   3. Frees the backend port if anything else is holding it.
-#   4. Rotates the prior log so we never overwrite a session's history.
-#   5. Launches uvicorn (backend) and vite (dashboard) as direct children.
-#   6. Verifies after launch that exactly ONE backend process exists, owning the port.
+# Units that drive this (live in /etc/systemd/system/, not in the repo):
+#   kalshibot3.service           — FastAPI backend on 127.0.0.1:8000
+#   kalshibot3-dashboard.service — `vite build --watch` rebuilding dist/
 #
-# Usage: ./start.sh
+# Useful commands:
+#   ./start.sh                          restart everything (this script)
+#   systemctl status kalshibot3         backend status + recent log lines
+#   systemctl status kalshibot3-dashboard
+#   journalctl -u kalshibot3 -f         live backend logs
+#   journalctl -u kalshibot3-dashboard -f
+#   systemctl stop kalshibot3{,-dashboard}.service     stop everything
 #
 set -euo pipefail
-cd "$(dirname "$0")"
 
-BACKEND_PORT=8000
-DASHBOARD_PORT=5173
-LOCKFILE=".bot.lock"
-LOG_DIR="logs"
-BACKEND_LOG="backend.log"
-DASHBOARD_LOG="dashboard.log"
-MAX_LOG_HISTORY=10
+UNITS=(kalshibot3.service kalshibot3-dashboard.service)
 
-# === LOCKFILE — prevent concurrent start.sh invocations ===
-if [ -f "$LOCKFILE" ]; then
-  lock_pid=$(cat "$LOCKFILE" 2>/dev/null || true)
-  if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
-    echo "FATAL: Another start.sh is running (PID $lock_pid). Aborting."
+# Refuse to run if the units aren't installed — silently doing nothing would
+# be worse than a clear error. The deploy doc covers installation.
+for unit in "${UNITS[@]}"; do
+  if ! systemctl list-unit-files "$unit" >/dev/null 2>&1; then
+    echo "FATAL: $unit not installed. See deploy/SYSTEMD.md."
     exit 1
   fi
-  echo "  Stale lockfile (PID $lock_pid dead). Removing."
-  rm -f "$LOCKFILE"
-fi
-echo $$ > "$LOCKFILE"
-trap 'rm -f "$LOCKFILE"' EXIT
-
-# === LOG ROTATION ===
-mkdir -p "$LOG_DIR"
-for log in "$BACKEND_LOG" "$DASHBOARD_LOG"; do
-  if [ -f "$log" ] && [ -s "$log" ]; then
-    timestamp=$(date +%Y%m%d-%H%M%S)
-    mv "$log" "$LOG_DIR/${log%.log}-${timestamp}.log"
-    echo "  Rotated $log"
-  fi
-done
-# Prune old logs. shopt nullglob makes the glob expand to nothing instead of
-# literal "*.log" when there are no matches, and we tolerate ls failing under
-# pipefail by capturing its output in a way that can't fail the script.
-shopt -s nullglob
-existing_logs=("$LOG_DIR"/*.log)
-shopt -u nullglob
-if [ "${#existing_logs[@]}" -gt "$MAX_LOG_HISTORY" ]; then
-  # ls -t sorts newest-first; tail +N drops the first N-1 (newest), leaving
-  # the older ones, which we delete.
-  ls -1t "${existing_logs[@]}" | tail -n +"$((MAX_LOG_HISTORY + 1))" | xargs rm -f
-  echo "  Pruned old logs (keeping last $MAX_LOG_HISTORY)"
-fi
-
-echo "=== Killing existing processes ==="
-
-# Kill by PID files first — clean shutdown when possible.
-for pidfile in backend.pid dashboard.pid; do
-  if [ -f "$pidfile" ]; then
-    pid=$(cat "$pidfile")
-    if kill -0 "$pid" 2>/dev/null; then
-      echo "  SIGTERM to PID $pid (from $pidfile)"
-      kill "$pid" 2>/dev/null || true
-      for i in $(seq 1 10); do
-        if ! kill -0 "$pid" 2>/dev/null; then
-          echo "  PID $pid exited after ${i}s"
-          break
-        fi
-        sleep 1
-      done
-      if kill -0 "$pid" 2>/dev/null; then
-        echo "  PID $pid didn't exit gracefully — SIGKILL"
-        kill -9 "$pid" 2>/dev/null || true
-        sleep 1
-      fi
-    fi
-    rm -f "$pidfile"
-  fi
 done
 
-# Catch-all: kill anything matching our process signatures.
-# Patterns chosen to be broad enough to catch manual invocations.
-# `vite build` covers both the initial build and `vite build --watch`.
-for pattern in \
-  "uvicorn.*src\.main:app" \
-  "vite build" \
-  "vite.*--port" \
-  "node.*dashboard.*vite"; do
-  pids=$(pgrep -f "$pattern" 2>/dev/null || true)
-  if [ -n "$pids" ]; then
-    echo "  Killing processes matching '$pattern': $pids"
-    echo "$pids" | xargs kill 2>/dev/null || true
-  fi
+echo "=== Restarting kalshibot3 ==="
+# `systemctl restart` is atomic per unit: stop, wait, start. No race window,
+# no chance of a duplicate child being spawned. If a unit was already in a
+# failed state from a crash loop, reset-failed clears that first so restart
+# can actually proceed.
+systemctl reset-failed "${UNITS[@]}" 2>/dev/null || true
+systemctl restart "${UNITS[@]}"
+
+# Give the dashboard's ExecStartPre (initial npm run build) a moment to
+# complete before we report status — otherwise the dashboard shows as
+# "activating" and the summary looks misleading.
+sleep 4
+
+echo ""
+echo "=== Status ==="
+for unit in "${UNITS[@]}"; do
+  state=$(systemctl is-active "$unit" 2>&1 || true)
+  pid=$(systemctl show -p MainPID --value "$unit")
+  printf "  %-32s %-12s PID=%s\n" "$unit" "$state" "$pid"
 done
 
-sleep 2
-
-# Force-kill survivors
-for pattern in "uvicorn.*src\.main:app" "vite build" "vite.*--port"; do
-  remaining=$(pgrep -f "$pattern" 2>/dev/null || true)
-  if [ -n "$remaining" ]; then
-    echo "  Force-killing stubborn processes: $remaining"
-    echo "$remaining" | xargs kill -9 2>/dev/null || true
-  fi
-done
-sleep 1
-
-# Free backend port if anything still holds it
-port_pid=$(lsof -ti :$BACKEND_PORT 2>/dev/null || true)
-if [ -n "$port_pid" ]; then
-  echo "  Port $BACKEND_PORT still held by PID $port_pid — killing"
-  echo "$port_pid" | xargs kill -9 2>/dev/null || true
-  sleep 1
+echo ""
+echo "=== Sanity check: one backend process ==="
+count=$(pgrep -fc "uvicorn src\.main:app" || true)
+echo "  uvicorn count: $count (expected: 1)"
+if [ "$count" != "1" ]; then
+  echo "  WARNING — expected exactly 1 uvicorn process"
 fi
-
-port_pid=$(lsof -ti :$BACKEND_PORT 2>/dev/null || true)
-if [ -n "$port_pid" ]; then
-  echo "FATAL: Port $BACKEND_PORT still in use by PID $port_pid after cleanup."
-  exit 1
-fi
-echo "  All clear."
 
 echo ""
-echo "=== Starting backend ==="
-cd backend
-# Run uvicorn directly so $! captures the actual PID, not a shell wrapper.
-.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port $BACKEND_PORT --workers 1 \
-  >> "../$BACKEND_LOG" 2>&1 &
-BACKEND_PID=$!
-cd ..
-echo "$BACKEND_PID" > backend.pid
-echo "  Backend started, PID: $BACKEND_PID"
-
-echo ""
-echo "=== Building dashboard (initial) ==="
-# Production build into dashboard/dist. nginx serves this directory at
-# https://lutz.bot. We always do one clean build at launch so the served
-# bundle reflects current source on the first request; the watcher below
-# then rebuilds on every save.
-cd dashboard
-npm run build >> "../$DASHBOARD_LOG" 2>&1
-build_status=$?
-cd ..
-if [ $build_status -ne 0 ]; then
-  echo "FATAL: dashboard initial build failed. See $DASHBOARD_LOG."
-  exit 1
-fi
-echo "  Initial build OK (dashboard/dist/)"
-
-echo ""
-echo "=== Starting dashboard watcher ==="
-# `vite build --watch` rebuilds dashboard/dist on every source change. No dev
-# server, no HMR — nginx serves the static dist directly at https://lutz.bot.
-# Browser reload picks up changes.
-cd dashboard
-npm run watch >> "../$DASHBOARD_LOG" 2>&1 &
-DASHBOARD_PID=$!
-cd ..
-echo "$DASHBOARD_PID" > dashboard.pid
-echo "  Dashboard started, PID: $DASHBOARD_PID"
-
-# === POST-LAUNCH VERIFICATION ===
-echo ""
-echo "=== Verifying single instance ==="
-sleep 3
-
-if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
-  echo "FATAL: Backend died immediately. Check $BACKEND_LOG."
-  exit 1
-fi
-
-backend_count=$(pgrep -f "uvicorn.*src\.main:app" 2>/dev/null | wc -l | tr -d ' ')
-if [ "$backend_count" -gt 1 ]; then
-  echo "FATAL: $backend_count backend processes detected. Killing all."
-  pgrep -f "uvicorn.*src\.main:app" 2>/dev/null | xargs kill -9 2>/dev/null || true
-  rm -f backend.pid
-  echo "  Investigate before restarting."
-  exit 1
-fi
-
-running_pid=$(pgrep -f "uvicorn.*src\.main:app" 2>/dev/null || true)
-if [ "$running_pid" != "$BACKEND_PID" ]; then
-  echo "FATAL: Running PID ($running_pid) != launched PID ($BACKEND_PID). Killing all."
-  pgrep -f "uvicorn.*src\.main:app" 2>/dev/null | xargs kill -9 2>/dev/null || true
-  rm -f backend.pid
-  exit 1
-fi
-
-echo "  Single instance verified: PID $BACKEND_PID"
-
-echo ""
-echo "=== Running ==="
-echo "  App URL:    https://lutz.bot"
-echo "  Backend:    127.0.0.1:$BACKEND_PORT (PID $BACKEND_PID, log: $BACKEND_LOG)"
-echo "  Dashboard:  vite build --watch (PID $DASHBOARD_PID, log: $DASHBOARD_LOG)"
+echo "=== App ==="
+echo "  URL:  https://lutz.bot"
+echo "  Logs: journalctl -u kalshibot3 -f"
+echo "        journalctl -u kalshibot3-dashboard -f"
