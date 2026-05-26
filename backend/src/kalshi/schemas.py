@@ -89,6 +89,12 @@ class Market(WireModelLoose):
     close_time: datetime | None = None
     expiration_time: datetime | None = None
     expected_expiration_time: datetime | None = None
+    occurrence_datetime: datetime | None = None
+    """The real event start time (kickoff for sports markets). Verified
+    present on KXWCGAME, KXLIGUE1GAME, KXINTLFRIENDLYGAME, KXMLSGAME — the
+    /events?with_nested_markets payload carries this on every market.
+    Use this as the kickoff source; the ticker date is a noon-UTC midday
+    proxy and is unreliable for evening kickoffs."""
 
     settlement_value: int | None = Field(default=None, ge=0, le=100)
     result: Literal["yes", "no", "", "scalar"] | None = None

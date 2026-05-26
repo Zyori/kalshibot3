@@ -120,10 +120,14 @@ class MarketFeed:
 def _classify(market: FeedMarket, now: datetime) -> str | None:
     """Bucket assignment. Returns None to drop the market from the feed.
 
-    Heuristic: Kalshi event listings don't always carry a reliable open_time
-    (and close_time can be set to the tournament's end rather than the
-    match's settlement window), so we parse the kickoff date from the
-    ticker itself when possible.
+    Kickoff source priority:
+      1. market.open_time (populated upstream from Kalshi's
+         occurrence_datetime — real kickoff, accurate to the minute)
+      2. ticker-date noon-UTC midday proxy (±12h fallback for any market
+         that's missing occurrence_datetime; rare)
+      3. close_time (last-resort fallback for futures/derivatives with
+         no per-match date)
+
       LIVE       kickoff has passed but within LIVE_WINDOW
       UPCOMING   kickoff in the future, within UPCOMING_HORIZON
       RECENT     status terminal AND close_time within RECENT_HORIZON
@@ -138,9 +142,11 @@ def _classify(market: FeedMarket, now: datetime) -> str | None:
     if market.status != "active":
         return None
 
-    kickoff = _kickoff_from_ticker(market.ticker)
+    # Prefer the precise kickoff if Kalshi gave us one; otherwise fall
+    # back to the noon-UTC ticker-date proxy.
+    kickoff = market.open_time or _kickoff_from_ticker(market.ticker)
     if kickoff is not None:
-        market.open_time = kickoff  # populate so the wire format carries it
+        market.open_time = kickoff
         delta_from_kickoff = now - kickoff
         if timedelta(0) <= delta_from_kickoff <= LIVE_WINDOW:
             return "live"
@@ -148,8 +154,7 @@ def _classify(market: FeedMarket, now: datetime) -> str | None:
             return "upcoming"
         return None
 
-    # Fallback: no date in the ticker (rare — usually futures/derivatives).
-    # Use close_time as a weak proxy, with a tight live window.
+    # Fallback: no date anywhere (very rare — usually futures/derivatives).
     if close_t is not None and close_t > now and (close_t - now) <= UPCOMING_HORIZON:
         return "upcoming"
     return None
@@ -166,8 +171,10 @@ def _event_to_feed_markets(event: Event, series: str) -> list[FeedMarket]:
             market_title=m.title,
             series=series,
             status=m.status,
-            open_time=None,  # Event.markets doesn't carry open_time directly;
-                             # close_time is the relevant signal for filtering.
+            # Kalshi populates occurrence_datetime with real kickoff on every
+            # soccer market — that's the source of truth. _classify() falls
+            # back to the ticker-date noon-UTC proxy only when missing.
+            open_time=m.occurrence_datetime,
             close_time=m.close_time,
             volume=m.volume,
         ))

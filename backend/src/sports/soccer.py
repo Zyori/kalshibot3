@@ -79,6 +79,7 @@ SOCCER_GAME_SERIES: tuple[str, ...] = (
     "KXCLUBWCGAME",       # Club World Cup match markets
     "KXFIFAGAME",         # FIFA friendlies / other
     "KXFIFAUSPULLGAME",   # FIFA US (CONCACAF) pull game
+    "KXINTLFRIENDLYGAME", # International friendlies (national team)
     # Other / niche
     "KXBALLERLEAGUEGAME", # Baller League (6-a-side)
 )
