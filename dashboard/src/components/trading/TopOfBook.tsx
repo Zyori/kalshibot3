@@ -1,5 +1,6 @@
 import PriceCell from './PriceCell'
 import type { MarketBook } from '../../contexts/WebSocketProvider'
+import { bestAsk, bestBid } from '../../lib/book'
 
 /**
  * Big top-of-book strip. Shows YES bid/ask and NO bid/ask, with flashes
@@ -9,10 +10,10 @@ import type { MarketBook } from '../../contexts/WebSocketProvider'
  * Spread is shown small under each side as a sanity-check at a glance.
  */
 export default function TopOfBook({ book }: { book: MarketBook | undefined }) {
-  const yesBid = book ? bestPrice(book.yes, 'max') : null
-  const yesAsk = book ? bestPrice(book.yes, 'min') : null
-  const noBid = book ? bestPrice(book.no, 'max') : null
-  const noAsk = book ? bestPrice(book.no, 'min') : null
+  const yesBid = bestBid(book, 'yes')
+  const yesAsk = bestAsk(book, 'yes')
+  const noBid = bestBid(book, 'no')
+  const noAsk = bestAsk(book, 'no')
 
   return (
     <div className="grid gap-3 md:grid-cols-2">
@@ -67,8 +68,3 @@ function Field({
   )
 }
 
-function bestPrice(side: Record<number, number>, mode: 'min' | 'max'): number | null {
-  const keys = Object.keys(side).map(Number)
-  if (keys.length === 0) return null
-  return mode === 'min' ? Math.min(...keys) : Math.max(...keys)
-}

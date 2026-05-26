@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import type { MarketBook } from '../../contexts/WebSocketProvider'
+import { bestAsk, bestBid } from '../../lib/book'
 
 type Side = 'yes' | 'no'
 type Action = 'buy' | 'sell'
@@ -231,19 +232,6 @@ function quickPrice(book: MarketBook | undefined, side: Side, action: Action): n
   }
   const bid = bestBid(book, side)
   return bid !== null ? Math.max(1, bid - 1) : null
-}
-
-function bestBid(book: MarketBook, side: Side): number | null {
-  const sideMap = side === 'yes' ? book.yes : book.no
-  const keys = Object.keys(sideMap).map(Number)
-  return keys.length ? Math.max(...keys) : null
-}
-
-function bestAsk(book: MarketBook, side: Side): number | null {
-  // Kalshi: best_ask for YES = 100 - best_bid for NO.
-  const otherSide = side === 'yes' ? book.no : book.yes
-  const keys = Object.keys(otherSide).map(Number)
-  return keys.length ? 100 - Math.max(...keys) : null
 }
 
 // === sub-components ===

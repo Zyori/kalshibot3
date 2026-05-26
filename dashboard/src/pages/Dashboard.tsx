@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
-import { outcomeLabel } from '../lib/format'
+import { formatET, outcomeLabel } from '../lib/format'
 
 type FeedMarket = {
   ticker: string
@@ -152,7 +152,7 @@ function Section({
 }
 
 function MarketRow({ market, compact }: { market: FeedMarket; compact: boolean }) {
-  const time = market.open_time ? formatKickoff(market.open_time) : ''
+  const time = formatET(market.open_time)
   return (
     <li>
       <Link
@@ -189,17 +189,6 @@ function Price({ yes_bid, yes_ask }: { yes_bid: number | null; yes_ask: number |
       <span className="ml-1 text-text-muted">¢</span>
     </span>
   )
-}
-
-function formatKickoff(iso: string): string {
-  const dt = new Date(iso)
-  const now = new Date()
-  const sameYear = dt.getFullYear() === now.getFullYear()
-  return dt.toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: sameYear ? undefined : 'numeric',
-  })
 }
 
 function SectionMessage({

@@ -9,6 +9,8 @@ import {
   YAxis,
 } from 'recharts'
 
+import { formatET } from '../../lib/format'
+
 type Trade = {
   trade_id: string
   ts: string
@@ -91,7 +93,7 @@ export default function PriceHistoryChart({ ticker }: { ticker: string }) {
                 }}
                 labelFormatter={(idx) => {
                   const t = data.trades[idx as number]
-                  return t ? new Date(t.ts).toLocaleString() : ''
+                  return t ? formatET(t.ts) : ''
                 }}
                 formatter={(value) => [`${value}¢`, 'YES price']}
               />
