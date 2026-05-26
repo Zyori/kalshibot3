@@ -18,7 +18,7 @@ change to the upstream format affects exactly one file.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -107,21 +107,62 @@ class MarketsResponse(WireModelLoose):
 
 
 class OrderbookLevel(WireModelLoose):
-    """One side's depth at one price. Tuple-style in the wire format."""
+    """One side's depth at one price. Cents + integer quantity, app-internal."""
 
-    price: int = Field(ge=1, le=99)
+    price_cents: int = Field(ge=1, le=99)
     quantity: int = Field(ge=0)
 
 
 class Orderbook(WireModelLoose):
-    """`GET /markets/{ticker}/orderbook` — bid/ask depth in cents."""
+    """Parsed orderbook: bids on each side, integer cents + integer quantity.
+
+    Kalshi's REST orderbook wire format is `orderbook_fp` containing
+    `yes_dollars` and `no_dollars`, each a list of `[price_str, qty_str]`
+    where prices are dollar-decimal strings ("0.0100" = 1¢, "0.6600" = 66¢)
+    and quantities are dollar-amount strings of total notional at that level.
+
+    We translate that into `OrderbookLevel(price_cents, quantity)` rows in
+    the model validator below so the rest of the codebase only sees cents
+    and integer counts — matching the LiveState shape that WS deltas feed.
+    """
 
     yes: list[OrderbookLevel] = Field(default_factory=list)
     no: list[OrderbookLevel] = Field(default_factory=list)
 
 
+def _dollar_str_to_cents(s: str) -> int:
+    """'0.6600' → 66. 'orderbook_fp' uses 4-decimal dollar strings."""
+    return int(round(float(s) * 100))
+
+
+def _level_count_from_notional(price_cents: int, notional_dollars_str: str) -> int:
+    """Kalshi reports level depth as the dollar notional sitting at that price
+    (e.g. "5487.50" at "0.0200" = $5,487.50 worth of contracts at 2¢).
+    Contracts are $1-notional, so the count is notional / price-in-dollars.
+    Round to nearest contract — fractional contracts don't exist on Kalshi."""
+    return int(round(float(notional_dollars_str) / (price_cents / 100.0)))
+
+
 class OrderbookResponse(WireModelLoose):
+    """`GET /markets/{ticker}/orderbook` envelope. The wire payload nests under
+    `orderbook_fp`; we flatten to a typed `Orderbook` for the rest of the app."""
+
     orderbook: Orderbook
+
+    @classmethod
+    def model_validate(cls, obj: Any, **kwargs: Any) -> "OrderbookResponse":
+        if isinstance(obj, dict) and "orderbook_fp" in obj and "orderbook" not in obj:
+            fp = obj["orderbook_fp"] or {}
+            yes_levels = []
+            for price_str, qty_str in (fp.get("yes_dollars") or []):
+                pc = _dollar_str_to_cents(price_str)
+                yes_levels.append({"price_cents": pc, "quantity": _level_count_from_notional(pc, qty_str)})
+            no_levels = []
+            for price_str, qty_str in (fp.get("no_dollars") or []):
+                pc = _dollar_str_to_cents(price_str)
+                no_levels.append({"price_cents": pc, "quantity": _level_count_from_notional(pc, qty_str)})
+            obj = {"orderbook": {"yes": yes_levels, "no": no_levels}}
+        return super().model_validate(obj, **kwargs)
 
 
 # === Portfolio: positions, fills, orders ===
