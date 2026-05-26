@@ -47,105 +47,103 @@ export default function OrderPanel({
 }) {
   const queryClient = useQueryClient()
   const [side, setSide] = useState<Side>('yes')
-  const [action, setAction] = useState<Action>('buy')
   const [count, setCount] = useState<number>(1)
   const [price, setPrice] = useState<number>(50)
   const [postOnly, setPostOnly] = useState(false)
-  const [loudReasons, setLoudReasons] = useState<string[] | null>(null)
+  const [loudReasons, setLoudReasons] = useState<{ reasons: string[]; action: Action } | null>(null)
   const [placedNote, setPlacedNote] = useState<string | null>(null)
 
-  // Auto-track best price when the user hasn't manually overridden price.
-  const [priceTouched, setPriceTouched] = useState(false)
-  const recommendedPrice = recommendPrice(book, side, action)
+  // Initialize the typed price to the YES ask when the book first arrives,
+  // then leave it alone — the user can retype freely and we won't fight them.
+  // The quick-action row above always shows the live market price, so users
+  // who want "current market" don't need this field to track.
+  const [priceInitialized, setPriceInitialized] = useState(false)
+  const seedPrice = bestAsk(book, side)
   useEffect(() => {
-    if (!priceTouched && recommendedPrice !== null) setPrice(recommendedPrice)
-  }, [recommendedPrice, priceTouched])
+    if (!priceInitialized && seedPrice !== null) {
+      setPrice(seedPrice)
+      setPriceInitialized(true)
+    }
+  }, [seedPrice, priceInitialized])
 
-  const previewBody = { ticker, side, action, count, price_cents: price, post_only: postOnly }
-  const preview = useQuery<PreviewResponse>({
-    queryKey: ['preview', ticker, side, action, count, price, postOnly],
-    queryFn: async () => {
-      const res = await fetch('/api/orders/preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(previewBody),
-      })
-      if (!res.ok) throw new Error(`preview: ${res.status}`)
-      return res.json()
-    },
-    // Brief stale-time so rapid typing doesn't hammer the backend.
-    staleTime: 750,
-  })
+  // Preview is keyed by action too. We run a preview per direction so each
+  // submit button can show its own warning state without an extra round-trip
+  // at click time. Both queries are debounced by staleTime.
+  const previewBuy = useOrderPreview(ticker, side, 'buy', count, price, postOnly)
+  const previewSell = useOrderPreview(ticker, side, 'sell', count, price, postOnly)
 
-  const place = useMutation<PlaceResponse, Error, { acknowledged_loud?: boolean }>({
-    mutationFn: async ({ acknowledged_loud = false }) => {
+  const place = useMutation<PlaceResponse, Error, { action: Action; acknowledged_loud?: boolean }>({
+    mutationFn: async ({ action, acknowledged_loud = false }) => {
+      const body = { ticker, side, action, count, price_cents: price, post_only: postOnly, acknowledged_loud }
       const res = await fetch('/api/orders/place', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...previewBody, acknowledged_loud }),
+        body: JSON.stringify(body),
       })
       if (res.status === 409) {
-        const body = await res.json()
-        setLoudReasons(body.detail?.reasons ?? ['Order requires confirmation.'])
+        const errBody = await res.json()
+        setLoudReasons({
+          reasons: errBody.detail?.reasons ?? ['Order requires confirmation.'],
+          action,
+        })
         throw new Error('loud_confirm')
       }
       if (!res.ok) {
-        const body = await res.text()
-        throw new Error(body || `place: ${res.status}`)
+        const text = await res.text()
+        throw new Error(text || `place: ${res.status}`)
       }
       return res.json()
     },
     onSuccess: (resp) => {
       setLoudReasons(null)
+      const filled = resp.yes_price_cents ?? resp.no_price_cents
       setPlacedNote(
-        `Placed ${resp.count} ${resp.side.toUpperCase()} @ ${resp.yes_price_cents ?? resp.no_price_cents}¢ — order ${resp.kalshi_order_id.slice(0, 8)} (${resp.status})`
+        `Placed ${resp.count} ${resp.side.toUpperCase()} @ ${filled}¢ — order ${resp.kalshi_order_id.slice(0, 8)} (${resp.status})`
       )
       queryClient.invalidateQueries({ queryKey: ['ledger'] })
       queryClient.invalidateQueries({ queryKey: ['open_orders'] })
     },
   })
 
-  const placeButtonDisabled =
-    place.isPending ||
-    !preview.data ||
-    preview.data.verdict === 'hard_refuse'
+  const quickBuy = quickPrice(book, side, 'buy')
+  const quickSell = quickPrice(book, side, 'sell')
 
   return (
     <div className="rounded-lg border border-border bg-bg-card p-4">
       <h3 className="mb-3 text-sm font-semibold text-text">Place order</h3>
 
-      <div className="mb-3 grid grid-cols-2 gap-2">
+      <div className="mb-3">
         <Toggle value={side} onChange={setSide}
           options={[{ label: 'YES', value: 'yes' }, { label: 'NO', value: 'no' }]} />
-        <Toggle value={action} onChange={setAction}
-          options={[{ label: 'Buy', value: 'buy' }, { label: 'Sell', value: 'sell' }]} />
       </div>
 
       <div className="mb-3 grid grid-cols-2 gap-2">
         <QuickButton
-          label={`Buy ${side.toUpperCase()} @ ${quickPrice(book, side, 'buy') ?? '—'}¢`}
-          disabled={quickPrice(book, side, 'buy') === null || place.isPending}
+          label={`Buy ${side.toUpperCase()} now`}
+          subLabel={quickBuy !== null ? `@ ${quickBuy}¢` : 'no ask'}
+          disabled={quickBuy === null || place.isPending}
           onClick={() => {
-            const p = quickPrice(book, side, 'buy')
-            if (p === null) return
-            setAction('buy')
-            setPrice(p)
-            setPriceTouched(true)
-            place.mutate({})
+            if (quickBuy === null) return
+            setPrice(quickBuy)
+            setPriceInitialized(true)
+            place.mutate({ action: 'buy' })
           }}
         />
         <QuickButton
-          label={`Sell ${side.toUpperCase()} @ ${quickPrice(book, side, 'sell') ?? '—'}¢`}
-          disabled={quickPrice(book, side, 'sell') === null || place.isPending}
+          label={`Sell ${side.toUpperCase()} now`}
+          subLabel={quickSell !== null ? `@ ${quickSell}¢` : 'no bid'}
+          disabled={quickSell === null || place.isPending}
           onClick={() => {
-            const p = quickPrice(book, side, 'sell')
-            if (p === null) return
-            setAction('sell')
-            setPrice(p)
-            setPriceTouched(true)
-            place.mutate({})
+            if (quickSell === null) return
+            setPrice(quickSell)
+            setPriceInitialized(true)
+            place.mutate({ action: 'sell' })
           }}
         />
+      </div>
+
+      <div className="mb-2 border-t border-border pt-3 text-xs text-text-muted">
+        Or place a limit at your own price:
       </div>
 
       <div className="mb-3 grid grid-cols-2 gap-3">
@@ -153,7 +151,7 @@ export default function OrderPanel({
         <NumberField
           label="Price (¢)"
           value={price}
-          onChange={(v) => { setPrice(v); setPriceTouched(true) }}
+          onChange={(v) => { setPrice(v); setPriceInitialized(true) }}
           min={1}
           max={99}
         />
@@ -168,28 +166,36 @@ export default function OrderPanel({
         post-only (refuse to cross spread)
       </label>
 
-      <div className="mb-3 flex items-baseline justify-between border-t border-border pt-3 text-sm">
-        <span className="text-text-muted">Total cost</span>
+      <div className="mb-3 flex items-baseline justify-between text-sm">
+        <span className="text-text-muted">Total</span>
         <span className="font-mono tabular-nums text-text">
           {count} × {price}¢ = ${((count * price) / 100).toFixed(2)}
         </span>
       </div>
 
-      {preview.data && preview.data.reasons.length > 0 && (
-        <ReasonsList
-          reasons={preview.data.reasons}
-          tone={preview.data.verdict === 'loud_confirm' ? 'loud' : 'soft'}
-        />
-      )}
+      {/* The preview reasons that matter most are for the direction the user
+          is *likely* to click. We surface both directions' reasons stacked,
+          tagged with their action, so the typed-price flow never hides a
+          sanity warning. Soft tone is reserved for non-blocking advisories. */}
+      <PreviewReasons direction="buy" preview={previewBuy.data} />
+      <PreviewReasons direction="sell" preview={previewSell.data} />
 
-      <button
-        type="button"
-        onClick={() => place.mutate({})}
-        disabled={placeButtonDisabled}
-        className="w-full rounded-md border border-action bg-action px-3 py-2 text-sm font-semibold text-bg hover:opacity-90 disabled:opacity-50"
-      >
-        {place.isPending ? 'Placing…' : 'Place limit order'}
-      </button>
+      <div className="grid grid-cols-2 gap-2">
+        <PlaceButton
+          label="Place Buy"
+          price={price}
+          disabled={place.isPending || previewBuy.data?.verdict === 'hard_refuse'}
+          tone="buy"
+          onClick={() => place.mutate({ action: 'buy' })}
+        />
+        <PlaceButton
+          label="Place Sell"
+          price={price}
+          disabled={place.isPending || previewSell.data?.verdict === 'hard_refuse'}
+          tone="sell"
+          onClick={() => place.mutate({ action: 'sell' })}
+        />
+      </div>
 
       {placedNote && (
         <div className="mt-3 rounded-md border border-gain bg-bg p-2 text-xs text-gain">
@@ -204,10 +210,10 @@ export default function OrderPanel({
 
       {loudReasons !== null && (
         <ConfirmDialog
-          reasons={loudReasons}
+          reasons={loudReasons.reasons}
           onCancel={() => setLoudReasons(null)}
           onConfirm={() => {
-            place.mutate({ acknowledged_loud: true })
+            place.mutate({ action: loudReasons.action, acknowledged_loud: true })
           }}
         />
       )}
@@ -215,13 +221,30 @@ export default function OrderPanel({
   )
 }
 
-// === helpers ===
-
-function recommendPrice(book: MarketBook | undefined, side: Side, action: Action): number | null {
-  if (!book) return null
-  if (action === 'buy') return bestAsk(book, side)
-  return bestBid(book, side)
+function useOrderPreview(
+  ticker: string,
+  side: Side,
+  action: Action,
+  count: number,
+  price: number,
+  postOnly: boolean,
+) {
+  return useQuery<PreviewResponse>({
+    queryKey: ['preview', ticker, side, action, count, price, postOnly],
+    queryFn: async () => {
+      const res = await fetch('/api/orders/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker, side, action, count, price_cents: price, post_only: postOnly }),
+      })
+      if (!res.ok) throw new Error(`preview: ${res.status}`)
+      return res.json()
+    },
+    staleTime: 750,
+  })
 }
+
+// === helpers ===
 
 function quickPrice(book: MarketBook | undefined, side: Side, action: Action): number | null {
   /** "Buy now" = best_ask + 1 to cross; "Sell now" = best_bid - 1. */
@@ -288,9 +311,10 @@ function NumberField({
 }
 
 function QuickButton({
-  label, onClick, disabled,
+  label, subLabel, onClick, disabled,
 }: {
   label: string
+  subLabel: string
   onClick: () => void
   disabled: boolean
 }) {
@@ -299,18 +323,56 @@ function QuickButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="rounded-md border border-action bg-bg px-3 py-2 text-xs font-mono text-action hover:bg-bg-hover disabled:opacity-40"
+      className="flex flex-col items-center rounded-md border border-action bg-bg px-3 py-2 text-action hover:bg-bg-hover disabled:opacity-40"
     >
-      {label}
+      <span className="text-sm font-semibold">{label}</span>
+      <span className="text-xs font-mono tabular-nums text-text-muted">{subLabel}</span>
     </button>
   )
 }
 
-function ReasonsList({ reasons, tone }: { reasons: string[]; tone: 'soft' | 'loud' }) {
-  const color = tone === 'loud' ? 'border-loss text-loss' : 'border-action text-action'
+function PlaceButton({
+  label, price, onClick, disabled, tone,
+}: {
+  label: string
+  price: number
+  onClick: () => void
+  disabled: boolean
+  tone: 'buy' | 'sell'
+}) {
+  // Use the dashboard's semantic palette: green for buy (gain side),
+  // red for sell (loss side) — matches the rest of the app.
+  const cls = tone === 'buy'
+    ? 'border-gain bg-gain text-bg'
+    : 'border-loss bg-loss text-bg'
   return (
-    <ul className={`mb-3 space-y-1 rounded-md border ${color} bg-bg p-2 text-xs`}>
-      {reasons.map((r, i) => <li key={i}>⚠ {r}</li>)}
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded-md border px-3 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40 ${cls}`}
+    >
+      {label} @ {price}¢
+    </button>
+  )
+}
+
+function PreviewReasons({
+  direction, preview,
+}: {
+  direction: 'buy' | 'sell'
+  preview: PreviewResponse | undefined
+}) {
+  if (!preview || preview.reasons.length === 0) return null
+  const tone = preview.verdict === 'loud_confirm' || preview.verdict === 'hard_refuse'
+    ? 'border-loss text-loss'
+    : 'border-action text-action'
+  return (
+    <ul className={`mb-2 space-y-1 rounded-md border ${tone} bg-bg p-2 text-xs`}>
+      <li className="font-semibold uppercase tracking-wide opacity-70">
+        {direction} warnings
+      </li>
+      {preview.reasons.map((r, i) => <li key={i}>⚠ {r}</li>)}
     </ul>
   )
 }
