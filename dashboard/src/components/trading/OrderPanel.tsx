@@ -53,18 +53,16 @@ export default function OrderPanel({
   const [loudReasons, setLoudReasons] = useState<{ reasons: string[]; action: Action } | null>(null)
   const [placedNote, setPlacedNote] = useState<string | null>(null)
 
-  // Initialize the typed price to the YES ask when the book first arrives,
-  // then leave it alone — the user can retype freely and we won't fight them.
-  // The quick-action row above always shows the live market price, so users
-  // who want "current market" don't need this field to track.
-  const [priceInitialized, setPriceInitialized] = useState(false)
-  const seedPrice = bestAsk(book, side)
+  // Snap the typed price to the current ask whenever the user picks a
+  // side (or when the book first arrives). After the user manually edits
+  // the price field, we stop fighting them — typing a custom price marks
+  // it "touched" and we leave it alone until they click YES/NO again, which
+  // resets the touched flag and re-snaps to the new side's ask.
+  const [priceTouched, setPriceTouched] = useState(false)
+  const sideAsk = bestAsk(book, side)
   useEffect(() => {
-    if (!priceInitialized && seedPrice !== null) {
-      setPrice(seedPrice)
-      setPriceInitialized(true)
-    }
-  }, [seedPrice, priceInitialized])
+    if (!priceTouched && sideAsk !== null) setPrice(sideAsk)
+  }, [sideAsk, priceTouched])
 
   // Preview is keyed by action too. We run a preview per direction so each
   // submit button can show its own warning state without an extra round-trip
@@ -113,7 +111,7 @@ export default function OrderPanel({
       <h3 className="mb-3 text-sm font-semibold text-text">Place order</h3>
 
       <div className="mb-3">
-        <Toggle value={side} onChange={setSide}
+        <Toggle value={side} onChange={(v) => { setSide(v); setPriceTouched(false) }}
           options={[{ label: 'YES', value: 'yes' }, { label: 'NO', value: 'no' }]} />
       </div>
 
@@ -125,7 +123,7 @@ export default function OrderPanel({
           onClick={() => {
             if (quickBuy === null) return
             setPrice(quickBuy)
-            setPriceInitialized(true)
+            setPriceTouched(true)
             place.mutate({ action: 'buy' })
           }}
         />
@@ -136,7 +134,7 @@ export default function OrderPanel({
           onClick={() => {
             if (quickSell === null) return
             setPrice(quickSell)
-            setPriceInitialized(true)
+            setPriceTouched(true)
             place.mutate({ action: 'sell' })
           }}
         />
@@ -151,7 +149,7 @@ export default function OrderPanel({
         <NumberField
           label="Price (¢)"
           value={price}
-          onChange={(v) => { setPrice(v); setPriceInitialized(true) }}
+          onChange={(v) => { setPrice(v); setPriceTouched(true) }}
           min={1}
           max={99}
         />
