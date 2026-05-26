@@ -1,5 +1,10 @@
 import { Link, useParams } from 'react-router'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect } from 'react'
+
+import DepthLadder from '../components/trading/DepthLadder'
+import PriceHistoryChart from '../components/trading/PriceHistoryChart'
+import TopOfBook from '../components/trading/TopOfBook'
 import type { MarketBook } from '../contexts/WebSocketProvider'
 
 type MarketDetail = {
@@ -15,17 +20,24 @@ type MarketDetail = {
 }
 
 /**
- * Placeholder market page. Chunk 11 builds the full live book + chart +
- * order panel here; for now we just confirm the cold-bootstrap REST call
- * works and show whatever LiveState has on file.
+ * One market's live view. Top-of-book + depth ladder + price history chart.
+ *
+ * Data flow:
+ *   1. On mount, fetch /api/markets/{ticker} once — this also asks the
+ *      backend to start subscribing to the WS orderbook for this ticker.
+ *   2. The REST response is seeded into ['book', ticker] so the page has
+ *      something to render immediately.
+ *   3. After that, WebSocketProvider streams orderbook_delta events into
+ *      the same cache key. Components below read straight from the cache
+ *      and rerender automatically.
  */
 export default function MarketView() {
   const { ticker = '' } = useParams<{ ticker: string }>()
   const decoded = decodeURIComponent(ticker)
+  const queryClient = useQueryClient()
 
-  // Cold bootstrap from REST. The WS provider will populate the ['book',
-  // ticker] cache as deltas arrive; chunk 11 reads from there instead.
-  const { data, isPending, isError, error } = useQuery<MarketDetail>({
+  // Cold bootstrap.
+  const { data: detail, isPending, isError, error } = useQuery<MarketDetail>({
     queryKey: ['market', decoded],
     queryFn: async () => {
       const res = await fetch(`/api/markets/${encodeURIComponent(decoded)}`)
@@ -35,75 +47,86 @@ export default function MarketView() {
       }
       return res.json()
     },
+    // Refetch on a longer cadence as a backstop in case a WS message was
+    // dropped between snapshot and delta. Deltas are the primary feed.
+    refetchInterval: 60_000,
   })
 
-  // Read the live book from the WS cache too — once chunk 11 lands this
-  // becomes the primary path.
-  const liveBook = useQuery<MarketBook | undefined>({
-    queryKey: ['book', decoded],
-    queryFn: async () => undefined, // never fetched; populated by WS
-    enabled: false,
-    staleTime: Infinity,
-  }).data
+  // Seed the book cache so the first paint shows actual liquidity instead
+  // of waiting for the first WS message. WS updates supersede this.
+  useEffect(() => {
+    if (!detail) return
+    const seed: MarketBook = {
+      ticker: detail.ticker,
+      yes: Object.fromEntries(detail.yes.map((l) => [l.price, l.qty])),
+      no: Object.fromEntries(detail.no.map((l) => [l.price, l.qty])),
+    }
+    // Only seed if there's nothing in the cache yet — don't clobber WS
+    // updates that arrived faster than the REST round-trip.
+    const existing = queryClient.getQueryData<MarketBook>(['book', decoded])
+    if (!existing) {
+      queryClient.setQueryData(['book', decoded], seed)
+    }
+  }, [detail, decoded, queryClient])
+
+  // Read from the live cache.
+  const liveBook = queryClient.getQueryData<MarketBook>(['book', decoded])
 
   return (
     <div className="space-y-4">
-      <header>
-        <Link to="/" className="text-xs text-text-muted hover:text-text">← Markets</Link>
-        <h2 className="mt-2 font-mono text-lg text-text">{decoded}</h2>
+      <header className="flex items-baseline justify-between">
+        <div>
+          <Link to="/" className="text-xs text-text-muted hover:text-text">
+            ← Markets
+          </Link>
+          <h2 className="mt-1 font-mono text-base text-text">{decoded}</h2>
+          {detail && (
+            <p className="mt-1 text-xs text-text-muted">
+              Status: {detail.status}
+              {detail.last_update_ago_s !== null && (
+                <span> · last book update {detail.last_update_ago_s.toFixed(1)}s ago</span>
+              )}
+            </p>
+          )}
+        </div>
       </header>
 
-      {isPending && <div className="text-sm text-text-muted">Loading…</div>}
-      {isError && (
-        <div className="rounded-md border border-loss bg-bg-card p-4 text-sm text-loss">
-          {String(error)}
-        </div>
-      )}
+      {isPending && <Box>Loading…</Box>}
+      {isError && <Box tone="loss">{String(error)}</Box>}
 
-      {data && (
-        <div className="grid gap-4 md:grid-cols-2">
-          <BookCard title="YES side" levels={liveBook ? sideToList(liveBook.yes) : data.yes} />
-          <BookCard title="NO side"  levels={liveBook ? sideToList(liveBook.no)  : data.no}  />
-        </div>
-      )}
+      {detail && (
+        <>
+          <TopOfBook book={liveBook} />
 
-      <div className="rounded-md border border-border bg-bg-card p-4 text-sm text-text-muted">
-        Order panel + chart land in chunk 11. For now: this confirms the live
-        book is reaching the browser. Watch the YES/NO levels update — once
-        the WS pipes a delta, the lists rerender without a refetch.
-      </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <DepthLadder title="YES depth" side={liveBook?.yes ?? {}} />
+            <DepthLadder title="NO depth"  side={liveBook?.no  ?? {}} />
+          </div>
+
+          <PriceHistoryChart ticker={decoded} />
+
+          <Box>
+            Order panel lands in chunk 12. Until then, this page is
+            read-only — the book and chart should update live without a
+            page reload.
+          </Box>
+        </>
+      )}
     </div>
   )
 }
 
-function sideToList(side: Record<number, number>): Array<{ price: number; qty: number }> {
-  return Object.entries(side)
-    .map(([p, q]) => ({ price: Number(p), qty: q }))
-    .sort((a, b) => b.price - a.price)
-}
-
-function BookCard({
-  title,
-  levels,
+function Box({
+  children,
+  tone = 'muted',
 }: {
-  title: string
-  levels: Array<{ price: number; qty: number }>
+  children: React.ReactNode
+  tone?: 'muted' | 'loss'
 }) {
+  const cls = tone === 'loss' ? 'text-loss' : 'text-text-muted'
   return (
-    <div className="rounded-md border border-border bg-bg-card p-4">
-      <h3 className="mb-2 text-sm font-semibold text-text">{title}</h3>
-      {levels.length === 0 ? (
-        <p className="text-xs text-text-muted">No resting liquidity.</p>
-      ) : (
-        <ul className="space-y-1 font-mono text-xs tabular-nums text-text">
-          {levels.slice(0, 8).map((l) => (
-            <li key={l.price} className="flex justify-between">
-              <span>{l.price}¢</span>
-              <span className="text-text-muted">{l.qty.toLocaleString()}</span>
-            </li>
-          ))}
-        </ul>
-      )}
+    <div className={`rounded-md border border-border bg-bg-card p-4 text-sm ${cls}`}>
+      {children}
     </div>
   )
 }

@@ -216,6 +216,26 @@ class KalshiRestClient:
         )
         return OrderbookResponse.model_validate(data).orderbook
 
+    async def get_trades(
+        self,
+        ticker: str,
+        *,
+        limit: int = 200,
+        cursor: str | None = None,
+        min_ts: int | None = None,
+    ) -> dict[str, Any]:
+        """Recent trades for one market. Used to render the price history chart.
+
+        Kalshi returns prices as dollar strings; conversion to cents happens
+        at the route boundary (not here) so this raw helper stays small.
+        """
+        params: dict[str, Any] = {"ticker": ticker, "limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        if min_ts is not None:
+            params["min_ts"] = min_ts
+        return await self._request("GET", "/markets/trades", params=params)
+
     async def get_events(
         self,
         *,

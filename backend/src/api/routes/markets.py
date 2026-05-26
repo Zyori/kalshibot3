@@ -14,10 +14,18 @@ from __future__ import annotations
 
 from typing import Any
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, HTTPException, Request
 
 from src.core.logging import get_logger
+from src.kalshi.rest import KalshiRestClient
 from src.sports.soccer import is_soccer_ticker
+
+
+def _dollar_str_to_cents(s: str) -> int:
+    """Kalshi sends "0.84" — convert to 84."""
+    return int(round(float(s) * 100))
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -114,3 +122,43 @@ async def get_market(ticker: str, request: Request) -> dict[str, Any]:
         "no_best_ask": book.no_best_ask,
         "last_update_ago_s": round(age, 2) if age is not None else None,
     }
+
+
+@router.get("/markets/{ticker}/trades")
+async def get_trades(ticker: str, limit: int = 500) -> dict[str, Any]:
+    """Recent trades for the price-history chart.
+
+    We hit Kalshi REST directly (not LiveState — we don't mirror trade
+    history) and normalize the wire format here: dollar strings → cents,
+    timestamps → ISO. Limit is capped at 1000 so the chart load stays fast.
+    """
+    if not is_soccer_ticker(ticker):
+        raise HTTPException(status_code=400, detail=f"{ticker} is not a soccer market")
+
+    limit = max(1, min(limit, 1000))
+    trades: list[dict[str, Any]] = []
+    async with KalshiRestClient() as client:
+        try:
+            data = await client.get_trades(ticker, limit=limit)
+        except Exception as e:  # noqa: BLE001
+            log.warning("get_trades_failed", ticker=ticker, error=str(e)[:200])
+            raise HTTPException(status_code=502, detail=f"kalshi trades fetch failed: {e}") from e
+
+    for t in data.get("trades", []):
+        yes_raw = t.get("yes_price_dollars") or t.get("yes_price")
+        if yes_raw is None:
+            continue
+        yes_cents = _dollar_str_to_cents(yes_raw) if isinstance(yes_raw, str) else int(yes_raw)
+        count_raw = t.get("count_fp") or t.get("count") or 0
+        count = int(float(count_raw))
+        trades.append({
+            "trade_id": t.get("trade_id"),
+            "ts": t.get("created_time"),
+            "yes_price": yes_cents,
+            "count": count,
+            "taker_side": t.get("taker_side"),
+        })
+
+    # Kalshi returns newest first; chart wants oldest first.
+    trades.reverse()
+    return {"ticker": ticker, "trades": trades}
