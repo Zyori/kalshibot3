@@ -76,8 +76,16 @@ export default function MarketView() {
     }
   }, [detail, decoded, queryClient])
 
-  // Read from the live cache.
-  const liveBook = queryClient.getQueryData<MarketBook>(['book', decoded])
+  // Subscribe to the live book cache. Plain getQueryData reads imperatively
+  // and doesn't re-render when the cache updates — without this useQuery
+  // the page would render once with whatever was in the cache at mount
+  // (often nothing) and never update on WS deltas. The queryFn is a no-op
+  // because the cache is populated by the WS provider, not by fetching.
+  const { data: liveBook } = useQuery<MarketBook | undefined>({
+    queryKey: ['book', decoded],
+    queryFn: () => undefined,
+    enabled: false,
+  })
 
   return (
     <div className="space-y-4">
