@@ -92,6 +92,13 @@ class FeedMarket:
     market_title: str
     """Display title of the individual market within the event."""
 
+    yes_sub_title: str | None
+    """The YES-side outcome label as Kalshi maintains it — "Nigeria",
+    "Saint-Etienne", "Tie", etc. Used in the UI to label which side of
+    the 3-way moneyline each market represents (otherwise every row in
+    a match shows the same `market_title` like "Nigeria vs Zimbabwe
+    Winner?" and the user can't tell them apart)."""
+
     series: str
     """The series prefix this market comes from (e.g. KXWCGAME)."""
 
@@ -169,6 +176,7 @@ def _event_to_feed_markets(event: Event, series: str) -> list[FeedMarket]:
             event_ticker=event.event_ticker,
             event_title=event.title,
             market_title=m.title,
+            yes_sub_title=m.yes_sub_title,
             series=series,
             status=m.status,
             # Kalshi populates occurrence_datetime with real kickoff on every

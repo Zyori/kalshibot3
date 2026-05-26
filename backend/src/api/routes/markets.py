@@ -49,6 +49,7 @@ def _feed_market_to_dict(m: Any, live_state: Any) -> dict[str, Any]:
         "event_ticker": m.event_ticker,
         "event_title": m.event_title,
         "market_title": m.market_title,
+        "yes_sub_title": m.yes_sub_title,
         "series": m.series,
         "status": m.status,
         "open_time": m.open_time.isoformat() if m.open_time else None,
@@ -107,6 +108,17 @@ async def get_market(ticker: str, request: Request) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001 — never fail the read on a sub failure
         log.warning("market_detail_sub_failed", ticker=ticker, error=str(e)[:120])
 
+    # Discovery has metadata (event_title, yes_sub_title, kickoff time) for
+    # every tracked ticker. Look it up so the per-market page can render a
+    # useful header instead of just the ticker code.
+    meta = _find_in_feed(supervisor.market_discovery.get_feed(), ticker)
+    metadata = {
+        "event_title": meta.event_title if meta else None,
+        "market_title": meta.market_title if meta else None,
+        "yes_sub_title": meta.yes_sub_title if meta else None,
+        "open_time": meta.open_time.isoformat() if meta and meta.open_time else None,
+    }
+
     if book is None:
         # No book yet — caller can re-poll in a moment; the WS will populate.
         return {
@@ -119,6 +131,7 @@ async def get_market(ticker: str, request: Request) -> dict[str, Any]:
             "no_best_bid": None,
             "no_best_ask": None,
             "last_update_ago_s": None,
+            **metadata,
         }
 
     import time
@@ -133,7 +146,19 @@ async def get_market(ticker: str, request: Request) -> dict[str, Any]:
         "no_best_bid": book.no_best_bid,
         "no_best_ask": book.no_best_ask,
         "last_update_ago_s": round(age, 2) if age is not None else None,
+        **metadata,
     }
+
+
+def _find_in_feed(feed: Any, ticker: str) -> Any:
+    """Linear scan across the three feed buckets. ~240 tickers, O(n) is
+    cheap and avoids maintaining a parallel index. Returns the FeedMarket
+    or None if the ticker isn't tracked (e.g. an outdated discovery cache)."""
+    for bucket in (feed.live, feed.upcoming, feed.recent):
+        for m in bucket:
+            if m.ticker == ticker:
+                return m
+    return None
 
 
 @router.get("/markets/{ticker}/trades")

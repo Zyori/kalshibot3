@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
+import { outcomeLabel } from '../lib/format'
 
 type FeedMarket = {
   ticker: string
   event_ticker: string
   event_title: string
   market_title: string
+  yes_sub_title: string | null
   series: string
   status: string
   open_time: string | null
@@ -162,7 +164,7 @@ function MarketRow({ market, compact }: { market: FeedMarket; compact: boolean }
           <div className="truncate text-sm text-text">{market.event_title}</div>
           {!compact && (
             <div className="truncate text-xs text-text-muted">
-              {market.market_title}
+              {outcomeLabel(market.yes_sub_title)}
             </div>
           )}
         </div>

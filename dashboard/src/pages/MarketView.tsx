@@ -1,6 +1,6 @@
 import { Link, useParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
 import DepthLadder from '../components/trading/DepthLadder'
 import OpenOrdersCard from '../components/trading/OpenOrdersCard'
@@ -8,6 +8,7 @@ import OrderPanel from '../components/trading/OrderPanel'
 import PriceHistoryChart from '../components/trading/PriceHistoryChart'
 import TopOfBook from '../components/trading/TopOfBook'
 import type { MarketBook } from '../contexts/WebSocketProvider'
+import { formatET, outcomeLabel } from '../lib/format'
 
 type MarketDetail = {
   ticker: string
@@ -19,6 +20,10 @@ type MarketDetail = {
   no_best_bid: number | null
   no_best_ask: number | null
   last_update_ago_s: number | null
+  event_title: string | null
+  market_title: string | null
+  yes_sub_title: string | null
+  open_time: string | null
 }
 
 /**
@@ -76,22 +81,7 @@ export default function MarketView() {
 
   return (
     <div className="space-y-4">
-      <header className="flex items-baseline justify-between">
-        <div>
-          <Link to="/" className="text-xs text-text-muted hover:text-text">
-            ← Markets
-          </Link>
-          <h2 className="mt-1 font-mono text-base text-text">{decoded}</h2>
-          {detail && (
-            <p className="mt-1 text-xs text-text-muted">
-              Status: {detail.status}
-              {detail.last_update_ago_s !== null && (
-                <span> · last book update {detail.last_update_ago_s.toFixed(1)}s ago</span>
-              )}
-            </p>
-          )}
-        </div>
-      </header>
+      <MarketHeader decoded={decoded} detail={detail} />
 
       {isPending && <Box>Loading…</Box>}
       {isError && <Box tone="loss">{String(error)}</Box>}
@@ -129,5 +119,74 @@ function Box({
     <div className={`rounded-md border border-border bg-bg-card p-4 text-sm ${cls}`}>
       {children}
     </div>
+  )
+}
+
+/**
+ * Header for the market detail page. Left side reads naturally
+ * ("Saint-Etienne vs Nice — Saint-Etienne Wins"); right side keeps the
+ * machine ticker visible with a one-click copy button so power users
+ * can still grab the underlying identifier.
+ */
+function MarketHeader({
+  decoded,
+  detail,
+}: {
+  decoded: string
+  detail: MarketDetail | undefined
+}) {
+  const [copied, setCopied] = useState(false)
+
+  const eventTitle = detail?.event_title
+  const outcome = outcomeLabel(detail?.yes_sub_title)
+  const kickoff = formatET(detail?.open_time)
+
+  const copyTicker = async () => {
+    try {
+      await navigator.clipboard.writeText(decoded)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard API unavailable (e.g. insecure context). Silent — the
+      // ticker is still on-screen for manual copy.
+    }
+  }
+
+  return (
+    <header className="flex items-start justify-between gap-4">
+      <div className="min-w-0">
+        <Link to="/" className="text-xs text-text-muted hover:text-text">
+          ← Markets
+        </Link>
+        <h2 className="mt-1 truncate text-lg font-semibold text-text">
+          {eventTitle ?? decoded}
+        </h2>
+        {outcome && (
+          <div className="mt-0.5 text-sm text-text-muted">{outcome}</div>
+        )}
+        {detail && (
+          <p className="mt-1 text-xs text-text-muted">
+            {kickoff && <>Kickoff {kickoff} · </>}
+            Status: {detail.status}
+            {detail.last_update_ago_s !== null && (
+              <span> · book updated {detail.last_update_ago_s.toFixed(1)}s ago</span>
+            )}
+          </p>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <code className="rounded border border-border bg-bg-card px-2 py-1 font-mono text-xs text-text-muted">
+          {decoded}
+        </code>
+        <button
+          type="button"
+          onClick={copyTicker}
+          className="rounded border border-border bg-bg-card px-2 py-1 text-xs text-text-muted hover:bg-bg-hover hover:text-text"
+          title="Copy ticker"
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+    </header>
   )
 }
