@@ -57,8 +57,16 @@ def _collapse_key(msg: KalshiWsMessage) -> str | None:
     return None
 
 
-def _serialize(msg: KalshiWsMessage) -> dict[str, Any]:
-    """Browser-side payload. Single canonical schema, regardless of channel."""
+def _serialize(msg: KalshiWsMessage) -> dict[str, Any] | None:
+    """Browser-side payload. Single canonical schema, regardless of channel.
+
+    Returns None for message types the browser doesn't care about (subscribe
+    acks, unsubscribe acks, update_subscription oks) — those are wire-level
+    plumbing for the upstream Kalshi WS, not data the dashboard renders.
+    Returning None instead of raising keeps a future new ack type from
+    silently killing the entire broadcast flush loop, which is what happened
+    when Subscribed/Unsubscribed/Ok were added to KalshiWsMessage.
+    """
     if isinstance(msg, OrderbookSnapshot):
         return {
             "type": "orderbook_snapshot",
@@ -104,7 +112,8 @@ def _serialize(msg: KalshiWsMessage) -> dict[str, Any]:
             "status": msg.msg.status,
             "settlement_value": msg.msg.settlement_value,
         }
-    raise TypeError(f"no serializer for {type(msg).__name__}")
+    # Subscribed / Unsubscribed / Ok: wire-level acks. Browser doesn't need them.
+    return None
 
 
 class BroadcastManager:
@@ -168,7 +177,13 @@ class BroadcastManager:
     async def _flush_loop(self) -> None:
         while not self._stopped:
             await asyncio.sleep(FLUSH_INTERVAL_S)
-            await self._flush_once()
+            try:
+                await self._flush_once()
+            except Exception:  # noqa: BLE001
+                # Surface the failure but keep the loop alive — a single bad
+                # batch must never silently stop broadcasts to the browser
+                # (that was the failure mode that hid this bug for hours).
+                log.exception("broadcast_flush_failed")
 
     async def _flush_once(self) -> None:
         async with self._lock:
@@ -181,7 +196,10 @@ class BroadcastManager:
         if not self._clients:
             return  # nobody listening; drop the batch
 
-        payload = {"events": [_serialize(m) for m in batch]}
+        events = [s for s in (_serialize(m) for m in batch) if s is not None]
+        if not events:
+            return
+        payload = {"events": events}
         dead: list[WebSocket] = []
         for ws in self._clients:
             try:
