@@ -24,6 +24,8 @@ export default function OpenOrdersCard({ ticker }: { ticker: string }) {
     onSuccess: () => {
       // WS will deliver user_order(status=canceled); invalidate as backstop.
       queryClient.invalidateQueries({ queryKey: ['open_orders'] })
+      queryClient.invalidateQueries({ queryKey: ['open_orders_rest'] })
+      queryClient.invalidateQueries({ queryKey: ['positions'] })
     },
   })
 

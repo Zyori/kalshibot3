@@ -187,6 +187,26 @@ class KalshiRestClient:
         data = await self._request("GET", "/portfolio/fills", params=params or None)
         return FillsResponse.model_validate(data)
 
+    async def get_orders(
+        self,
+        *,
+        status: str | None = "resting",
+        ticker: str | None = None,
+        limit: int = 200,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """List orders. Default 'resting' surfaces what's still open.
+        Returns the raw dict — order model is loose because Kalshi's wire
+        shape varies (float-strings, optional fields per status)."""
+        params: dict[str, Any] = {"limit": limit}
+        if status:
+            params["status"] = status
+        if ticker:
+            params["ticker"] = ticker
+        if cursor:
+            params["cursor"] = cursor
+        return await self._request("GET", "/portfolio/orders", params=params)
+
     # === Markets ===
 
     async def get_markets(

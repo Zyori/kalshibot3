@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from typing import Any
 
 import websockets
 
@@ -68,6 +69,10 @@ class Supervisor:
         # (FAR→SOON, LIVE→DONE, etc.) and run the right hand-off logic.
         self._last_tier: dict[str, MarketTier] = {}
 
+        # Set externally (main.lifespan) so the fill handler can invalidate
+        # the cached balance after a fill changes the account state.
+        self.app_state: Any = None
+
         self._tasks: list[asyncio.Task] = []
 
     async def _on_fill(self, fill: Fill) -> None:
@@ -85,6 +90,11 @@ class Supervisor:
             await self.position_syncer.trigger()
         except Exception:  # noqa: BLE001
             log.exception("position_sync_after_fill_failed")
+        # Invalidate the cached balance so the next /health refreshes it.
+        # Cheap signal; avoids holding a Kalshi REST call inside the fill
+        # handler's critical path.
+        if self.app_state is not None:
+            self.app_state._balance_refreshed_at_mono = 0.0
 
     async def _on_discovery_refresh(self, feed: MarketFeed) -> None:
         """Classify every known ticker by tier and dispatch to the right path.

@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import DepthLadder from '../components/trading/DepthLadder'
 import OpenOrdersCard from '../components/trading/OpenOrdersCard'
 import OrderPanel from '../components/trading/OrderPanel'
+import PositionCard from '../components/trading/PositionCard'
 import PriceHistoryChart from '../components/trading/PriceHistoryChart'
 import TopOfBook from '../components/trading/TopOfBook'
 import type { MarketBook } from '../contexts/WebSocketProvider'
@@ -104,6 +105,8 @@ export default function MarketView() {
           </div>
 
           <PriceHistoryChart ticker={decoded} />
+
+          <PositionCard ticker={decoded} />
 
           <div className="grid gap-4 lg:grid-cols-2">
             <OrderPanel ticker={decoded} book={liveBook} />

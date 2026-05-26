@@ -19,7 +19,7 @@ Anything else from Kalshi is ignored.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal, Union
+from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -29,6 +29,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 def _dollars_str_to_cents(s: str) -> int:
     """Kalshi WS sends "0.42" — convert to 42 (cents). Banker's rounding."""
     return int(round(float(s) * 100))
+
+
+def _parse_optional_price_cents(raw: Any) -> int | None:
+    """Accept either a Kalshi dollar-string ("0.42"), an int already in
+    cents (42), a numeric float, or None / missing. Returns int cents or
+    None — never raises on a missing field."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return _dollars_str_to_cents(raw)
+    return int(raw)
 
 
 class WireBase(BaseModel):
@@ -86,6 +97,10 @@ class FillPayload(WireBase):
     count: int = Field(ge=1)
     yes_price_cents: int = Field(ge=1, le=99)
     no_price_cents: int = Field(ge=1, le=99)
+    """Kalshi's WS only sends one of yes_price / no_price per fill (the
+    executed side's price); the other is derived as 100 - X by the parser
+    so both fields are always populated by the time we reach this model.
+    REST's portfolio/fills sometimes sends both, but WS is sparse."""
     is_taker: bool | None = None
     ts: datetime | None = None
 
@@ -252,11 +267,20 @@ def parse_kalshi_ws_message(raw: dict) -> KalshiWsMessage | None:
 
     if msg_type == "fill":
         msg = raw.get("msg", {})
-        # Kalshi sometimes sends prices as ints (cents) and sometimes as dollar strings.
-        yes_raw = msg.get("yes_price_dollars") or msg.get("yes_price")
-        no_raw = msg.get("no_price_dollars") or msg.get("no_price")
-        yes_cents = _dollars_str_to_cents(yes_raw) if isinstance(yes_raw, str) else int(yes_raw)
-        no_cents = _dollars_str_to_cents(no_raw) if isinstance(no_raw, str) else int(no_raw)
+        # WS fills carry exactly one price (the executed side's). Whichever
+        # we get, derive the other as 100 - X. Verified against real Kalshi
+        # fills 2026-05-26: payloads have yes_price_dollars XOR no_price_dollars,
+        # never both. REST /portfolio/fills carries both because it's a
+        # settled record, not a live event — that's a separate path.
+        yes_cents = _parse_optional_price_cents(msg.get("yes_price_dollars") or msg.get("yes_price"))
+        no_cents = _parse_optional_price_cents(msg.get("no_price_dollars") or msg.get("no_price"))
+        if yes_cents is None and no_cents is not None:
+            yes_cents = 100 - no_cents
+        elif no_cents is None and yes_cents is not None:
+            no_cents = 100 - yes_cents
+        # count arrives as a float-string ("1.00"); cast through float.
+        count_raw = msg.get("count_fp") or msg.get("count") or 0
+        count = int(float(count_raw))
         return Fill(
             type="fill",
             sid=raw["sid"],
@@ -266,9 +290,9 @@ def parse_kalshi_ws_message(raw: dict) -> KalshiWsMessage | None:
                 ticker=msg.get("ticker") or msg.get("market_ticker") or "",
                 side=msg["side"],
                 action=msg.get("action", "buy"),
-                count=int(msg.get("count", 0)),
-                yes_price_cents=yes_cents,
-                no_price_cents=no_cents,
+                count=count,
+                yes_price_cents=yes_cents or 1,
+                no_price_cents=no_cents or 1,
                 is_taker=msg.get("is_taker"),
                 ts=msg.get("ts"),
             ),
@@ -276,12 +300,10 @@ def parse_kalshi_ws_message(raw: dict) -> KalshiWsMessage | None:
 
     if msg_type == "user_order":
         msg = raw.get("msg", {})
-        yes_raw = msg.get("yes_price_dollars") or msg.get("yes_price")
-        yes_cents = (
-            _dollars_str_to_cents(yes_raw) if isinstance(yes_raw, str)
-            else (int(yes_raw) if yes_raw is not None else None)
-        )
-        remaining_raw = msg.get("remaining_count_fp") or msg.get("remaining_count")
+        yes_cents = _parse_optional_price_cents(msg.get("yes_price_dollars") or msg.get("yes_price"))
+        # remaining_count can also be missing (e.g. on a terminal-state event
+        # where the order is fully executed). Treat None as 0.
+        remaining_raw = msg.get("remaining_count_fp") or msg.get("remaining_count") or 0
         remaining = int(float(remaining_raw)) if isinstance(remaining_raw, str) else int(remaining_raw)
         return UserOrder(
             type="user_order",

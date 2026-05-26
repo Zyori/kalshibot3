@@ -5,21 +5,58 @@ Reports the three things the dashboard needs to know on every page load:
   - Whether the DB connection is up
   - Whether Kalshi auth is working (and the current balance if so)
 
-The Kalshi auth result is cached in app.state by the startup lifespan and
-refreshed on demand here. Hitting Kalshi from inside the health route would
-make /api/health rate-limit-sensitive — bad pattern for a polled endpoint.
+Balance refresh: hit Kalshi at most once per BALANCE_TTL_S. The dashboard
+polls health every few seconds so the banner stays close to live; the
+fill handler also calls refresh_balance() directly to force-update right
+after an order fills.
 """
 
 from __future__ import annotations
 
+import time
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Request
 from sqlalchemy import text
 
 from src.core.db import get_session_factory
+from src.core.exceptions import KalshiError
+from src.core.logging import get_logger
+from src.kalshi.rest import KalshiRestClient
 
 router = APIRouter()
+log = get_logger(__name__)
+
+BALANCE_TTL_S = 10.0
+"""Skip the Kalshi balance fetch if we refreshed within this window. Keeps
+the polled health endpoint cheap while letting the banner feel live."""
+
+
+async def refresh_balance(app_state: Any, *, force: bool = False) -> None:
+    """Hit Kalshi for the current balance. Updates app.state on success.
+
+    Cheap to call repeatedly — caches the last refresh time and bails if
+    we just refreshed. Pass force=True to bypass the cache (e.g. right
+    after a fill where the balance definitely changed)."""
+    now = time.monotonic()
+    last = getattr(app_state, "_balance_refreshed_at_mono", 0.0)
+    if not force and (now - last) < BALANCE_TTL_S:
+        return
+    try:
+        async with KalshiRestClient() as client:
+            balance = await client.get_balance()
+        app_state.kalshi_balance_cents = balance.balance
+        app_state.kalshi_auth_ok = True
+        app_state.kalshi_auth_error = None
+        app_state.kalshi_auth_checked_at = datetime.now(timezone.utc).isoformat()
+        app_state._balance_refreshed_at_mono = now
+    except KalshiError as e:
+        app_state.kalshi_auth_error = f"kalshi: {e}"
+        log.warning("balance_refresh_failed", error=str(e)[:200])
+    except Exception as e:  # noqa: BLE001
+        app_state.kalshi_auth_error = f"unexpected: {e}"
+        log.exception("balance_refresh_unexpected")
 
 
 @router.get("/health")
@@ -44,8 +81,9 @@ async def health(request: Request) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001 — defensive: health must never raise
         db_error = str(e)[:200]
 
-    # Kalshi auth status comes from the lifespan probe stored in app.state.
-    # Don't re-probe here — that would burn a rate-limit slot per page load.
+    # Refresh balance opportunistically (cached for BALANCE_TTL_S so polling
+    # the health endpoint doesn't hammer Kalshi).
+    await refresh_balance(app_state)
     kalshi = {
         "ok": bool(getattr(app_state, "kalshi_auth_ok", False)),
         "checked_at": getattr(app_state, "kalshi_auth_checked_at", None),

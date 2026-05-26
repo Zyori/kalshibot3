@@ -186,6 +186,57 @@ async def place_order(
     }
 
 
+@router.get("/orders")
+async def list_orders(
+    status: str = "resting",
+    ticker: str | None = None,
+) -> dict[str, Any]:
+    """List orders from Kalshi REST (source of truth) — soccer-only.
+
+    Cross-market isolation: politics/crypto/etc. orders on the same Kalshi
+    account are filtered out before serving. The user has $200+ notional
+    in non-soccer markets that this app must never display or act on.
+
+    Wire format is whatever Kalshi sends, with prices normalized to cents
+    and counts as ints so the frontend doesn't have to know about the
+    dollar-string / float-string conventions.
+    """
+    async with KalshiRestClient() as client:
+        raw = await client.get_orders(status=status, ticker=ticker, limit=200)
+
+    out: list[dict[str, Any]] = []
+    for o in raw.get("orders", []) or []:
+        t = o.get("ticker") or o.get("market_ticker") or ""
+        if not is_soccer_ticker(t):
+            continue
+        yes_price_raw = o.get("yes_price_dollars") or o.get("yes_price")
+        no_price_raw = o.get("no_price_dollars") or o.get("no_price")
+        remaining_raw = o.get("remaining_count_fp") or o.get("remaining_count") or 0
+        initial_raw = o.get("initial_count_fp") or o.get("initial_count") or 0
+        out.append({
+            "order_id": o.get("order_id"),
+            "client_order_id": o.get("client_order_id") or None,
+            "ticker": t,
+            "side": o.get("side"),
+            "action": o.get("action"),
+            "status": o.get("status"),
+            "yes_price_cents": _normalize_price_cents(yes_price_raw),
+            "no_price_cents": _normalize_price_cents(no_price_raw),
+            "remaining_count": int(float(remaining_raw)) if remaining_raw is not None else 0,
+            "initial_count": int(float(initial_raw)) if initial_raw is not None else 0,
+            "created_time": o.get("created_time"),
+        })
+    return {"orders": out}
+
+
+def _normalize_price_cents(raw: Any) -> int | None:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return int(round(float(raw) * 100))
+    return int(raw)
+
+
 @router.delete("/orders/{order_id}")
 async def cancel_order(order_id: str) -> dict[str, Any]:
     """Cancel a resting order. Returns the updated order state.
