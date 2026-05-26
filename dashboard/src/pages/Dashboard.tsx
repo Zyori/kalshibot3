@@ -1,58 +1,216 @@
-import { Link } from 'react-router'
+import { useState } from 'react'
+import { Link, useNavigate } from 'react-router'
+import { useQuery } from '@tanstack/react-query'
+
+type FeedMarket = {
+  ticker: string
+  event_ticker: string
+  event_title: string
+  market_title: string
+  series: string
+  status: string
+  open_time: string | null
+  close_time: string | null
+  yes_bid_cents: number | null
+  yes_ask_cents: number | null
+  volume: number | null
+  bucket: 'live' | 'upcoming' | 'recent'
+}
+
+type FeedResponse = {
+  live: FeedMarket[]
+  upcoming: FeedMarket[]
+  recent: FeedMarket[]
+  refreshed_at: string | null
+}
 
 export default function Dashboard() {
-  return (
-    <div className="space-y-6">
-      <PageHeading
-        title="Overview"
-        subtitle="Cross-sport summary lands here. For now: jump to a sport portal."
-      />
+  const { data, isPending, isError } = useQuery<FeedResponse>({
+    queryKey: ['markets-feed'],
+    queryFn: async () => {
+      const res = await fetch('/api/markets/feed')
+      if (!res.ok) throw new Error(`feed: ${res.status}`)
+      return res.json()
+    },
+    // The backend polls Kalshi every 60s; refetching faster than that just
+    // returns the same cache. 30s gives us at-most-30s staleness on the UI.
+    refetchInterval: 30_000,
+  })
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <SportCard slug="soccer" name="Soccer" status="primary" />
-      </div>
+  return (
+    <div className="space-y-8">
+      <header>
+        <h2 className="text-lg font-semibold text-text">Markets</h2>
+        <p className="mt-1 text-sm text-text-muted">
+          Soccer matches across every Kalshi series we track. Click any market to open it.
+        </p>
+      </header>
+
+      <TickerLookup />
+
+      {isPending && <SectionMessage>Loading…</SectionMessage>}
+      {isError && <SectionMessage tone="loss">Couldn't load the market feed.</SectionMessage>}
+
+      {data && (
+        <>
+          <Section
+            title="Live now"
+            empty="No matches currently in play."
+            markets={data.live}
+            showWhenEmpty={data.live.length > 0}
+          />
+          <Section
+            title="Upcoming"
+            subtitle="Sorted by kickoff (soonest first)."
+            empty="No matches in the next 30 days."
+            markets={data.upcoming}
+          />
+          <Section
+            title="Recent results"
+            empty=""
+            markets={data.recent}
+            showWhenEmpty={false}
+            collapsed
+          />
+        </>
+      )}
     </div>
   )
 }
 
-function PageHeading({ title, subtitle }: { title: string; subtitle?: string }) {
-  return (
-    <div>
-      <h2 className="text-lg font-semibold text-text">{title}</h2>
-      {subtitle && <p className="mt-1 text-sm text-text-muted">{subtitle}</p>}
-    </div>
-  )
-}
+function TickerLookup() {
+  const [value, setValue] = useState('')
+  const navigate = useNavigate()
 
-function SportCard({
-  slug,
-  name,
-  status,
-}: {
-  slug: string
-  name: string
-  status: 'primary' | 'future'
-}) {
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    const ticker = value.trim().toUpperCase()
+    if (!ticker) return
+    navigate(`/market/${encodeURIComponent(ticker)}`)
+  }
+
   return (
-    <Link
-      to={`/sport/${slug}`}
-      className="group block rounded-lg border border-border bg-bg-card p-4 transition-colors hover:bg-bg-hover"
+    <form
+      onSubmit={onSubmit}
+      className="flex items-center gap-2 rounded-lg border border-border bg-bg-card p-3"
     >
-      <div className="flex items-baseline justify-between">
-        <h3 className="text-base font-semibold text-text">{name}</h3>
-        <span
-          className={
-            status === 'primary'
-              ? 'text-xs text-gain'
-              : 'text-xs text-text-muted'
-          }
-        >
-          {status === 'primary' ? 'active' : 'future'}
-        </span>
+      <label className="text-xs text-text-muted">Open ticker:</label>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="KXWCGAME-26JUN11KORCZE-KOR"
+        className="flex-1 rounded-md border border-border bg-bg px-3 py-1.5 text-xs font-mono text-text placeholder:text-text-muted focus:border-accent focus:outline-none"
+      />
+      <button
+        type="submit"
+        className="rounded-md border border-border bg-bg-hover px-3 py-1.5 text-xs text-text hover:border-accent"
+      >
+        Open
+      </button>
+    </form>
+  )
+}
+
+function Section({
+  title,
+  subtitle,
+  empty,
+  markets,
+  showWhenEmpty = true,
+  collapsed = false,
+}: {
+  title: string
+  subtitle?: string
+  empty: string
+  markets: FeedMarket[]
+  showWhenEmpty?: boolean
+  collapsed?: boolean
+}) {
+  if (markets.length === 0 && !showWhenEmpty) return null
+
+  return (
+    <section>
+      <div className="mb-2 flex items-baseline justify-between">
+        <h3 className="text-sm font-semibold text-text">{title}</h3>
+        <span className="text-xs text-text-muted">{markets.length}</span>
       </div>
-      <p className="mt-2 text-xs text-text-muted">
-        Open the portal for news, markets, suggestions, and live positions.
-      </p>
-    </Link>
+      {subtitle && <p className="mb-3 text-xs text-text-muted">{subtitle}</p>}
+      {markets.length === 0 ? (
+        <SectionMessage>{empty}</SectionMessage>
+      ) : (
+        <ul className={collapsed ? 'grid gap-1' : 'grid gap-2'}>
+          {markets.map((m) => (
+            <MarketRow key={m.ticker} market={m} compact={collapsed} />
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+function MarketRow({ market, compact }: { market: FeedMarket; compact: boolean }) {
+  const time = market.open_time ? formatKickoff(market.open_time) : ''
+  return (
+    <li>
+      <Link
+        to={`/market/${encodeURIComponent(market.ticker)}`}
+        className="grid items-center gap-3 rounded-md border border-border bg-bg-card px-3 py-2 transition-colors hover:bg-bg-hover"
+        style={{ gridTemplateColumns: '1fr auto auto' }}
+      >
+        <div className="min-w-0">
+          <div className="truncate text-sm text-text">{market.event_title}</div>
+          {!compact && (
+            <div className="truncate text-xs text-text-muted">
+              {market.market_title}
+            </div>
+          )}
+        </div>
+        {!compact && (
+          <Price yes_bid={market.yes_bid_cents} yes_ask={market.yes_ask_cents} />
+        )}
+        <div className="text-right text-xs text-text-muted tabular-nums">{time}</div>
+      </Link>
+    </li>
+  )
+}
+
+function Price({ yes_bid, yes_ask }: { yes_bid: number | null; yes_ask: number | null }) {
+  if (yes_bid === null && yes_ask === null) {
+    return <span className="text-xs text-text-muted">—</span>
+  }
+  return (
+    <span className="text-xs font-mono tabular-nums text-text-muted">
+      {yes_bid ?? '—'}
+      <span className="px-0.5 text-text-muted">/</span>
+      {yes_ask ?? '—'}
+      <span className="ml-1 text-text-muted">¢</span>
+    </span>
+  )
+}
+
+function formatKickoff(iso: string): string {
+  const dt = new Date(iso)
+  const now = new Date()
+  const sameYear = dt.getFullYear() === now.getFullYear()
+  return dt.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: sameYear ? undefined : 'numeric',
+  })
+}
+
+function SectionMessage({
+  children,
+  tone = 'muted',
+}: {
+  children: React.ReactNode
+  tone?: 'muted' | 'loss'
+}) {
+  const cls = tone === 'loss' ? 'text-loss' : 'text-text-muted'
+  return (
+    <div className={`rounded-md border border-border bg-bg-card p-4 text-sm ${cls}`}>
+      {children}
+    </div>
   )
 }
