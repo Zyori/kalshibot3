@@ -4,6 +4,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { MarketBook } from '../../contexts/WebSocketProvider'
 import { bestAsk, bestBid } from '../../lib/book'
 
+type PositionsResponse = {
+  positions: Array<{ ticker: string; side: 'yes' | 'no'; quantity: number }>
+}
+
 type Side = 'yes' | 'no'
 type Action = 'buy' | 'sell'
 
@@ -109,6 +113,30 @@ export default function OrderPanel({
   const quickBuy = quickPrice(book, side, 'buy')
   const quickSell = quickPrice(book, side, 'sell')
 
+  // Ghost-share guard: a sell into no position is mathematically a buy of
+  // the opposite side. We disable Sell buttons unless we actually hold the
+  // chosen side. The backend enforces the same rule with a 400 — this is
+  // defense in depth; the UI guard is for clarity, not safety.
+  const positions = useQuery<PositionsResponse>({
+    queryKey: ['positions'],
+    queryFn: async () => {
+      const res = await fetch('/api/positions')
+      if (!res.ok) throw new Error(`/api/positions: ${res.status}`)
+      return res.json()
+    },
+    refetchInterval: 10_000,
+  })
+  const heldOnThisSide =
+    positions.data?.positions.find((p) => p.ticker === ticker && p.side === side)?.quantity ?? 0
+  const canSell = heldOnThisSide >= count
+  const sellDisabledReason = !canSell
+    ? heldOnThisSide === 0
+      ? `You hold no ${side.toUpperCase()} on this market. Buy ${
+          side === 'yes' ? 'NO' : 'YES'
+        } if you want the other side.`
+      : `You only hold ${heldOnThisSide} ${side.toUpperCase()} — can't sell ${count}.`
+    : undefined
+
   return (
     <div className="rounded-lg border border-border bg-bg-card p-4">
       <h3 className="mb-3 text-sm font-semibold text-text">Place order</h3>
@@ -132,10 +160,13 @@ export default function OrderPanel({
         />
         <QuickButton
           label={`Sell ${side.toUpperCase()} now`}
-          subLabel={quickSell !== null ? `@ ${quickSell}¢` : 'no bid'}
-          disabled={quickSell === null || place.isPending}
+          subLabel={
+            !canSell ? 'no position' : quickSell !== null ? `@ ${quickSell}¢` : 'no bid'
+          }
+          disabled={quickSell === null || place.isPending || !canSell}
+          title={sellDisabledReason}
           onClick={() => {
-            if (quickSell === null) return
+            if (quickSell === null || !canSell) return
             setPrice(quickSell)
             setPriceTouched(true)
             place.mutate({ action: 'sell' })
@@ -192,7 +223,10 @@ export default function OrderPanel({
         <PlaceButton
           label="Place Sell"
           price={price}
-          disabled={place.isPending || previewSell.data?.verdict === 'hard_refuse'}
+          disabled={
+            place.isPending || previewSell.data?.verdict === 'hard_refuse' || !canSell
+          }
+          title={sellDisabledReason}
           tone="sell"
           onClick={() => place.mutate({ action: 'sell' })}
         />
@@ -312,19 +346,21 @@ function NumberField({
 }
 
 function QuickButton({
-  label, subLabel, onClick, disabled,
+  label, subLabel, onClick, disabled, title,
 }: {
   label: string
   subLabel: string
   onClick: () => void
   disabled: boolean
+  title?: string
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="flex flex-col items-center rounded-md border border-action bg-bg px-3 py-2 text-action hover:bg-bg-hover disabled:opacity-40"
+      title={title}
+      className="flex flex-col items-center rounded-md border border-action bg-bg px-3 py-2 text-action hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
     >
       <span className="text-sm font-semibold">{label}</span>
       <span className="text-xs font-mono tabular-nums text-text-muted">{subLabel}</span>
@@ -333,13 +369,14 @@ function QuickButton({
 }
 
 function PlaceButton({
-  label, price, onClick, disabled, tone,
+  label, price, onClick, disabled, tone, title,
 }: {
   label: string
   price: number
   onClick: () => void
   disabled: boolean
   tone: 'buy' | 'sell'
+  title?: string
 }) {
   // Use the dashboard's semantic palette: green for buy (gain side),
   // red for sell (loss side) — matches the rest of the app.
@@ -351,7 +388,8 @@ function PlaceButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-md border px-3 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40 ${cls}`}
+      title={title}
+      className={`rounded-md border px-3 py-2 text-sm font-semibold hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 ${cls}`}
     >
       {label} @ {price}¢
     </button>

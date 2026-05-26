@@ -22,11 +22,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import select
+
 from src.core.db import get_session
 from src.core.exceptions import KalshiError
 from src.core.logging import get_logger
 from src.kalshi.rest import KalshiRestClient, new_client_order_id
 from src.kalshi.schemas import PlaceOrderRequest
+from src.models import Market, Position
 from src.services.bet_service import record_placed_order
 from src.services.order_sanity import SanityInput, Verdict, check_order
 from src.sports.soccer import is_soccer_ticker
@@ -91,6 +94,23 @@ def _make_sanity_input(body: OrderRequestBody, snapshot: dict) -> SanityInput:
     )
 
 
+async def _open_position_qty(
+    session: AsyncSession, *, ticker: str, side: str,
+) -> int:
+    """Returns the quantity we currently hold on (ticker, side), or 0.
+
+    Source of truth is the Position table which position_sync keeps in sync
+    with Kalshi every 60s + after every fill. Reading from the DB here
+    avoids a Kalshi round-trip on every place_order call.
+    """
+    qty = await session.scalar(
+        select(Position.quantity)
+        .join(Market, Market.id == Position.market_id)
+        .where(Market.kalshi_ticker == ticker, Position.side == side)
+    )
+    return int(qty) if qty is not None else 0
+
+
 @router.post("/orders/preview")
 async def preview_order(body: OrderRequestBody, request: Request) -> OrderPreviewResponse:
     """No side effects — compute the verdict + total cost for the UI."""
@@ -121,6 +141,27 @@ async def place_order(
     """
     if not is_soccer_ticker(body.ticker):
         raise HTTPException(status_code=400, detail=f"{body.ticker} is not a soccer market")
+
+    # Ghost-share guard: refuse sell orders against a side we don't hold.
+    # Kalshi treats "sell YES" with no YES position as "open a short YES",
+    # which is mathematically a "buy NO". Users on prior versions (and on
+    # kalshi.com itself) have gotten confused into accidental opposite-side
+    # exposure this way. This guard makes the rule explicit: if you want
+    # NO exposure, buy NO — don't sell YES short. The frontend disables
+    # the button too; this is defense in depth.
+    if body.action == "sell":
+        held = await _open_position_qty(session, ticker=body.ticker, side=body.side)
+        if held < body.count:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "reasons": [
+                        f"Refusing to sell {body.count} {body.side.upper()}: "
+                        f"current {body.side.upper()} position is {held}. "
+                        f"To take the opposite side, buy {('no' if body.side == 'yes' else 'yes').upper()} instead."
+                    ],
+                },
+            )
 
     snapshot = _book_snapshot(request, body.ticker)
     sanity = check_order(_make_sanity_input(body, snapshot))
