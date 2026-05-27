@@ -29,6 +29,7 @@ from src.api.routes import events, health, ledger, markets, orders, positions
 from src.config import get_settings
 from src.core.db import dispose_engine, get_engine
 from src.core.exceptions import AuthenticationError, KalshiError
+from src.core.json_response import UTCJSONResponse
 from src.core.logging import configure_logging, get_logger
 from src.kalshi.rest import KalshiRestClient
 from src.supervisor import Supervisor
@@ -136,6 +137,7 @@ app = FastAPI(
     version="0.1.0",
     description="Personal Kalshi sports-betting workbook.",
     lifespan=lifespan,
+    default_response_class=UTCJSONResponse,
 )
 
 app.add_middleware(
