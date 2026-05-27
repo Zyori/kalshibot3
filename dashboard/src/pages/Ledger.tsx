@@ -297,6 +297,7 @@ function BetsTable({
             <th className="px-3 py-2 text-left">Side</th>
             <th className="px-3 py-2 text-right">Qty × Entry</th>
             <th className="px-3 py-2 text-right">P&amp;L</th>
+            <th className="px-3 py-2 text-right">Return</th>
             <th className="px-3 py-2 text-left">Strategy</th>
             <th className="px-3 py-2 text-left">Status</th>
           </tr>
@@ -328,6 +329,11 @@ function BetRow({
   const pnl = bet.pnl_cents
   const pnlCls =
     pnl === null ? 'text-text-muted' : pnl > 0 ? 'text-gain' : pnl < 0 ? 'text-loss' : 'text-text'
+  // Return % = pnl / stake. Use stake_cents (count × entry), not the
+  // notional contract value — that gives the answer that matches how
+  // a trader thinks about ROI ('I risked $X, made $Y, so my return is Y/X').
+  const returnPct =
+    pnl === null || bet.stake_cents === 0 ? null : (pnl / bet.stake_cents) * 100
   const statusCls =
     bet.status === 'won'
       ? 'text-gain'
@@ -351,6 +357,11 @@ function BetRow({
         <td className={`px-3 py-2 text-right font-mono tabular-nums text-xs ${pnlCls}`}>
           {pnl === null ? '—' : `${pnl >= 0 ? '+' : ''}$${(pnl / 100).toFixed(2)}`}
         </td>
+        <td className={`px-3 py-2 text-right font-mono tabular-nums text-xs ${pnlCls}`}>
+          {returnPct === null
+            ? '—'
+            : `${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(0)}%`}
+        </td>
         <td className="px-3 py-2 text-xs">{bet.strategy}</td>
         <td className={`px-3 py-2 text-xs font-semibold uppercase ${statusCls}`}>
           {bet.status}
@@ -358,7 +369,7 @@ function BetRow({
       </tr>
       {expanded && (
         <tr className="border-b border-border bg-bg last:border-b-0">
-          <td colSpan={7} className="px-3 py-3">
+          <td colSpan={8} className="px-3 py-3">
             <dl className="grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
               <Pair label="Source" value={bet.source} />
               <Pair label="Confidence" value={bet.confidence} />
