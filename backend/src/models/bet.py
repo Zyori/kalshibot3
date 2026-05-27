@@ -2,9 +2,10 @@
 
 A few invariants enforced at the DB level:
   - All monetary fields are integer cents (no floats, no Decimal).
-  - kalshi_order_id, kalshi_fill_id, client_order_id are unique when set — these
-    are the three idempotency / dedup keys during order placement and position
-    reconciliation. Manual / external bets leave them NULL.
+  - kalshi_order_id, client_order_id are unique when set — idempotency keys
+    during order placement. Manual / external bets leave them NULL.
+  - Per-fill detail lives in bet_fill (keyed by trade_id); Bet aggregates
+    are derived from it.
   - status has only three terminal values: WON, LOST, CANCELLED. No transitions
     out of terminal — enforced in services/bet_service.py.
   - exit_type is set when status transitions to terminal (except CANCELLED, where
@@ -67,7 +68,6 @@ class Bet(Base):
 
     # === Kalshi correlation IDs (idempotency) ===
     kalshi_order_id: Mapped[str | None] = mapped_column(String(64))
-    kalshi_fill_id: Mapped[str | None] = mapped_column(String(64))
     client_order_id: Mapped[str | None] = mapped_column(String(64))
 
     # === Order details ===
@@ -153,7 +153,6 @@ class Bet(Base):
     __table_args__ = (
         # Idempotency keys: unique when set, multiple NULLs allowed.
         UniqueConstraint("kalshi_order_id", name="uq_bet_kalshi_order_id"),
-        UniqueConstraint("kalshi_fill_id", name="uq_bet_kalshi_fill_id"),
         UniqueConstraint("client_order_id", name="uq_bet_client_order_id"),
         CheckConstraint("sport IN ('soccer', 'nfl')", name="ck_bet_sport"),
         CheckConstraint(

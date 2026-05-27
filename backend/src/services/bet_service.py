@@ -203,7 +203,6 @@ async def record_placed_order(
         suggestion_id=None,
         parent_bet_id=None,
         kalshi_order_id=order.order_id,
-        kalshi_fill_id=None,
         client_order_id=client_order_id,
         side=BetSide(order.side),
         entry_price_cents=entry_price,
@@ -330,7 +329,6 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
             weighted_centi = sum(f.price_cents * f.quantity_centi for f in buy_fills)
             bet.entry_price_cents = max(1, min(99, weighted_centi // total_centi))
             bet.stake_cents = (bet.entry_price_cents * total_centi) // 100
-        bet.kalshi_fill_id = fill.msg.trade_id
         await _recompute_bet_fees(session, bet=bet)
         bet.version += 1
         await session.flush()
@@ -470,10 +468,6 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
             opener.exit_type = ExitType.CLOSED_EARLY
             opener.settled_at = datetime.now(timezone.utc)
             opener.pnl_cents = opener.realized_pnl_cents
-            # NOTE: don't set kalshi_fill_id here. bet_fill.trade_id is the
-            # source of truth for which Kalshi trade closed this bet, and
-            # the UNIQUE constraint on bet.kalshi_fill_id would collide
-            # when a single sell crosses multiple openers.
 
         opener.version += 1
         await session.flush()

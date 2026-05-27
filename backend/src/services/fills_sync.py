@@ -136,19 +136,20 @@ async def _ingest_rest_fill(
     return set()
 
 
-async def sync_fills_once() -> dict[str, int]:
-    """One full pass over /portfolio/fills.
+async def sync_fills_once(min_ts: int | None = None) -> dict[str, int]:
+    """One pass over /portfolio/fills.
 
-    Strategy: paginate the whole history. Idempotent — every bet_fill is
-    keyed by trade_id, so re-processing a fill we've already enriched is a
-    no-op. We could optimize with a since-cursor later; for now correctness
-    over latency. Soccer-only filter keeps the work bounded.
+    `min_ts` is Kalshi's "fills created at or after this epoch second"
+    filter. The FillsSyncer passes the highest created_time it has seen
+    minus a small overlap so any race-window fills are caught.
+    Idempotent — every bet_fill is keyed by trade_id, so re-processing
+    overlap is a no-op. Soccer-only filter keeps the work bounded.
     """
     rest_fills: list[RestFill] = []
     async with KalshiRestClient() as client:
         cursor: str | None = None
         while True:
-            resp = await client.get_fills(cursor=cursor)
+            resp = await client.get_fills(cursor=cursor, min_ts=min_ts)
             rest_fills.extend(resp.fills)
             cursor = resp.cursor
             if not cursor:
@@ -173,25 +174,52 @@ async def sync_fills_once() -> dict[str, int]:
                 await recompute_bet_from_fills(session, bet=bet)
         await session.commit()
 
+    # Watermark = the latest fill ts we saw. Caller advances its cursor
+    # to (watermark - overlap_seconds) so the next sweep refetches the
+    # tail safely. 0 if we got no fills this pass.
+    max_ts = 0
+    for rf in rest_fills:
+        if rf.created_time is not None:
+            ts = int(rf.created_time.timestamp())
+            if ts > max_ts:
+                max_ts = ts
+
     log.info(
         "fills_sync_complete",
         rest_fills=len(rest_fills),
         enriched=enriched,
         bets_recomputed=len(affected_bet_ids),
+        since_ts=min_ts,
+        max_ts=max_ts,
     )
     return {
         "rest_fills": len(rest_fills),
         "enriched": enriched,
         "bets_recomputed": len(affected_bet_ids),
+        "max_ts": max_ts,
     }
 
 
 class FillsSyncer:
-    """Long-running poller. Lives on the supervisor."""
+    """Long-running poller. Lives on the supervisor.
+
+    Maintains an in-memory watermark cursor (epoch seconds). First tick
+    after process start does a full pull (min_ts=None); subsequent ticks
+    only fetch fills newer than `watermark - OVERLAP_SECONDS`, which
+    bounds steady-state work to ~O(new_fills) instead of O(history).
+    Watermark loss on restart is fine — a full pull is correct, just more
+    work. Idempotent via bet_fill.trade_id."""
+
+    OVERLAP_SECONDS = 60
+    """How far back to re-fetch on each incremental tick. Catches fills
+    that landed during the previous sweep (created_time could be earlier
+    than the watermark we observed) and any clock skew between client/
+    Kalshi. 60s is enough to cover a slow sweep."""
 
     def __init__(self) -> None:
         self._stopped = False
         self._last_run_at: float | None = None
+        self._watermark_ts: int | None = None
 
     @property
     def last_run_age_s(self) -> float | None:
@@ -207,7 +235,14 @@ class FillsSyncer:
 
     async def _tick(self) -> None:
         try:
-            await sync_fills_once()
+            since = (
+                None if self._watermark_ts is None
+                else max(0, self._watermark_ts - self.OVERLAP_SECONDS)
+            )
+            result = await sync_fills_once(min_ts=since)
+            max_ts = result.get("max_ts", 0)
+            if max_ts > 0 and (self._watermark_ts is None or max_ts > self._watermark_ts):
+                self._watermark_ts = max_ts
             self._last_run_at = time.monotonic()
         except Exception:  # noqa: BLE001
             log.exception("fills_sync_failed")

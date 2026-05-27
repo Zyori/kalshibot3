@@ -177,13 +177,21 @@ class KalshiRestClient:
         return PositionsResponse.model_validate(data)
 
     async def get_fills(
-        self, *, ticker: str | None = None, cursor: str | None = None
+        self,
+        *,
+        ticker: str | None = None,
+        cursor: str | None = None,
+        min_ts: int | None = None,
     ) -> FillsResponse:
+        """`min_ts` is Kalshi's "fills with created_time >= N" filter (epoch
+        seconds). Passing it lets the periodic sweep skip the full history."""
         params: dict[str, Any] = {}
         if ticker:
             params["ticker"] = ticker
         if cursor:
             params["cursor"] = cursor
+        if min_ts is not None:
+            params["min_ts"] = min_ts
         data = await self._request("GET", "/portfolio/fills", params=params or None)
         return FillsResponse.model_validate(data)
 
