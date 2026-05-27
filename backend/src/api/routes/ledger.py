@@ -161,36 +161,41 @@ async def ledger_stats(
     rate (won / settled), ROI (P&L / total stake), and a strategy-level
     breakdown for the StrategyBreakdown chart.
     """
-    base = _apply_filters(
-        select(Bet),
-        sport=sport or None,
-        status=status or None,
-        strategy=strategy or None,
-        source=source or None,
-        timing=timing or None,
-        market_ticker=market,
-        since=since,
-        until=until,
-    )
+    # Build each aggregate query directly with the same filter chain. The
+    # previous shape — `select(...).select_from(base.subquery())` — produced
+    # a cartesian product between `bet` and the subquery because the
+    # aggregate referenced Bet.status directly, which SQLAlchemy resolved
+    # against the `bet` table, not the subquery. Inflated total_bets by 3x.
+    def _filtered(stmt):
+        return _apply_filters(
+            stmt,
+            sport=sport or None,
+            status=status or None,
+            strategy=strategy or None,
+            source=source or None,
+            timing=timing or None,
+            market_ticker=market,
+            since=since,
+            until=until,
+        )
 
     # Counts by status
     status_rows = (
         await session.execute(
-            select(Bet.status, func.count())
-            .select_from(base.subquery())
-            .group_by(Bet.status)
+            _filtered(select(Bet.status, func.count(Bet.id)).group_by(Bet.status))
         )
     ).all()
     by_status = {row[0]: row[1] for row in status_rows}
 
-    # Aggregates over settled bets only (pnl_cents is null for OPEN)
+    # Aggregates over the whole filtered set (pnl_cents is null for OPEN —
+    # SUM ignores nulls, so this gives realized-P&L on settled bets only).
     agg = (
         await session.execute(
-            select(
+            _filtered(select(
                 func.coalesce(func.sum(Bet.pnl_cents), 0),
                 func.coalesce(func.sum(Bet.stake_cents), 0),
-                func.count(),
-            ).select_from(base.subquery())
+                func.count(Bet.id),
+            ))
         )
     ).first()
     total_pnl_cents = int(agg[0]) if agg else 0
@@ -206,14 +211,12 @@ async def ledger_stats(
     # Per-strategy breakdown for StrategyBreakdown chart
     strategy_rows = (
         await session.execute(
-            select(
+            _filtered(select(
                 Bet.strategy,
-                func.count(),
+                func.count(Bet.id),
                 func.coalesce(func.sum(Bet.pnl_cents), 0),
                 func.coalesce(func.sum(Bet.stake_cents), 0),
-            )
-            .select_from(base.subquery())
-            .group_by(Bet.strategy)
+            ).group_by(Bet.strategy))
         )
     ).all()
     by_strategy = [

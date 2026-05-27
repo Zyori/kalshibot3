@@ -64,6 +64,11 @@ async def record_placed_order(
 ) -> Bet:
     """Persist a freshly-placed order as a BET row.
 
+    Buy orders open a new BET. Sell orders CLOSE an existing OPEN BET on
+    the same (ticker, side) instead of creating a new row — a sell isn't
+    a fresh exposure, it's the exit half of a round-trip. FIFO across
+    multiple opens on the same side.
+
     Idempotent on (kalshi_order_id) — if a row already exists for this
     order_id we return it instead of inserting a dupe. This protects
     against a route retry after a network blip.
@@ -71,7 +76,10 @@ async def record_placed_order(
     if not is_soccer_ticker(order.ticker):
         raise ValueError(f"refusing to record non-soccer ticker {order.ticker}")
 
-    # Idempotency check.
+    # Idempotency check. Catches the route-retry case AND the sell-then-
+    # we-already-attached-it-to-an-open-BET case (close path below stores
+    # the sell order_id in `kalshi_fill_id` on the closed BET, not in
+    # `kalshi_order_id` which stays the opening order's id).
     existing = await session.scalar(
         select(Bet).where(Bet.kalshi_order_id == order.order_id)
     )
@@ -83,6 +91,52 @@ async def record_placed_order(
     # is NOT NULL. If we haven't seen the market yet, create a minimal Market
     # row — the discovery poller will fill in the rest on its next cycle.
     market_id = await _get_or_create_market(session, ticker=order.ticker)
+
+    # Sell path: close the oldest OPEN BET on (market, side) instead of
+    # inserting. Sell price = order.yes_price (the side we're selling).
+    # The ghost-share guard upstream already refused this if no position
+    # exists, so we trust that an OPEN BET should be found here. If none
+    # is found anyway (race, external-fill weirdness), we fall through to
+    # the insert path so the trade isn't silently lost — better a slightly
+    # mis-attributed BET than no record.
+    if order.action == "sell":
+        side_enum = BetSide(order.side)
+        oldest_open = await session.scalar(
+            select(Bet)
+            .where(Bet.market_id == market_id)
+            .where(Bet.side == side_enum)
+            .where(Bet.status == BetStatus.OPEN)
+            .order_by(Bet.placed_at.asc().nulls_last(), Bet.id.asc())
+        )
+        if oldest_open is not None:
+            exit_price = order.yes_price or requested_price_cents
+            if side_enum is BetSide.YES:
+                pnl = (exit_price - oldest_open.entry_price_cents) * oldest_open.quantity
+            else:
+                pnl = (oldest_open.entry_price_cents - exit_price) * oldest_open.quantity
+            oldest_open.exit_price_cents = exit_price
+            oldest_open.pnl_cents = pnl
+            oldest_open.status = BetStatus.WON if pnl > 0 else BetStatus.LOST
+            oldest_open.exit_type = ExitType.CLOSED_EARLY
+            oldest_open.settled_at = datetime.now(timezone.utc)
+            # Store the sell order_id on kalshi_fill_id so we can trace
+            # the close back to its Kalshi order without losing the
+            # opening order_id (kalshi_order_id stays the buy's).
+            oldest_open.kalshi_fill_id = order.order_id
+            oldest_open.version += 1
+            await session.flush()
+            log.info(
+                "bet_closed_by_sell",
+                bet_id=oldest_open.id,
+                exit_price_cents=exit_price,
+                pnl_cents=pnl,
+                sell_order_id=order.order_id,
+            )
+            return oldest_open
+        log.warning(
+            "sell_without_open_bet",
+            ticker=order.ticker, side=order.side, order_id=order.order_id,
+        )
 
     bet = Bet(
         sport=_ticker_to_sport(order.ticker),
