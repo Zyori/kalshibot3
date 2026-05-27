@@ -43,7 +43,7 @@ from src.core.types import (
     Timing,
 )
 from src.kalshi.schemas import Order
-from src.kalshi.ws_wire import Fill, UserOrder
+from src.kalshi.ws_wire import Fill
 from src.models import Bet, BetFill, Market
 from src.sports.soccer import is_soccer_ticker
 
@@ -53,6 +53,21 @@ log = get_logger(__name__)
 def _ticker_to_sport(ticker: str) -> Sport:
     """Best-effort sport classifier. Today: soccer-or-bust."""
     return Sport.SOCCER  # soccer is the only sport this app handles today
+
+
+async def _recompute_bet_fees(session: AsyncSession, *, bet: Bet) -> None:
+    """Refresh entry_fees_cents and exit_fees_cents from this bet's bet_fill
+    rows. Always derived; never accumulated. Safe to call whenever a
+    bet_fill on the bet changes (fee arrived, attribution shifted)."""
+    fills = (await session.execute(
+        select(BetFill).where(BetFill.bet_id == bet.id)
+    )).scalars().all()
+    bet.entry_fees_cents = sum(
+        (f.fee_cents or 0) for f in fills if f.action == "buy"
+    )
+    bet.exit_fees_cents = sum(
+        (f.fee_cents or 0) for f in fills if f.action == "sell"
+    )
 
 
 async def record_placed_order(
@@ -193,25 +208,34 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
     existing_fill = await session.scalar(
         select(BetFill).where(BetFill.trade_id == fill.msg.trade_id)
     )
-    if existing_fill is not None:
+    if existing_fill is not None and existing_fill.bet_id is not None:
+        # WS replay/reconnect, or fills_sync already attached this trade.
         log.info("fill_already_recorded", trade_id=fill.msg.trade_id)
         return
 
-    bet_fill = BetFill(
-        bet_id=None,
-        trade_id=fill.msg.trade_id,
-        order_id=fill.msg.order_id,
-        ticker=ticker,
-        side=fill.msg.side,
-        action=fill.msg.action,
-        price_cents=new_price,
-        quantity_centi=new_centi,
-        fee_cents=None,
-        is_taker=fill.msg.is_taker,
-        fee_synced_at=None,
-        created_time=fill.msg.ts,
-    )
-    session.add(bet_fill)
+    # Either no row yet, or fills_sync inserted it as an "external" row
+    # (bet_id=NULL) before WS delivered the event. In the second case we
+    # reuse the existing row — keeping its fee_cents from fills_sync — and
+    # let the buy/sell paths below fill in bet_id and trigger the bet-level
+    # aggregate recompute.
+    if existing_fill is not None:
+        bet_fill = existing_fill
+    else:
+        bet_fill = BetFill(
+            bet_id=None,
+            trade_id=fill.msg.trade_id,
+            order_id=fill.msg.order_id,
+            ticker=ticker,
+            side=fill.msg.side,
+            action=fill.msg.action,
+            price_cents=new_price,
+            quantity_centi=new_centi,
+            fee_cents=None,
+            is_taker=fill.msg.is_taker,
+            fee_synced_at=None,
+            created_time=fill.msg.ts,
+        )
+        session.add(bet_fill)
 
     if fill.msg.action == "buy":
         bet = await session.scalar(
@@ -240,7 +264,9 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
             bet.entry_price_cents = max(1, min(99, weighted_centi // total_centi))
             bet.stake_cents = (bet.entry_price_cents * total_centi) // 100
         bet.kalshi_fill_id = fill.msg.trade_id
+        await _recompute_bet_fees(session, bet=bet)
         bet.version += 1
+        await session.flush()
         log.info(
             "bet_buy_fill_recorded",
             bet_id=bet.id,
@@ -344,6 +370,8 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
             )
             opener.exit_price_cents = max(1, min(99, sell_weighted // sell_centi))
 
+        await _recompute_bet_fees(session, bet=opener)
+
         if opener.remaining_quantity == 0:
             opener.status = (
                 BetStatus.WON if (opener.realized_pnl_cents or 0) > 0
@@ -352,7 +380,10 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
             opener.exit_type = ExitType.CLOSED_EARLY
             opener.settled_at = datetime.now(timezone.utc)
             opener.pnl_cents = opener.realized_pnl_cents
-            opener.kalshi_fill_id = fill.msg.trade_id
+            # NOTE: don't set kalshi_fill_id here. bet_fill.trade_id is the
+            # source of truth for which Kalshi trade closed this bet, and
+            # the UNIQUE constraint on bet.kalshi_fill_id would collide
+            # when a single sell crosses multiple openers.
 
         opener.version += 1
         await session.flush()

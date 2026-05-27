@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -329,3 +329,150 @@ async def test_record_placed_order_sell_does_not_create_bet(
     assert returned.id == bet_a.id
     bets = (await session.execute(select(Bet))).scalars().all()
     assert len(bets) == 1
+
+
+@pytest.mark.asyncio
+async def test_cross_opener_sell_pro_rates_kalshi_fee(session: AsyncSession) -> None:
+    """When a WS sell spans two openers, fills_sync's pro-rata split must
+    distribute the single Kalshi fee_cost across the synthetic bet_fill
+    rows by quantity_centi. Each opener's exit_fees_cents should reflect
+    its share — not the full fee landing on one opener."""
+    from src.kalshi.schemas import Fill as RestFill
+    from src.services.fills_sync import _ingest_rest_fill, _recompute_bet_fees
+
+    bet_a = await _open_bet(session, order_id="ord-a", qty=30, price=20)
+    bet_b = await _open_bet(session, order_id="ord-b", qty=70, price=25)
+    await record_fill(session, _make_fill(
+        trade_id="ba", order_id="ord-a", side="yes", action="buy",
+        price_cents=20, qty=30,
+    ))
+    await record_fill(session, _make_fill(
+        trade_id="bb", order_id="ord-b", side="yes", action="buy",
+        price_cents=25, qty=70,
+    ))
+
+    # Sell 100 @ 40¢ spanning both openers (30 from A, 70 from B).
+    await record_fill(session, _make_fill(
+        trade_id="sx", order_id="sell-x", side="yes", action="sell",
+        price_cents=40, qty=100,
+    ))
+
+    # Simulate the REST fill arriving with the authoritative fee_cost = 13¢.
+    # Pro-rated 30:70 → A gets 4¢ (30*13/100 = 3.9), B gets 9¢. Largest-
+    # remainder rounding distributes the leftover cent to B (remainder 10
+    # vs A's 90; the larger remainder wins).
+    rest = RestFill(
+        trade_id="sx",
+        order_id="sell-x",
+        ticker=SOCCER_TICKER,
+        side="yes",
+        action="sell",
+        count_centi=10000,
+        yes_price=40,
+        no_price=60,
+        is_taker=True,
+        fee_cents=13,
+        created_time=datetime.now(timezone.utc),
+    )
+    affected = await _ingest_rest_fill(session, rest_fill=rest)
+    assert {bet_a.id, bet_b.id} == affected
+    for bid in affected:
+        bet = await session.get(Bet, bid)
+        await _recompute_bet_fees(session, bet=bet)
+    await session.flush()
+
+    await session.refresh(bet_a)
+    await session.refresh(bet_b)
+    # Pro-rata math: A gets floor(13*30/100) = 3, remainder = 13*30 - 3*100 = 90
+    # B gets floor(13*70/100) = 9, remainder = 13*70 - 9*100 = 10
+    # Leftover cent = 13 - (3 + 9) = 1, goes to highest remainder (A).
+    # So A = 4¢, B = 9¢. Total = 13¢ exactly.
+    assert bet_a.exit_fees_cents + bet_b.exit_fees_cents == 13
+    assert bet_a.exit_fees_cents == 4
+    assert bet_b.exit_fees_cents == 9
+
+
+@pytest.mark.asyncio
+async def test_ws_after_external_fill_binds_bet_without_losing_fee(
+    session: AsyncSession,
+) -> None:
+    """fills_sync may insert a bet_fill with bet_id=NULL before WS delivers
+    the same trade. When WS arrives, the existing row gets attached to the
+    bet — its already-populated fee_cents survives, and the bet's fee
+    aggregate gets recomputed."""
+    bet = await _open_bet(session, order_id="ord-1", qty=5, price=30)
+
+    # Simulate fills_sync seeing a buy fill before WS delivered it.
+    early = BetFill(
+        bet_id=None,
+        trade_id="early-1",
+        order_id="ord-1",
+        ticker=SOCCER_TICKER,
+        side="yes",
+        action="buy",
+        price_cents=30,
+        quantity_centi=500,
+        fee_cents=2,
+        is_taker=True,
+        fee_synced_at=datetime.now(timezone.utc),
+        created_time=datetime.now(timezone.utc),
+    )
+    session.add(early)
+    await session.flush()
+
+    # Now WS delivers the same trade.
+    await record_fill(session, _make_fill(
+        trade_id="early-1", order_id="ord-1", side="yes", action="buy",
+        price_cents=30, qty=5,
+    ))
+
+    # The bet_fill is now attached to the bet, the fee is intact, the
+    # bet-level entry_fees_cents reflects it.
+    await session.refresh(bet)
+    bound = await session.scalar(
+        select(BetFill).where(BetFill.trade_id == "early-1")
+    )
+    assert bound is not None
+    assert bound.bet_id == bet.id
+    assert bound.fee_cents == 2
+    assert bet.entry_fees_cents == 2
+
+    # No duplicate row was created.
+    count = await session.scalar(
+        select(func.count(BetFill.id)).where(BetFill.trade_id == "early-1")
+    )
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_partial_close_net_pnl_uses_realized(session: AsyncSession) -> None:
+    """A bet that has partially closed shows realized_pnl in the ledger
+    even though it's still OPEN. The ledger's net_pnl_cents falls back to
+    realized when pnl_cents is None."""
+    from src.api.routes.ledger import _bet_to_dict
+
+    bet = await _open_bet(session, order_id="ord-1", qty=100, price=40)
+    await record_fill(session, _make_fill(
+        trade_id="b1", order_id="ord-1", side="yes", action="buy",
+        price_cents=40, qty=100,
+    ))
+    await record_fill(session, _make_fill(
+        trade_id="s1", order_id="sell-1", side="yes", action="sell",
+        price_cents=60, qty=30,
+    ))
+    # Simulate fee enrichment on the sell fill (Kalshi charged 3¢).
+    sell_fill = await session.scalar(
+        select(BetFill).where(BetFill.trade_id == "s1")
+    )
+    sell_fill.fee_cents = 3
+    bet.exit_fees_cents = 3
+    await session.flush()
+    await session.refresh(bet)
+
+    out = _bet_to_dict(bet, ticker=SOCCER_TICKER)
+    assert bet.status == BetStatus.OPEN
+    assert out["pnl_cents"] is None
+    assert out["realized_pnl_cents"] == 600
+    assert out["fees_cents"] == 3
+    # Net falls back to realized - fees when pnl_cents is None.
+    assert out["net_pnl_cents"] == 597

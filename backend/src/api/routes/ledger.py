@@ -42,9 +42,11 @@ router = APIRouter()
 
 def _bet_to_dict(b: Bet, ticker: str | None) -> dict[str, Any]:
     fees_cents = (b.entry_fees_cents or 0) + (b.exit_fees_cents or 0)
-    net_pnl = (
-        b.pnl_cents - fees_cents if b.pnl_cents is not None else None
-    )
+    # Show running net PnL on partial closes. pnl_cents is None while the
+    # bet is OPEN; realized_pnl_cents holds the running total as sells
+    # close shares. Once terminal, pnl_cents mirrors realized_pnl_cents.
+    base_pnl = b.pnl_cents if b.pnl_cents is not None else b.realized_pnl_cents
+    net_pnl = base_pnl - fees_cents if base_pnl is not None else None
     return {
         "id": b.id,
         "sport": b.sport,

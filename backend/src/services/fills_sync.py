@@ -33,6 +33,7 @@ from src.core.logging import get_logger
 from src.kalshi.rest import KalshiRestClient
 from src.kalshi.schemas import Fill as RestFill
 from src.models import Bet, BetFill
+from src.services.bet_service import _recompute_bet_fees
 from src.sports.soccer import is_soccer_ticker
 
 log = get_logger(__name__)
@@ -40,50 +41,58 @@ log = get_logger(__name__)
 POLL_INTERVAL_S = 30
 
 
-async def _recompute_bet_fees(session: AsyncSession, *, bet_id: int) -> None:
-    """Recompute entry_fees_cents and exit_fees_cents from bet_fill rows.
-
-    Always derived; never accumulated. If a fee value changes (rare —
-    Kalshi could in theory waive after the fact), the bet reflects the
-    latest truth.
-    """
-    bet = await session.get(Bet, bet_id)
-    if bet is None:
-        return
-    fills = (await session.execute(
-        select(BetFill).where(BetFill.bet_id == bet_id)
-    )).scalars().all()
-    bet.entry_fees_cents = sum(
-        (f.fee_cents or 0) for f in fills if f.action == "buy"
-    )
-    bet.exit_fees_cents = sum(
-        (f.fee_cents or 0) for f in fills if f.action == "sell"
-    )
-
-
 async def _ingest_rest_fill(
     session: AsyncSession,
     *,
     rest_fill: RestFill,
-) -> int | None:
-    """Upsert one REST fill. Returns the bet_id whose fees need recomputing
-    (or None if nothing changed)."""
-    if not is_soccer_ticker(rest_fill.ticker):
-        return None
+) -> set[int]:
+    """Upsert one REST fill. Returns the set of bet_ids whose fees need
+    recomputing.
 
-    existing = await session.scalar(
-        select(BetFill).where(BetFill.trade_id == rest_fill.trade_id)
-    )
-    if existing is not None:
-        # Already have the row (typical case: WS got it first). Update fee
-        # if it's still pending. Don't touch bet_id — the WS path's FIFO
-        # matching is authoritative for attribution.
-        changed = False
-        if existing.fee_cents is None or existing.fee_cents != rest_fill.fee_cents:
-            existing.fee_cents = rest_fill.fee_cents
-            existing.fee_synced_at = datetime.now(timezone.utc)
-            changed = True
-        return existing.bet_id if changed else None
+    A WS sell that crossed multiple openers creates one bet_fill per opener
+    via the synthetic-trade_id convention `{trade_id}#{opener_id}`. The
+    Kalshi REST row reports a single fee_cost for the whole original trade.
+    We split that fee across the synthetic rows by quantity_centi so each
+    bet's exit_fees_cents reflects its share of the actual cost.
+    """
+    if not is_soccer_ticker(rest_fill.ticker):
+        return set()
+
+    # Match the canonical row plus any cross-opener splits.
+    rows = (await session.execute(
+        select(BetFill).where(
+            (BetFill.trade_id == rest_fill.trade_id)
+            | (BetFill.trade_id.like(f"{rest_fill.trade_id}#%"))
+        )
+    )).scalars().all()
+
+    if rows:
+        total_centi = sum(r.quantity_centi for r in rows)
+        if total_centi <= 0:
+            return set()
+        # Pro-rate the fee. Use largest-remainder rounding so cents sum
+        # back to the original fee exactly (no off-by-one drift).
+        allocations: list[tuple[BetFill, int, int]] = []  # (row, base_cents, remainder)
+        running = 0
+        for r in rows:
+            num = rest_fill.fee_cents * r.quantity_centi
+            base = num // total_centi
+            remainder = num - base * total_centi
+            allocations.append((r, base, remainder))
+            running += base
+        # Distribute the leftover cents to rows with the highest remainder.
+        leftover = rest_fill.fee_cents - running
+        allocations.sort(key=lambda x: x[2], reverse=True)
+        affected: set[int] = set()
+        synced_at = datetime.now(timezone.utc)
+        for idx, (row, base, _) in enumerate(allocations):
+            new_fee = base + (1 if idx < leftover else 0)
+            if row.fee_cents != new_fee:
+                row.fee_cents = new_fee
+                row.fee_synced_at = synced_at
+                if row.bet_id is not None:
+                    affected.add(row.bet_id)
+        return affected
 
     # REST saw a fill WS didn't. External (kalshi.com) or a missed event.
     # Record for audit; leave bet_id NULL.
@@ -111,7 +120,7 @@ async def _ingest_rest_fill(
         ticker=rest_fill.ticker,
         action=rest_fill.action,
     )
-    return None
+    return set()
 
 
 async def sync_fills_once() -> dict[str, int]:
@@ -137,13 +146,15 @@ async def sync_fills_once() -> dict[str, int]:
     affected_bet_ids: set[int] = set()
     async with factory() as session:
         for rf in rest_fills:
-            bet_id = await _ingest_rest_fill(session, rest_fill=rf)
-            if bet_id is not None:
-                affected_bet_ids.add(bet_id)
+            touched = await _ingest_rest_fill(session, rest_fill=rf)
+            if touched:
+                affected_bet_ids.update(touched)
                 enriched += 1
         await session.flush()
         for bet_id in affected_bet_ids:
-            await _recompute_bet_fees(session, bet_id=bet_id)
+            bet = await session.get(Bet, bet_id)
+            if bet is not None:
+                await _recompute_bet_fees(session, bet=bet)
         await session.commit()
 
     log.info(
