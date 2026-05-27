@@ -181,7 +181,7 @@ class TestFillTouchesTimestamp:
             type="fill", sid=1,
             msg=FillPayload(
                 trade_id="t", order_id="o", ticker="X", side="yes", action="buy",
-                count=1, yes_price_cents=42, no_price_cents=58,
+                count_centi=100, yes_price_cents=42, no_price_cents=58,
             ),
         ))
         assert s.last_ws_message_at > before

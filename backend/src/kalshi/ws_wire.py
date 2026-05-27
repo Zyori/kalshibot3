@@ -94,7 +94,10 @@ class FillPayload(WireBase):
     ticker: str
     side: Literal["yes", "no"]
     action: Literal["buy", "sell"]
-    count: int = Field(ge=1)
+    count_centi: int = Field(ge=1)
+    """Hundredths of a contract. Kalshi's count_fp can be fractional when
+    one logical fill spans fee tiers (e.g. 0.97 + 0.03 = 1 contract).
+    Storing as int * 100 keeps the granularity exactly."""
     yes_price_cents: int = Field(ge=1, le=99)
     no_price_cents: int = Field(ge=1, le=99)
     """Kalshi's WS only sends one of yes_price / no_price per fill (the
@@ -103,6 +106,11 @@ class FillPayload(WireBase):
     REST's portfolio/fills sometimes sends both, but WS is sparse."""
     is_taker: bool | None = None
     ts: datetime | None = None
+
+    @property
+    def count(self) -> int:
+        """Whole contracts (rounded). For display/log only."""
+        return self.count_centi // 100
 
 
 class Fill(WireBase):
@@ -278,9 +286,15 @@ def parse_kalshi_ws_message(raw: dict) -> KalshiWsMessage | None:
             yes_cents = 100 - no_cents
         elif no_cents is None and yes_cents is not None:
             no_cents = 100 - yes_cents
-        # count arrives as a float-string ("1.00"); cast through float.
+        # count arrives as a fractional-contract string ("1.00", "0.97"); store
+        # as int hundredths to preserve Kalshi's fee-tier splits exactly.
         count_raw = msg.get("count_fp") or msg.get("count") or 0
-        count = int(float(count_raw))
+        try:
+            count_centi = int(round(float(count_raw) * 100))
+        except (TypeError, ValueError):
+            count_centi = 0
+        if count_centi < 1:
+            count_centi = 1  # bug-input guard: never emit qty 0 fills downstream
         return Fill(
             type="fill",
             sid=raw["sid"],
@@ -290,7 +304,7 @@ def parse_kalshi_ws_message(raw: dict) -> KalshiWsMessage | None:
                 ticker=msg.get("ticker") or msg.get("market_ticker") or "",
                 side=msg["side"],
                 action=msg.get("action", "buy"),
-                count=count,
+                count_centi=count_centi,
                 yes_price_cents=yes_cents or 1,
                 no_price_cents=no_cents or 1,
                 is_taker=msg.get("is_taker"),

@@ -40,6 +40,7 @@ from src.services.bet_service import (
     record_fill,
     settle_bets_for_market,
 )
+from src.services.fills_sync import FillsSyncer
 from src.services.market_refresher import MarketRefresher
 from src.services.market_tier import MarketTier, classify
 from src.services.position_sync import PositionSyncer
@@ -86,6 +87,7 @@ class Supervisor:
             self.live_state, broadcast_queue=self.kalshi_to_browser,
         )
         self.position_syncer = PositionSyncer()
+        self.fills_syncer = FillsSyncer()
 
         # Track each ticker's last-known tier so we can detect transitions
         # (FAR→SOON, LIVE→DONE, etc.) and run the right hand-off logic.
@@ -112,6 +114,13 @@ class Supervisor:
             await self.position_syncer.trigger()
         except Exception:  # noqa: BLE001
             log.exception("position_sync_after_fill_failed")
+        # Fee enrichment: REST /portfolio/fills carries the authoritative
+        # fee_cost per fill; WS doesn't. Trigger a sweep so the bet_fill
+        # row we just inserted gets its fee populated within seconds.
+        try:
+            await self.fills_syncer.trigger()
+        except Exception:  # noqa: BLE001
+            log.exception("fills_sync_after_fill_failed")
         # Invalidate the cached balance so the next /health refreshes it.
         # Cheap signal; avoids holding a Kalshi REST call inside the fill
         # handler's critical path.
@@ -314,10 +323,14 @@ class Supervisor:
         self._tasks.append(asyncio.create_task(
             self.position_syncer.run(), name="position_sync",
         ))
+        self._tasks.append(asyncio.create_task(
+            self.fills_syncer.run(), name="fills_sync",
+        ))
         log.info("supervisor_started", tasks=len(self._tasks))
 
     async def stop(self) -> None:
         """Cancel every task and await its cleanup."""
+        await self.fills_syncer.stop()
         await self.position_syncer.stop()
         await self.market_discovery.stop()
         await self.market_refresher.stop()

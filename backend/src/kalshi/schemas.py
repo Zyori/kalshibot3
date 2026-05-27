@@ -242,18 +242,63 @@ class PositionsResponse(WireModelLoose):
 
 
 class Fill(WireModelLoose):
-    """`GET /portfolio/fills` row — one execution at one price."""
+    """`GET /portfolio/fills` row — one execution at one price.
+
+    Kalshi's wire format ships dollar strings (`yes_price_dollars`,
+    `fee_cost`); we normalize to int cents in the validator. `fee_cost` is
+    the authoritative per-fill fee — the only source of truth for fees in
+    this codebase. Never estimate from a formula.
+    """
 
     trade_id: str
     order_id: str
     ticker: str
     side: Literal["yes", "no"]
     action: Literal["buy", "sell"]
-    count: int = Field(ge=1)
+    count_centi: int = Field(ge=1)
+    """Hundredths of a contract. Kalshi's `count_fp` is a fractional-contract
+    string (e.g. "0.97", "67.06") because one logical fill can be split
+    across fee tiers. Centi keeps Kalshi's granularity exactly."""
     yes_price: int = Field(ge=1, le=99)
     no_price: int = Field(ge=1, le=99)
     is_taker: bool
+    fee_cents: int = Field(default=0, ge=0)
     created_time: datetime
+
+    @property
+    def count(self) -> int:
+        """Whole contracts (rounded). For display only — bet bookkeeping
+        uses count_centi to preserve Kalshi's fractional reporting."""
+        return self.count_centi // 100
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_wire_format(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+
+        if "yes_price" not in out and "yes_price_dollars" in out:
+            out["yes_price"] = _dollar_str_to_cents(out["yes_price_dollars"])
+        if "no_price" not in out and "no_price_dollars" in out:
+            out["no_price"] = _dollar_str_to_cents(out["no_price_dollars"])
+        if "count_centi" not in out:
+            if "count_fp" in out:
+                try:
+                    out["count_centi"] = int(round(float(out["count_fp"]) * 100))
+                except (TypeError, ValueError):
+                    out["count_centi"] = 0
+            elif "count" in out:
+                out["count_centi"] = int(out["count"]) * 100
+        if "fee_cents" not in out:
+            for key in ("fee_cost_dollars", "fee_cost", "fees_paid_dollars"):
+                if key in out and out[key] is not None:
+                    try:
+                        out["fee_cents"] = int(round(float(out[key]) * 100))
+                    except (TypeError, ValueError):
+                        out["fee_cents"] = 0
+                    break
+        return out
 
 
 class FillsResponse(WireModelLoose):

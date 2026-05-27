@@ -75,8 +75,29 @@ class Bet(Base):
     entry_price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     exit_price_cents: Mapped[int | None] = mapped_column(Integer)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    remaining_quantity: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    """Contracts still held. Starts at `quantity`, decremented by sell fills
+    via FIFO matching. Bet stays OPEN until this hits 0."""
     stake_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     pnl_cents: Mapped[int | None] = mapped_column(Integer)
+    """Gross PnL at terminal status — kept for backwards compatibility.
+    Mirrors realized_pnl_cents once the bet closes. Net PnL is computed
+    as pnl_cents - entry_fees_cents - exit_fees_cents at the API layer."""
+    realized_pnl_cents: Mapped[int | None] = mapped_column(Integer)
+    """Running gross PnL as sell fills close shares. Equals pnl_cents at
+    terminal status. NULL while still OPEN with no closes yet."""
+    entry_fees_cents: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    """Sum of fee_cents over this bet's buy-side bet_fill rows. Populated
+    by the fills-sync sweep (Kalshi's authoritative per-fill fee_cost)."""
+    exit_fees_cents: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    """Sum of fee_cents over sell-side bet_fill rows that FIFO-matched to
+    this bet. Net PnL = realized_pnl - entry_fees - exit_fees."""
 
     status: Mapped[BetStatus] = mapped_column(String(16), nullable=False)
     exit_type: Mapped[ExitType | None] = mapped_column(String(24))
@@ -131,7 +152,7 @@ class Bet(Base):
             name="ck_bet_entry_price_range",
         ),
         CheckConstraint(
-            "exit_price_cents IS NULL OR (exit_price_cents >= 1 AND exit_price_cents <= 99)",
+            "exit_price_cents IS NULL OR (exit_price_cents >= 0 AND exit_price_cents <= 100)",
             name="ck_bet_exit_price_range",
         ),
         CheckConstraint("quantity >= 1", name="ck_bet_quantity_positive"),

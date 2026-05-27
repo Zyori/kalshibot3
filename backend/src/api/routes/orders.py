@@ -57,8 +57,10 @@ class OrderPreviewResponse(BaseModel):
     verdict: Verdict
     reasons: list[str]
     total_cost_cents: int
-    """count * price_cents. Caller might want fees too — Kalshi doesn't
-    charge per-trade fees on most contracts so we don't surface a fee."""
+    """count * price_cents. Fees aren't surfaced in the preview — they're
+    populated after the fact from Kalshi's per-fill fee_cost (see
+    fills_sync.py) since fee rates vary by maker/taker and price tier and
+    we don't estimate."""
 
 
 def _book_snapshot(request: Request, ticker: str) -> dict[str, int | None]:
@@ -200,6 +202,7 @@ async def place_order(
         client_order_id=client_order_id,
         requested_count=body.count,
         requested_price_cents=body.price_cents,
+        action=body.action,
     )
     await session.commit()
 
@@ -214,7 +217,7 @@ async def place_order(
         _asyncio.create_task(supervisor.position_syncer.trigger())
 
     return {
-        "bet_id": bet.id,
+        "bet_id": bet.id if bet is not None else None,
         "kalshi_order_id": resp.order.order_id,
         "client_order_id": client_order_id,
         "status": resp.order.status,
