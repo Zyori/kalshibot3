@@ -34,6 +34,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
+from src.core.types import utc_iso
 from src.models import Bet, Market
 
 router = APIRouter()
@@ -61,9 +62,9 @@ def _bet_to_dict(b: Bet, ticker: str | None) -> dict[str, Any]:
         "human_reasoning": b.human_reasoning,
         "ai_reasoning": b.ai_reasoning,
         "tags": b.tags,
-        "placed_at": b.placed_at.isoformat() if b.placed_at else None,
-        "settled_at": b.settled_at.isoformat() if b.settled_at else None,
-        "created_at": b.created_at.isoformat(),
+        "placed_at": utc_iso(b.placed_at),
+        "settled_at": utc_iso(b.settled_at),
+        "created_at": utc_iso(b.created_at),
     }
 
 

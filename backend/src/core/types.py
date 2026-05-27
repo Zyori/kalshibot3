@@ -7,8 +7,36 @@ import `BetStatus.OPEN` instead.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import NewType
+
+
+def utc_iso(dt: datetime | None) -> str | None:
+    """Serialize a datetime to an unambiguous UTC ISO string.
+
+    SQLite's DateTime(timezone=True) is a lie: timezone metadata is
+    stripped on write, so we read naive datetimes back even though we
+    stored aware ones. Every API timestamp must be tz-aware UTC at the
+    wire, otherwise JavaScript's `new Date()` parses it as local time
+    and the user sees the wrong hour (which is exactly what happened
+    on the Ledger page 2026-05-27).
+
+    Rules:
+      None -> None.
+      Naive datetime -> assume UTC (matches every site that writes
+        datetime.now(timezone.utc) into the DB).
+      Aware datetime -> convert to UTC, serialize with 'Z' suffix for
+        compactness.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    # 'Z' is shorter than '+00:00' and unambiguous.
+    return dt.isoformat().replace("+00:00", "Z")
 
 # === Branded scalars ===
 # Python doesn't enforce NewType at runtime, but mypy does. Using these in signatures

@@ -23,6 +23,7 @@ from sqlalchemy import text
 from src.core.db import get_session_factory
 from src.core.exceptions import KalshiError
 from src.core.logging import get_logger
+from src.core.types import utc_iso
 from src.kalshi.rest import KalshiRestClient
 
 router = APIRouter()
@@ -49,7 +50,7 @@ async def refresh_balance(app_state: Any, *, force: bool = False) -> None:
         app_state.kalshi_balance_cents = balance.balance
         app_state.kalshi_auth_ok = True
         app_state.kalshi_auth_error = None
-        app_state.kalshi_auth_checked_at = datetime.now(timezone.utc).isoformat()
+        app_state.kalshi_auth_checked_at = utc_iso(datetime.now(timezone.utc))
         app_state._balance_refreshed_at_mono = now
     except KalshiError as e:
         app_state.kalshi_auth_error = f"kalshi: {e}"

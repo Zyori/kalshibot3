@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 
 from src.core.logging import get_logger
+from src.core.types import utc_iso
 from src.kalshi.rest import KalshiRestClient
 from src.sports.soccer import is_soccer_ticker, league_display_name
 
@@ -53,8 +54,8 @@ def _feed_market_to_dict(m: Any, live_state: Any) -> dict[str, Any]:
         "series": m.series,
         "league": league_display_name(m.series),
         "status": m.status,
-        "open_time": m.open_time.isoformat() if m.open_time else None,
-        "close_time": m.close_time.isoformat() if m.close_time else None,
+        "open_time": utc_iso(m.open_time),
+        "close_time": utc_iso(m.close_time),
         "yes_bid_cents": yes_bid,
         "yes_ask_cents": yes_ask,
         "volume": m.volume,
@@ -79,7 +80,7 @@ async def get_feed(request: Request) -> dict[str, Any]:
         "live": [_feed_market_to_dict(m, live_state) for m in feed.live],
         "upcoming": [_feed_market_to_dict(m, live_state) for m in feed.upcoming],
         "recent": [_feed_market_to_dict(m, live_state) for m in feed.recent],
-        "refreshed_at": feed.refreshed_at.isoformat() if feed.refreshed_at else None,
+        "refreshed_at": utc_iso(feed.refreshed_at),
     }
 
 
@@ -121,7 +122,7 @@ async def get_market(ticker: str, request: Request) -> dict[str, Any]:
         "event_title": meta.event_title if meta else None,
         "market_title": meta.market_title if meta else None,
         "yes_sub_title": meta.yes_sub_title if meta else None,
-        "open_time": meta.open_time.isoformat() if meta and meta.open_time else None,
+        "open_time": utc_iso(meta.open_time) if meta else None,
     }
 
     if book is None:

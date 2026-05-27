@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
 from src.core.logging import get_logger
+from src.core.types import utc_iso
 from src.models import Market, Position
 from src.sports.soccer import is_soccer_ticker, league_display_name
 
@@ -135,8 +136,8 @@ async def get_event(
         "event_title": head.event_title,
         "series": head.series,
         "league": league_display_name(head.series),
-        "open_time": head.open_time.isoformat() if head.open_time else None,
-        "close_time": head.close_time.isoformat() if head.close_time else None,
+        "open_time": utc_iso(head.open_time),
+        "close_time": utc_iso(head.close_time),
         "bucket": head.bucket,
         "espn_state": head.espn_state,
         "espn_period": head.espn_period,

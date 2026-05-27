@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
+from src.core.types import utc_iso
 from src.models import Position
 
 router = APIRouter()
@@ -35,7 +36,7 @@ async def list_positions(session: AsyncSession = Depends(get_session)) -> dict[s
                 "avg_entry_price_cents": p.avg_entry_price_cents,
                 "current_price_cents": p.current_price_cents,
                 "unrealized_pnl_cents": p.unrealized_pnl_cents,
-                "last_synced": p.last_synced.isoformat() if p.last_synced else None,
+                "last_synced": utc_iso(p.last_synced),
             }
             for p in rows
         ],
