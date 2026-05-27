@@ -83,6 +83,15 @@ async def get_event(
     except Exception as e:  # noqa: BLE001 — never fail the read on a sub failure
         log.warning("event_subscribe_failed", event=event_ticker, error=str(e)[:120])
 
+    # Locked-book guard for every child: drop crossed books and force a
+    # REST resync. Rate-limited inside the refresher so this is safe to
+    # call on every event-page load.
+    for t in child_tickers:
+        try:
+            await supervisor.market_refresher.resync_locked(t)
+        except Exception:  # noqa: BLE001
+            log.warning("resync_locked_failed", ticker=t, exc_info=True)
+
     # Bulk-load positions for these tickers in one query.
     rows = (
         await session.execute(

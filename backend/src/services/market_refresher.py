@@ -37,6 +37,10 @@ from src.services.market_tier import far_poll_interval
 log = get_logger(__name__)
 
 TICK_INTERVAL_S = 15
+RESYNC_COOLDOWN_S = 10
+"""Per-ticker minimum interval between locked-book resyncs. Stops a
+persistently broken book from hammering Kalshi but still recovers quickly
+once the WS catches back up."""
 """How often the poll loop wakes up to check for due refreshes. Smaller =
 more responsive but more CPU. 15s gives sub-minute reaction to force-
 refresh requests without spinning the event loop."""
@@ -64,6 +68,8 @@ class MarketRefresher:
         self._stopped = False
         self._task: asyncio.Task | None = None
         self._tick_event = asyncio.Event()
+        self._last_resync_at: dict[str, float] = {}
+        """ticker -> monotonic timestamp of last locked-book resync."""
         """Set by `refresh_now` to wake the tick loop early."""
 
     # === Scheduling ===
@@ -100,6 +106,40 @@ class MarketRefresher:
         snapshot (covers the gap before the first WS snapshot arrives)."""
         self._next_refresh_at[ticker] = time.monotonic()
         self._tick_event.set()
+
+    async def resync_locked(self, ticker: str) -> bool:
+        """If `ticker`'s book is locked (yes_bid + no_bid > 100, impossible),
+        force an immediate REST resync. Returns True if a resync ran.
+
+        Rate-limited: only resyncs the same ticker once per RESYNC_COOLDOWN_S
+        so a persistently broken book doesn't hammer Kalshi. The cooldown is
+        per-ticker, not global — different broken tickers can each resync
+        once per window.
+
+        Inline (not scheduled) because the caller is usually a route that
+        wants the fixed book before responding to the user."""
+        book = self.live_state.books.get(ticker)
+        if book is None or not book.is_locked:
+            return False
+        now = time.monotonic()
+        last = self._last_resync_at.get(ticker, 0.0)
+        if now - last < RESYNC_COOLDOWN_S:
+            return False
+        self._last_resync_at[ticker] = now
+        log.warning(
+            "book_locked_resync",
+            ticker=ticker,
+            yes_bid=book.yes_best_bid, no_bid=book.no_best_bid,
+        )
+        # Clear first so a partial fetch doesn't leave a half-stale book.
+        book.clear()
+        try:
+            async with KalshiRestClient() as client:
+                await self._poll_one(client, ticker)
+        except Exception as e:  # noqa: BLE001
+            log.warning("book_locked_resync_failed", ticker=ticker, error=str(e)[:120])
+            return False
+        return True
 
     # === Polling ===
 

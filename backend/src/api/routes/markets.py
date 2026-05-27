@@ -104,7 +104,6 @@ async def get_market(ticker: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="supervisor not started")
 
     live_state = supervisor.live_state
-    book = live_state.books.get(ticker)
 
     # Subscribe to this market's orderbook stream if we aren't already. This
     # is how the user "discovers" a market we haven't been watching — paste
@@ -113,6 +112,17 @@ async def get_market(ticker: str, request: Request) -> dict[str, Any]:
         await supervisor.kalshi_ws.add_market_subscriptions([ticker])
     except Exception as e:  # noqa: BLE001 — never fail the read on a sub failure
         log.warning("market_detail_sub_failed", ticker=ticker, error=str(e)[:120])
+
+    # Locked-book guard: if WS deltas got out of sync and we're serving a
+    # crossed book (yes_bid + no_bid > 100, impossible in reality), force a
+    # one-shot REST resync before returning. Per-ticker rate-limited inside
+    # the refresher so a persistently broken book can't hammer Kalshi.
+    try:
+        await supervisor.market_refresher.resync_locked(ticker)
+    except Exception:  # noqa: BLE001
+        log.warning("resync_locked_failed", ticker=ticker, exc_info=True)
+
+    book = live_state.books.get(ticker)
 
     # Discovery has metadata (event_title, yes_sub_title, kickoff time) for
     # every tracked ticker. Look it up so the per-market page can render a
