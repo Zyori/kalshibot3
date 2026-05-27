@@ -78,7 +78,13 @@ class Supervisor:
         self.espn_scoreboard = EspnScoreboard()
         self.market_discovery = MarketDiscovery(espn=self.espn_scoreboard)
         self.market_discovery.register_refresh_callback(self._on_discovery_refresh)
-        self.market_refresher = MarketRefresher(self.live_state)
+        # MarketRefresher shares the browser broadcast queue so its REST
+        # snapshots (FAR-tier polls + locked-book resyncs) reach connected
+        # browsers, not just LiveState. Without this, browsers see the
+        # corrected state only on the next page reload.
+        self.market_refresher = MarketRefresher(
+            self.live_state, broadcast_queue=self.kalshi_to_browser,
+        )
         self.position_syncer = PositionSyncer()
 
         # Track each ticker's last-known tier so we can detect transitions
@@ -301,6 +307,9 @@ class Supervisor:
         ))
         self._tasks.append(asyncio.create_task(
             self.market_refresher.run(), name="market_refresher",
+        ))
+        self._tasks.append(asyncio.create_task(
+            self.market_refresher.run_locked_sweep(), name="locked_book_sweep",
         ))
         self._tasks.append(asyncio.create_task(
             self.position_syncer.run(), name="position_sync",

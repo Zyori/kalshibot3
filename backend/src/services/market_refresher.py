@@ -31,13 +31,23 @@ from collections.abc import Iterable
 from src.core.logging import get_logger
 from src.kalshi.live_state import LiveState
 from src.kalshi.rest import KalshiRestClient
-from src.kalshi.ws_wire import BookLevel
+from src.kalshi.ws_wire import (
+    BookLevel,
+    KalshiWsMessage,
+    OrderbookSnapshot,
+    OrderbookSnapshotPayload,
+)
 from src.services.market_tier import far_poll_interval
 
 log = get_logger(__name__)
 
 TICK_INTERVAL_S = 15
 RESYNC_COOLDOWN_S = 10
+LOCKED_SWEEP_INTERVAL_S = 30
+"""How often the supervisor scans every cached book for locked state
+and force-resyncs the offenders. Each resync also broadcasts a fresh
+orderbook_snapshot to connected browsers so they don't have to wait
+for the next page-load to repair their cache."""
 """Per-ticker minimum interval between locked-book resyncs. Stops a
 persistently broken book from hammering Kalshi but still recovers quickly
 once the WS catches back up."""
@@ -58,8 +68,17 @@ class MarketRefresher:
     tickers without thread/task explosion.
     """
 
-    def __init__(self, live_state: LiveState) -> None:
+    def __init__(
+        self,
+        live_state: LiveState,
+        broadcast_queue: "asyncio.Queue[KalshiWsMessage] | None" = None,
+    ) -> None:
         self.live_state = live_state
+        self.broadcast_queue = broadcast_queue
+        """Browser-WS queue. When set, every REST snapshot (from polling or
+        from a locked-book resync) is also pushed here as an OrderbookSnapshot
+        event so connected browsers replace their stale cache atomically,
+        rather than waiting for the next page reload."""
         self._next_refresh_at: dict[str, float] = {}
         """ticker -> monotonic deadline. Past deadlines are due now."""
         self._kickoff: dict[str, float | None] = {}
@@ -68,9 +87,9 @@ class MarketRefresher:
         self._stopped = False
         self._task: asyncio.Task | None = None
         self._tick_event = asyncio.Event()
+        """Set by `refresh_now` to wake the tick loop early."""
         self._last_resync_at: dict[str, float] = {}
         """ticker -> monotonic timestamp of last locked-book resync."""
-        """Set by `refresh_now` to wake the tick loop early."""
 
     # === Scheduling ===
 
@@ -106,6 +125,37 @@ class MarketRefresher:
         snapshot (covers the gap before the first WS snapshot arrives)."""
         self._next_refresh_at[ticker] = time.monotonic()
         self._tick_event.set()
+
+    async def sweep_locked_books(self) -> int:
+        """Scan every cached book once, resync any that's locked. Returns
+        the count repaired. Called from the background task every
+        LOCKED_SWEEP_INTERVAL_S. Safe to call manually too.
+
+        Why this exists: WS deltas occasionally produce incoherent state
+        (likely a missed delete delta, or a gap our sequence-tracking
+        didn't catch). Without a periodic sweep, a once-corrupted book
+        stays corrupted forever — every subsequent delta applies to bad
+        baseline state. The sweep is the steady-state correctness loop.
+        """
+        repaired = 0
+        for ticker in list(self.live_state.books.keys()):
+            try:
+                if await self.resync_locked(ticker):
+                    repaired += 1
+            except Exception:  # noqa: BLE001
+                log.exception("sweep_resync_failed", ticker=ticker)
+        if repaired:
+            log.info("locked_book_sweep_complete", repaired=repaired)
+        return repaired
+
+    async def run_locked_sweep(self) -> None:
+        """Long-running task. Runs sweep_locked_books on a fixed cadence."""
+        while not self._stopped:
+            await asyncio.sleep(LOCKED_SWEEP_INTERVAL_S)
+            try:
+                await self.sweep_locked_books()
+            except Exception:  # noqa: BLE001
+                log.exception("locked_book_sweep_failed")
 
     async def resync_locked(self, ticker: str) -> bool:
         """If `ticker`'s book is locked (yes_bid + no_bid > 100, impossible),
@@ -188,6 +238,28 @@ class MarketRefresher:
         book.yes.apply_snapshot(yes)
         book.no.apply_snapshot(no)
         book.last_update = time.monotonic()
+        # Broadcast this snapshot to connected browsers so their book cache
+        # gets atomically replaced. Without this, browsers stay locked even
+        # after the server's LiveState is healthy — they'd only see the new
+        # state on the next page reload.
+        if self.broadcast_queue is not None:
+            snapshot_msg = OrderbookSnapshot(
+                type="orderbook_snapshot",
+                sid=0,   # sid is informational on the browser side; 0 is fine
+                seq=0,   # ditto
+                msg=OrderbookSnapshotPayload(
+                    market_ticker=ticker,
+                    market_id="",
+                    yes=yes,
+                    no=no,
+                ),
+            )
+            try:
+                self.broadcast_queue.put_nowait(snapshot_msg)
+            except asyncio.QueueFull:
+                # Same behavior as the upstream Kalshi WS consumer — drop on
+                # overflow. The next sweep tick re-broadcasts if still locked.
+                pass
         self._reschedule(ticker)
 
     def _reschedule(self, ticker: str) -> None:
