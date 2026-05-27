@@ -4,77 +4,10 @@ import { useQuery } from '@tanstack/react-query'
 import InlineError from '../components/InlineError'
 import PnLChart from '../components/charts/PnLChart'
 import StrategyBreakdown from '../components/charts/StrategyBreakdown'
-import { formatET } from '../lib/format'
-
-type Bet = {
-  id: number
-  sport: string
-  ticker: string | null
-  side: 'yes' | 'no'
-  entry_price_cents: number
-  exit_price_cents: number | null
-  quantity: number
-  remaining_quantity: number
-  stake_cents: number
-  pnl_cents: number | null
-  realized_pnl_cents: number | null
-  entry_fees_cents: number
-  exit_fees_cents: number
-  fees_cents: number
-  net_pnl_cents: number | null
-  status: 'open' | 'won' | 'lost' | 'cancelled'
-  exit_type: string | null
-  source: string
-  strategy: string
-  confidence: string
-  timing: string
-  human_reasoning: string | null
-  ai_reasoning: string | null
-  placed_at: string | null
-  settled_at: string | null
-}
+import { formatET, formatDollars, formatFee, formatSignedDollars } from '../lib/format'
+import type { Bet, BetFillsResponse, LedgerStats as Stats } from '../lib/types'
 
 type LedgerResponse = { bets: Bet[]; next_cursor: number | null }
-
-type Stats = {
-  total_bets: number
-  by_status: Record<string, number>
-  total_pnl_cents: number
-  total_stake_cents: number
-  total_fees_cents: number
-  total_net_pnl_cents: number
-  win_rate: number | null
-  roi: number | null
-  net_roi: number | null
-  by_strategy: Array<{
-    strategy: string
-    count: number
-    pnl_cents: number
-    stake_cents: number
-    fees_cents: number
-    net_pnl_cents: number
-    roi: number | null
-    net_roi: number | null
-  }>
-}
-
-type BetFill = {
-  id: number
-  trade_id: string
-  order_id: string
-  ticker: string
-  side: 'yes' | 'no'
-  action: 'buy' | 'sell'
-  price_cents: number
-  quantity_centi: number
-  quantity: number
-  fee_cents: number | null
-  is_taker: boolean | null
-  fee_synced_at: string | null
-  created_time: string | null
-}
-
-type BetFillsResponse = { bet_id: number; fills: BetFill[] }
 
 const STATUS_OPTIONS = ['open', 'won', 'lost', 'cancelled'] as const
 const SOURCE_OPTIONS = ['human', 'ai', 'collaborative', 'external'] as const
@@ -217,8 +150,8 @@ function StatsStrip({ stats }: { stats: Stats | undefined }) {
     const fees = stats.total_fees_cents
     items.push({
       label: 'Net P&L',
-      value: net === 0 ? '$0.00' : `${net >= 0 ? '+' : ''}$${(net / 100).toFixed(2)}`,
-      sub: `${gross >= 0 ? '+' : ''}$${(gross / 100).toFixed(2)} gross · −$${(fees / 100).toFixed(2)} fees`,
+      value: formatSignedDollars(net),
+      sub: `${formatSignedDollars(gross)} gross · -${formatDollars(fees)} fees`,
       tone: net > 0 ? 'gain' : net < 0 ? 'loss' : undefined,
     })
     items.push({ label: 'Bets', value: String(stats.total_bets) })
@@ -418,17 +351,17 @@ function BetRow({
           )}
         </td>
         <td className="px-3 py-2 text-right font-mono tabular-nums text-xs text-text-muted">
-          {bet.fees_cents === 0 ? '—' : `−$${(bet.fees_cents / 100).toFixed(2)}`}
+          {formatFee(bet.fees_cents)}
         </td>
         <td className={`px-3 py-2 text-right font-mono tabular-nums text-xs ${pnlCls}`}>
           {net === null ? (
             '—'
           ) : (
             <>
-              <div>{`${net >= 0 ? '+' : ''}$${(net / 100).toFixed(2)}`}</div>
+              <div>{formatSignedDollars(net)}</div>
               {gross !== null && gross !== net && (
                 <div className="text-[10px] text-text-muted">
-                  {`${gross >= 0 ? '+' : ''}$${(gross / 100).toFixed(2)} gross`}
+                  {`${formatSignedDollars(gross)} gross`}
                 </div>
               )}
             </>
@@ -473,22 +406,12 @@ function BetDetail({ bet }: { bet: Bet }) {
               value={bet.exit_price_cents !== null ? `${bet.exit_price_cents}¢` : '—'}
             />
             <Pair label="Settled" value={formatET(bet.settled_at) || '—'} />
-            <Pair label="Stake" value={`$${(bet.stake_cents / 100).toFixed(2)}`} />
-            <Pair
-              label="Entry fees"
-              value={`$${(bet.entry_fees_cents / 100).toFixed(2)}`}
-            />
-            <Pair
-              label="Exit fees"
-              value={`$${(bet.exit_fees_cents / 100).toFixed(2)}`}
-            />
+            <Pair label="Stake" value={formatDollars(bet.stake_cents)} />
+            <Pair label="Entry fees" value={formatDollars(bet.entry_fees_cents)} />
+            <Pair label="Exit fees" value={formatDollars(bet.exit_fees_cents)} />
             <Pair
               label="Gross P&L"
-              value={
-                bet.pnl_cents === null
-                  ? '—'
-                  : `${bet.pnl_cents >= 0 ? '+' : ''}$${(bet.pnl_cents / 100).toFixed(2)}`
-              }
+              value={bet.pnl_cents === null ? '—' : formatSignedDollars(bet.pnl_cents)}
             />
             {bet.human_reasoning && (
               <Pair label="Human reasoning" value={bet.human_reasoning} wide />
@@ -562,7 +485,7 @@ function FillsList({
                   ? 'fee pending'
                   : f.fee_cents === 0
                   ? '$0.00 fee'
-                  : `−$${(f.fee_cents / 100).toFixed(2)} fee`}
+                  : `${formatFee(f.fee_cents)} fee`}
               </span>
             </li>
           )

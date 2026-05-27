@@ -78,8 +78,17 @@ class Bet(Base):
     remaining_quantity: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
-    """Contracts still held. Starts at `quantity`, decremented by sell fills
-    via FIFO matching. Bet stays OPEN until this hits 0."""
+    """Whole contracts still held (display/UI use). Floor of
+    remaining_quantity_centi / 100. Don't drive terminal state from this;
+    use remaining_quantity_centi == 0 instead so sub-contract residuals
+    from Kalshi fee-tier splits don't get silently dropped."""
+    remaining_quantity_centi: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    """Centicontracts still held. Source of truth for "is the bet closed".
+    Kalshi sometimes reports fractional count_fp (e.g. 0.97 + 0.03 spanning
+    fee tiers); using whole contracts here floor-divides 3 centi to 0 and
+    flips the bet terminal while a real exposure remains."""
     stake_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     pnl_cents: Mapped[int | None] = mapped_column(Integer)
     """Gross PnL at terminal status — kept for backwards compatibility.

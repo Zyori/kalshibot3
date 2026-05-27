@@ -55,6 +55,38 @@ def _ticker_to_sport(ticker: str) -> Sport:
     return Sport.SOCCER  # soccer is the only sport this app handles today
 
 
+def _materialize_bet_fill(
+    *,
+    existing: BetFill | None,
+    fill: Fill,
+    price_cents: int,
+    quantity_centi: int,
+    session: AsyncSession,
+) -> BetFill:
+    """Return the bet_fill row to attach a WS fill to. Either reuse the
+    existing fills_sync-inserted row (preserving its fee_cents) or create
+    a fresh one. Centralized so the buy/sell paths don't repeat the
+    constructor."""
+    if existing is not None:
+        return existing
+    bf = BetFill(
+        bet_id=None,
+        trade_id=fill.msg.trade_id,
+        order_id=fill.msg.order_id,
+        ticker=fill.msg.ticker,
+        side=fill.msg.side,
+        action=fill.msg.action,
+        price_cents=price_cents,
+        quantity_centi=quantity_centi,
+        fee_cents=None,
+        is_taker=fill.msg.is_taker,
+        fee_synced_at=None,
+        created_time=fill.msg.ts,
+    )
+    session.add(bf)
+    return bf
+
+
 async def _recompute_bet_fees(session: AsyncSession, *, bet: Bet) -> None:
     """Refresh entry_fees_cents and exit_fees_cents from this bet's bet_fill
     rows. Always derived; never accumulated. Safe to call whenever a
@@ -132,6 +164,7 @@ async def record_placed_order(
         exit_price_cents=None,
         quantity=requested_count,
         remaining_quantity=requested_count,
+        remaining_quantity_centi=requested_count * 100,
         stake_cents=requested_count * entry_price,
         pnl_cents=None,
         realized_pnl_cents=None,
@@ -213,44 +246,32 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
         log.info("fill_already_recorded", trade_id=fill.msg.trade_id)
         return
 
-    # Either no row yet, or fills_sync inserted it as an "external" row
-    # (bet_id=NULL) before WS delivered the event. In the second case we
-    # reuse the existing row — keeping its fee_cents from fills_sync — and
-    # let the buy/sell paths below fill in bet_id and trigger the bet-level
-    # aggregate recompute.
-    if existing_fill is not None:
-        bet_fill = existing_fill
-    else:
-        bet_fill = BetFill(
-            bet_id=None,
-            trade_id=fill.msg.trade_id,
-            order_id=fill.msg.order_id,
-            ticker=ticker,
-            side=fill.msg.side,
-            action=fill.msg.action,
-            price_cents=new_price,
-            quantity_centi=new_centi,
-            fee_cents=None,
-            is_taker=fill.msg.is_taker,
-            fee_synced_at=None,
-            created_time=fill.msg.ts,
-        )
-        session.add(bet_fill)
-
+    # Resolve which bet this fill attaches to BEFORE persisting a bet_fill
+    # row. The old shape session.add()'d the row up-front and bailed on
+    # missing-opener paths, leaving bet_id=NULL rows that polluted the
+    # external-fill audit surface (feedback_no_external_fill_reconciliation).
     if fill.msg.action == "buy":
         bet = await session.scalar(
             select(Bet).where(Bet.kalshi_order_id == fill.msg.order_id)
         )
         if bet is None:
-            await session.flush()
+            # WS arrived before the orders route committed the Bet. Don't
+            # persist a phantom external row — fills_sync will record this
+            # trade with its fee_cost on the next sweep if it's genuinely
+            # external; otherwise the orders route commit will land first
+            # next time.
             log.info(
-                "fill_orphan_buy_recorded",
+                "fill_orphan_buy_dropped",
                 trade_id=fill.msg.trade_id,
                 order_id=fill.msg.order_id,
                 ticker=ticker,
             )
             return
 
+        bet_fill = _materialize_bet_fill(
+            existing=existing_fill, fill=fill, price_cents=new_price,
+            quantity_centi=new_centi, session=session,
+        )
         bet_fill.bet_id = bet.id
         await session.flush()
         buy_fills = (await session.execute(
@@ -276,19 +297,47 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
         )
         return
 
-    # SELL: FIFO-match. Attribute centicontracts across one or more openers.
+    # SELL: peek at the first FIFO opener BEFORE persisting a bet_fill row.
+    # If no opener exists (e.g. settle race), bail without leaving a phantom
+    # bet_id=NULL row in the audit surface.
     market_id = await _get_or_create_market(session, ticker=ticker)
     side = BetSide(fill.msg.side)
+    first_opener = await session.scalar(
+        select(Bet)
+        .where(Bet.market_id == market_id)
+        .where(Bet.side == side)
+        .where(Bet.status == BetStatus.OPEN)
+        .where(Bet.remaining_quantity_centi > 0)
+        .order_by(Bet.placed_at.asc().nulls_last(), Bet.id.asc())
+    )
+    if first_opener is None:
+        log.warning(
+            "sell_fill_no_opener_dropped",
+            ticker=ticker,
+            trade_id=fill.msg.trade_id,
+            centi=new_centi,
+        )
+        return
+
+    bet_fill = _materialize_bet_fill(
+        existing=existing_fill, fill=fill, price_cents=new_price,
+        quantity_centi=new_centi, session=session,
+    )
+
     remaining_to_attribute_centi = new_centi
     primary_bet_id: int | None = None
+    # Carry the REST-side fee (if fills_sync already populated it) so we
+    # can pro-rate at write time across cross-opener splits, instead of
+    # waiting for the next fills_sync sweep to heal misallocation.
+    total_fee_to_split: int | None = bet_fill.fee_cents
 
     while remaining_to_attribute_centi > 0:
-        opener = await session.scalar(
+        opener = first_opener if primary_bet_id is None else await session.scalar(
             select(Bet)
             .where(Bet.market_id == market_id)
             .where(Bet.side == side)
             .where(Bet.status == BetStatus.OPEN)
-            .where(Bet.remaining_quantity > 0)
+            .where(Bet.remaining_quantity_centi > 0)
             .order_by(Bet.placed_at.asc().nulls_last(), Bet.id.asc())
         )
         if opener is None:
@@ -300,8 +349,7 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
             )
             break
 
-        opener_remaining_centi = opener.remaining_quantity * 100
-        chunk_centi = min(opener_remaining_centi, remaining_to_attribute_centi)
+        chunk_centi = min(opener.remaining_quantity_centi, remaining_to_attribute_centi)
 
         # Attach a proportional bet_fill row to this opener. If the sell
         # only touched one opener, the whole bet_fill attaches; if it
@@ -342,18 +390,14 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
         opener_fills = (await session.execute(
             select(BetFill).where(BetFill.bet_id == opener.id)
         )).scalars().all()
-        buy_centi = sum(f.quantity_centi for f in opener_fills if f.action == "buy")
         sell_centi = sum(f.quantity_centi for f in opener_fills if f.action == "sell")
-        # Remaining contracts = (filled_buy - sold_sell) / 100, plus any
-        # un-filled buy quantity (opener.quantity - filled_buy/100) that
-        # the user ordered but Kalshi never filled. For ordinary cases
-        # buy_centi == opener.quantity * 100.
+        # Ordered amount in centi minus sold centi = exact remaining. Kalshi
+        # may split a single contract across fee tiers (0.97 + 0.03); using
+        # whole contracts here would floor the residual to 0 and flip the
+        # bet terminal while exposure remained.
         ordered_centi = opener.quantity * 100
-        net_held_centi = max(0, ordered_centi - sell_centi)
-        # Bet remaining_quantity is whole contracts; centi reflects the
-        # exact Kalshi accounting. They agree at fill boundaries because
-        # sub-fills sum to whole contracts.
-        opener.remaining_quantity = net_held_centi // 100
+        opener.remaining_quantity_centi = max(0, ordered_centi - sell_centi)
+        opener.remaining_quantity = opener.remaining_quantity_centi // 100
 
         # realized_pnl: for each sell fill, (sell_price - entry) * centi / 100
         realized_centi_x100 = sum(
@@ -372,7 +416,7 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
 
         await _recompute_bet_fees(session, bet=opener)
 
-        if opener.remaining_quantity == 0:
+        if opener.remaining_quantity_centi == 0:
             opener.status = (
                 BetStatus.WON if (opener.realized_pnl_cents or 0) > 0
                 else BetStatus.LOST
@@ -506,12 +550,15 @@ async def settle_bets_for_market(
             settlement_value_cents if bet.side == BetSide.YES
             else 100 - settlement_value_cents
         )
-        # Settle only the remaining (unsold) shares. Any earlier partial
-        # sells already added their share of pnl to realized_pnl_cents.
-        held = bet.remaining_quantity if bet.remaining_quantity > 0 else bet.quantity
-        settle_pnl = (side_settle - bet.entry_price_cents) * held
+        # Settle only the remaining (unsold) centi. Earlier partial sells
+        # already added their share of pnl to realized_pnl_cents. If
+        # remaining_quantity_centi is 0 (already fully sold but somehow
+        # still OPEN), held_centi is 0 — no double-count.
+        held_centi = bet.remaining_quantity_centi
+        settle_pnl = ((side_settle - bet.entry_price_cents) * held_centi) // 100
         bet.realized_pnl_cents = (bet.realized_pnl_cents or 0) + settle_pnl
         bet.remaining_quantity = 0
+        bet.remaining_quantity_centi = 0
 
         # exit_price reflects how the bet ultimately resolved. If there
         # were earlier sells, use a centi-weighted blend; otherwise the
@@ -522,12 +569,12 @@ async def settle_bets_for_market(
             .where(BetFill.action == "sell")
         )).scalars().all()
         sold_centi = sum(f.quantity_centi for f in sold_fills)
-        held_centi = held * 100
         if sold_centi > 0:
             sold_weighted_centi = sum(f.price_cents * f.quantity_centi for f in sold_fills)
             bet.exit_price_cents = (sold_weighted_centi + side_settle * held_centi) // (sold_centi + held_centi)
-        else:
+        elif held_centi > 0:
             bet.exit_price_cents = side_settle
+        # else: bet was already fully closed via sells; exit_price set then.
 
         bet.pnl_cents = bet.realized_pnl_cents
         bet.status = BetStatus.WON if (bet.realized_pnl_cents or 0) > 0 else BetStatus.LOST

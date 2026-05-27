@@ -128,6 +128,7 @@ async def _open_bet(
         entry_price_cents=price,
         quantity=qty,
         remaining_quantity=qty,
+        remaining_quantity_centi=qty * 100,
         stake_cents=qty * price,
         status=BetStatus.OPEN,
         source=BetSource.HUMAN,
@@ -254,8 +255,11 @@ async def test_record_fill_idempotent_on_trade_id(session: AsyncSession) -> None
 
 
 @pytest.mark.asyncio
-async def test_external_buy_fill_recorded_without_bet(session: AsyncSession) -> None:
-    # No bet exists for this order_id — placed via kalshi.com.
+async def test_orphan_buy_fill_dropped_not_persisted(session: AsyncSession) -> None:
+    # WS fill for an order we don't have a Bet for — could be a race
+    # (orders route hasn't committed yet) or a true external fill. We
+    # drop it from the WS path so we don't pollute the external-fill
+    # audit surface; fills_sync's REST sweep records true externals.
     await _make_market(session)
     await record_fill(session, _make_fill(
         trade_id="ext", order_id="external-1", side="yes", action="buy",
@@ -264,8 +268,7 @@ async def test_external_buy_fill_recorded_without_bet(session: AsyncSession) -> 
     fill = await session.scalar(
         select(BetFill).where(BetFill.trade_id == "ext")
     )
-    assert fill is not None
-    assert fill.bet_id is None  # no auto-bet creation
+    assert fill is None  # nothing persisted from the WS orphan path
 
 
 @pytest.mark.asyncio

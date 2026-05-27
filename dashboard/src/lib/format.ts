@@ -5,6 +5,39 @@
  * Eastern time and dollar strings happens here, at the display boundary.
  */
 
+/**
+ * Cents → dollar string. `$1.23` for 123. Unsigned by default.
+ *   formatDollars(123)             -> "$1.23"
+ *   formatDollars(-45)             -> "-$0.45"
+ *   formatDollars(0)               -> "$0.00"
+ */
+export function formatDollars(cents: number): string {
+  const abs = Math.abs(cents)
+  const sign = cents < 0 ? '-' : ''
+  return `${sign}$${(abs / 100).toFixed(2)}`
+}
+
+/**
+ * Signed cents → dollar string. Used for P&L where the sign is the point.
+ *   formatSignedDollars(123)       -> "+$1.23"
+ *   formatSignedDollars(-45)       -> "-$0.45"
+ *   formatSignedDollars(0)         -> "$0.00"
+ */
+export function formatSignedDollars(cents: number): string {
+  if (cents === 0) return '$0.00'
+  if (cents > 0) return `+$${(cents / 100).toFixed(2)}`
+  return `-$${(Math.abs(cents) / 100).toFixed(2)}`
+}
+
+/**
+ * Cents → "-$X.YZ" or "—" if zero. For columns where "no fee" is more
+ * legible as an em-dash than $0.00.
+ */
+export function formatFee(cents: number): string {
+  if (cents === 0) return '—'
+  return `-$${(cents / 100).toFixed(2)}`
+}
+
 const ET_TZ = 'America/New_York'
 
 /**

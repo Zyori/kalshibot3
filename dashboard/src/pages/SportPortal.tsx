@@ -2,27 +2,8 @@ import { Link, useParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 
 import InlineError from '../components/InlineError'
-import { formatET } from '../lib/format'
-
-type Bet = {
-  id: number
-  sport: string
-  ticker: string | null
-  side: 'yes' | 'no'
-  entry_price_cents: number
-  quantity: number
-  pnl_cents: number | null
-  status: string
-  placed_at: string | null
-}
-
-type Stats = {
-  total_bets: number
-  total_pnl_cents: number
-  win_rate: number | null
-  roi: number | null
-  by_status: Record<string, number>
-}
+import { formatET, formatSignedDollars } from '../lib/format'
+import type { Bet, LedgerLedgerStats } from '../lib/types'
 
 export default function SportPortal() {
   const { slug } = useParams<{ slug: string }>()
@@ -73,7 +54,7 @@ function HistorySection({ sport }: { sport: string }) {
     },
     refetchInterval: 30_000,
   })
-  const stats = useQuery<Stats>({
+  const stats = useQuery<LedgerStats>({
     queryKey: ['portal_stats', sport],
     queryFn: async () => {
       const res = await fetch(`/api/ledger/stats?sport=${encodeURIComponent(sport)}`)
@@ -104,22 +85,24 @@ function HistorySection({ sport }: { sport: string }) {
             value={String(s.total_bets)}
           />
           <Stat
-            label="P&L"
-            value={
-              s.total_pnl_cents === 0
-                ? '$0.00'
-                : `${s.total_pnl_cents >= 0 ? '+' : ''}$${(s.total_pnl_cents / 100).toFixed(2)}`
+            label="Net P&L"
+            value={formatSignedDollars(s.total_net_pnl_cents)}
+            tone={
+              s.total_net_pnl_cents > 0
+                ? 'gain'
+                : s.total_net_pnl_cents < 0
+                ? 'loss'
+                : undefined
             }
-            tone={s.total_pnl_cents > 0 ? 'gain' : s.total_pnl_cents < 0 ? 'loss' : undefined}
           />
           <Stat
             label="Win rate"
             value={s.win_rate === null ? '—' : `${(s.win_rate * 100).toFixed(0)}%`}
           />
           <Stat
-            label="ROI"
-            value={s.roi === null ? '—' : `${(s.roi * 100).toFixed(1)}%`}
-            tone={s.roi === null ? undefined : s.roi > 0 ? 'gain' : 'loss'}
+            label="Net ROI"
+            value={s.net_roi === null ? '—' : `${(s.net_roi * 100).toFixed(1)}%`}
+            tone={s.net_roi === null ? undefined : s.net_roi > 0 ? 'gain' : 'loss'}
           />
         </div>
       )}
@@ -150,18 +133,16 @@ function HistorySection({ sport }: { sport: string }) {
               </div>
               <div
                 className={`font-mono tabular-nums ${
-                  b.pnl_cents === null
+                  b.net_pnl_cents === null
                     ? 'text-text-muted'
-                    : b.pnl_cents > 0
+                    : b.net_pnl_cents > 0
                     ? 'text-gain'
-                    : b.pnl_cents < 0
+                    : b.net_pnl_cents < 0
                     ? 'text-loss'
                     : 'text-text'
                 }`}
               >
-                {b.pnl_cents === null
-                  ? '—'
-                  : `${b.pnl_cents >= 0 ? '+' : ''}$${(b.pnl_cents / 100).toFixed(2)}`}
+                {b.net_pnl_cents === null ? '—' : formatSignedDollars(b.net_pnl_cents)}
               </div>
               <span
                 className={`text-[10px] uppercase ${
