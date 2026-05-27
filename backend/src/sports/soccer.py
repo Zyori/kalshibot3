@@ -96,11 +96,101 @@ SOCCER_GAME_SERIES_NAMES: dict[str, str] = {
 SOCCER_GAME_SERIES: tuple[str, ...] = tuple(SOCCER_GAME_SERIES_NAMES.keys())
 
 
+# Kalshi prefix → ESPN scoreboard path (after `soccer/`). None means
+# ESPN doesn't publish a scoreboard for this league under any slug we
+# could verify — callers fall back to Kalshi's occurrence_datetime.
+#
+# Slugs verified 2026-05-26 by hitting
+# https://site.api.espn.com/apis/site/v2/sports/soccer/{slug}/scoreboard
+# and checking for 200 OK + non-empty event list. A 400 means ESPN does
+# not recognize the slug; not a coverage gap we can paper over.
+SOCCER_ESPN_SLUGS: dict[str, str | None] = {
+    # Top 5 European leagues
+    "KXEPLGAME": "eng.1",
+    "KXLALIGAGAME": "esp.1",
+    "KXSERIEAGAME": "ita.1",
+    "KXBUNDESLIGAGAME": "ger.1",
+    "KXLIGUE1GAME": "fra.1",
+    # Other European leagues
+    "KXLALIGA2GAME": "esp.2",
+    "KXSERIEBGAME": "ita.2",
+    "KXBUNDESLIGA2GAME": "ger.2",
+    "KXEREDIVISIEGAME": "ned.1",
+    "KXBELGIANPLGAME": "bel.1",
+    "KXSCOTTISHPREMGAME": "sco.1",
+    "KXSWISSLEAGUEGAME": "sui.1",
+    "KXSUPERLIGGAME": "tur.1",
+    "KXCZEFLGAME": None,         # ESPN 400 on cze.1
+    "KXEKSTRAKLASAGAME": None,   # ESPN 400 on pol.1
+    "KXDENSUPERLIGAGAME": "den.1",
+    "KXSLGREECEGAME": "gre.1",
+    "KXHNLGAME": None,           # ESPN 400 on cro.1
+    "KXEWSLGAME": "eng.w.1",
+    # English domestic cups & second tier
+    "KXEFLCHAMPIONSHIPGAME": "eng.2",
+    "KXEFLL1GAME": "eng.3",
+    "KXEFLCUPGAME": "eng.league_cup",
+    "KXFACUPGAME": "eng.fa",
+    "KXCOPADELREYGAME": "esp.copa_del_rey",
+    "KXCOPPAITALIAGAME": "ita.coppa_italia",
+    "KXDFBPOKALGAME": "ger.dfb_pokal",
+    # Americas
+    "KXMLSGAME": "usa.1",
+    "KXNWSLGAME": "usa.nwsl",
+    "KXUSLGAME": "usa.usl.1",
+    "KXCANPLGAME": None,         # ESPN 400 on can.1
+    "KXUSOPENCUPGAME": "usa.open",
+    "KXLIGAMXGAME": "mex.1",
+    "KXARGPREMDIVGAME": "arg.1",
+    "KXCOPADOBRASILGAME": "bra.copa_do_brazil",
+    "KXCONMEBOLLIBGAME": "conmebol.libertadores",
+    "KXCONMEBOLSUDGAME": "conmebol.sudamericana",
+    "KXCHLLDPGAME": "chi.1",
+    "KXURYPDGAME": "uru.1",
+    "KXPERLIGA1GAME": "per.1",
+    "KXDIMAYORGAME": "col.1",
+    "KXBOLPDIVGAME": "bol.1",
+    "KXECULPGAME": "ecu.1",
+    "KXVENFUTVEGAME": "ven.1",
+    "KXAPFDDHGAME": "par.1",
+    # Asia / Oceania / MENA
+    "KXJLEAGUEGAME": "jpn.1",
+    "KXKLEAGUEGAME": None,       # ESPN 400 on kor.1
+    "KXCHNSLGAME": "chn.1",
+    "KXALEAGUEGAME": "aus.1",
+    "KXSAUDIPLGAME": "ksa.1",
+    "KXUAEPLGAME": None,         # ESPN 400 on uae.1
+    # UEFA competitions
+    "KXUCLGAME": "uefa.champions",
+    "KXUELGAME": "uefa.europa",
+    "KXUECLGAME": "uefa.europa.conf",
+    "KXUCLWGAME": None,          # ESPN 400 on uefa.champions_women
+    "KXUEFAGAME": None,          # generic UEFA — no single ESPN slug
+    # FIFA / international
+    "KXWCGAME": "fifa.world",
+    "KXCLUBWCGAME": "fifa.cwc",
+    "KXFIFAGAME": "fifa.friendly",
+    "KXFIFAUSPULLGAME": None,
+    "KXINTLFRIENDLYGAME": "fifa.friendly",
+    # Other / niche
+    "KXBALLERLEAGUEGAME": None,
+}
+
+
 def league_display_name(series: str | None) -> str | None:
     """Map a Kalshi series prefix to its display name. Unknown → None."""
     if series is None:
         return None
     return SOCCER_GAME_SERIES_NAMES.get(series)
+
+
+def espn_slug_for(series: str | None) -> str | None:
+    """Map a Kalshi series prefix to its ESPN scoreboard slug. None means
+    we don't have an ESPN source for this league (caller falls back to
+    Kalshi's occurrence_datetime)."""
+    if series is None:
+        return None
+    return SOCCER_ESPN_SLUGS.get(series)
 
 # World Cup derivative markets — tournament-level futures, awards, props.
 # Not per-match; bookings here drive different strategy than match results.

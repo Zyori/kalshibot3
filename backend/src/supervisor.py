@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from src.core.db import get_session_factory
 from src.core.logging import get_logger
 from src.core.ws_manager import BroadcastManager
+from src.ingestion.espn_scoreboard import EspnScoreboard
 from src.ingestion.market_discovery import MarketDiscovery, MarketFeed
 from src.kalshi.live_state import LiveState
 from src.kalshi.rest import KalshiRestClient
@@ -63,7 +64,12 @@ class Supervisor:
         # as terminal (status=settled with a settlement_value).
         self.kalshi_ws.set_lifecycle_handler(self._on_market_lifecycle)
 
-        self.market_discovery = MarketDiscovery()
+        # ESPN scoreboard is the source of truth for kickoff times — Kalshi's
+        # `occurrence_datetime` is the settlement deadline, off by 3+ hours
+        # on some series. The matcher inside market_discovery reads from
+        # this shared snapshot.
+        self.espn_scoreboard = EspnScoreboard()
+        self.market_discovery = MarketDiscovery(espn=self.espn_scoreboard)
         self.market_discovery.register_refresh_callback(self._on_discovery_refresh)
         self.market_refresher = MarketRefresher(self.live_state)
         self.position_syncer = PositionSyncer()
@@ -249,6 +255,12 @@ class Supervisor:
             self.broadcast.consume_queue(self.kalshi_to_browser),
             name="broadcast_consume_queue",
         ))
+        # ESPN before market_discovery so the first discovery cycle has a
+        # populated snapshot. EspnScoreboard.run() does its initial fetch
+        # synchronously before entering the poll loop.
+        self._tasks.append(asyncio.create_task(
+            self.espn_scoreboard.run(), name="espn_scoreboard",
+        ))
         self._tasks.append(asyncio.create_task(
             self.market_discovery.run(), name="market_discovery",
         ))
@@ -265,6 +277,7 @@ class Supervisor:
         await self.position_syncer.stop()
         await self.market_discovery.stop()
         await self.market_refresher.stop()
+        await self.espn_scoreboard.stop()
         await self.broadcast.stop()
         for t in self._tasks:
             t.cancel()

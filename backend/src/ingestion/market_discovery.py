@@ -26,9 +26,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from src.core.logging import get_logger
+from src.ingestion.espn_scoreboard import EspnScoreboard
 from src.kalshi.rest import KalshiRestClient
 from src.kalshi.schemas import Event, Market
-from src.sports.soccer import SOCCER_GAME_SERIES
+from src.services.kickoff_matcher import find_kickoff
+from src.sports.soccer import SOCCER_GAME_SERIES, espn_slug_for
 
 log = get_logger(__name__)
 
@@ -167,8 +169,22 @@ def _classify(market: FeedMarket, now: datetime) -> str | None:
     return None
 
 
-def _event_to_feed_markets(event: Event, series: str) -> list[FeedMarket]:
-    """Flatten one event into FeedMarket rows for each market it contains."""
+def _event_to_feed_markets(
+    event: Event,
+    series: str,
+    espn_kickoff: datetime | None,
+) -> list[FeedMarket]:
+    """Flatten one event into FeedMarket rows for each market it contains.
+
+    Kickoff source priority (chosen at the caller, passed in via
+    `espn_kickoff`):
+      1. ESPN's per-league scoreboard, when we have a confident match —
+         that's the actual kickoff to the minute.
+      2. Kalshi's `occurrence_datetime` (fallback). Observed to be the
+         settlement deadline, not kickoff — runs 3+ hours past real
+         kickoff on CONMEBOL games. Better than nothing.
+    """
+    open_time = espn_kickoff or (event.markets[0].occurrence_datetime if event.markets else None)
     rows: list[FeedMarket] = []
     for m in event.markets or []:
         rows.append(FeedMarket(
@@ -179,10 +195,7 @@ def _event_to_feed_markets(event: Event, series: str) -> list[FeedMarket]:
             yes_sub_title=m.yes_sub_title,
             series=series,
             status=m.status,
-            # Kalshi populates occurrence_datetime with real kickoff on every
-            # soccer market — that's the source of truth. _classify() falls
-            # back to the ticker-date noon-UTC proxy only when missing.
-            open_time=m.occurrence_datetime,
+            open_time=open_time,
             close_time=m.close_time,
             volume=m.volume,
         ))
@@ -196,8 +209,13 @@ class MarketDiscovery:
     exposes the result via get_feed().
     """
 
-    def __init__(self, series: Iterable[str] = SOCCER_GAME_SERIES) -> None:
+    def __init__(
+        self,
+        series: Iterable[str] = SOCCER_GAME_SERIES,
+        espn: EspnScoreboard | None = None,
+    ) -> None:
         self._series = tuple(series)
+        self._espn = espn
         self._feed = MarketFeed()
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
@@ -205,6 +223,10 @@ class MarketDiscovery:
         self._on_refresh: list = []
         """Callbacks invoked with the new set of LIVE tickers after each refresh.
         Supervisor uses this to keep the WS subscriptions in sync."""
+        self._espn_match_count = 0
+        self._espn_miss_count = 0
+        """Coverage counters logged each refresh — helps spot when an ESPN
+        slug breaks or a league's name conventions diverge."""
 
     def get_feed(self) -> MarketFeed:
         return self._feed
@@ -215,6 +237,8 @@ class MarketDiscovery:
 
     async def refresh_once(self) -> None:
         """One full pass: hit /events for every series, classify, replace cache."""
+        self._espn_match_count = 0
+        self._espn_miss_count = 0
         async with KalshiRestClient() as client:
             rows: list[FeedMarket] = []
             for series in self._series:
@@ -257,6 +281,7 @@ class MarketDiscovery:
         log.info(
             "market_discovery_refreshed",
             live=len(live), upcoming=len(upcoming), recent=len(recent),
+            espn_match=self._espn_match_count, espn_miss=self._espn_miss_count,
         )
 
         # Fire callbacks with the full feed — supervisor's tier classifier
@@ -274,12 +299,41 @@ class MarketDiscovery:
         """Paginate through `/events` for one series, collect FeedMarket rows."""
         rows: list[FeedMarket] = []
         cursor: str | None = None
+        espn_slug = espn_slug_for(series)
+        espn_snapshot = self._espn.snapshot if self._espn is not None else None
         while True:
             resp = await client.get_events(
                 series_ticker=series, limit=200, cursor=cursor, with_nested_markets=True,
             )
+            now_utc = datetime.now(timezone.utc)
             for event in resp.events:
-                rows.extend(_event_to_feed_markets(event, series))
+                espn_kickoff: datetime | None = None
+                if espn_snapshot is not None and espn_slug is not None:
+                    match = find_kickoff(
+                        espn_snapshot,
+                        event_ticker=event.event_ticker,
+                        event_title=event.title,
+                        espn_slug=espn_slug,
+                    )
+                    if match is not None:
+                        espn_kickoff = match[0]
+                        self._espn_match_count += 1
+                    else:
+                        # Only count as a "miss" if the game is within 24h —
+                        # ESPN doesn't publish far-future games and that's
+                        # expected, not a problem. Misses inside 24h are real.
+                        kalshi_kickoff = (event.markets[0].occurrence_datetime
+                                          if event.markets else None)
+                        if (kalshi_kickoff is not None
+                                and 0 <= (kalshi_kickoff - now_utc).total_seconds() <= 86400):
+                            self._espn_miss_count += 1
+                            log.warning(
+                                "espn_miss_imminent",
+                                event_ticker=event.event_ticker,
+                                title=event.title,
+                                kalshi_kickoff=kalshi_kickoff.isoformat(),
+                            )
+                rows.extend(_event_to_feed_markets(event, series, espn_kickoff))
             cursor = resp.cursor
             if not cursor or not resp.events:
                 break
