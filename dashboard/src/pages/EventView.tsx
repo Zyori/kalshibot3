@@ -110,16 +110,15 @@ export default function EventView() {
   useEffect(() => {
     if (!data?.markets) return
     for (const m of data.markets) {
-      const existing = queryClient.getQueryData<MarketBook>(['book', m.ticker])
-      if (existing && (Object.keys(existing.yes).length || Object.keys(existing.no).length)) {
-        continue
-      }
+      // Always overwrite — the server may have just done a locked-book
+      // resync, in which case the stale cache from a previous session
+      // (or earlier WS deltas) is the WRONG starting point. Subsequent
+      // WS deltas apply correctly because they start from a known-good
+      // snapshot.
       fetch(`/api/markets/${encodeURIComponent(m.ticker)}`)
         .then((res) => (res.ok ? res.json() : null))
         .then((snap: { yes: Array<{ price: number; qty: number }>; no: Array<{ price: number; qty: number }> } | null) => {
           if (!snap) return
-          const cur = queryClient.getQueryData<MarketBook>(['book', m.ticker])
-          if (cur && (Object.keys(cur.yes).length || Object.keys(cur.no).length)) return
           queryClient.setQueryData<MarketBook>(['book', m.ticker], {
             ticker: m.ticker,
             yes: Object.fromEntries(snap.yes.map((l) => [l.price, l.qty])),
@@ -361,15 +360,13 @@ function MarketPanel({ ticker }: { ticker: string }) {
     staleTime: Infinity,
   })
 
-  // Seed the live-book cache from the snapshot if nothing's there yet.
-  // Don't clobber a fresher cache (e.g. WS deltas that beat the REST
-  // round-trip).
+  // Always overwrite from the REST snapshot on tab activation. The server's
+  // /api/markets/{ticker} call triggers a locked-book resync server-side
+  // before responding, so its body is the source of truth — clobbering
+  // a stale cache with it is correct, not defensive. WS deltas after this
+  // point apply correctly because they start from a known-good baseline.
   useEffect(() => {
     if (!snapshot.data) return
-    const existing = queryClient.getQueryData<MarketBook>(['book', ticker])
-    if (existing && (Object.keys(existing.yes).length || Object.keys(existing.no).length)) {
-      return
-    }
     queryClient.setQueryData<MarketBook>(['book', ticker], {
       ticker,
       yes: Object.fromEntries(snapshot.data.yes.map((l) => [l.price, l.qty])),
