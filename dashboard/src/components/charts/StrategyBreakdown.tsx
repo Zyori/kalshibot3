@@ -15,28 +15,31 @@ type Stats = {
     count: number
     pnl_cents: number
     stake_cents: number
+    fees_cents: number
+    net_pnl_cents: number
     roi: number | null
+    net_roi: number | null
   }>
 }
 
 /**
- * ROI per strategy as a bar chart. Bars colored green when ROI > 0,
- * red when < 0. Strategies with no settled stake (ROI = null) are
- * dropped — you can't chart an unknown.
+ * Net ROI per strategy as a bar chart. Net = after Kalshi fees. Bars
+ * are green when net ROI > 0, red when < 0. Strategies with no settled
+ * stake are dropped — you can't chart an unknown.
  */
 export default function StrategyBreakdown({ stats }: { stats: Stats | undefined }) {
   const data = (stats?.by_strategy ?? [])
-    .filter((row) => row.roi !== null && row.stake_cents > 0)
+    .filter((row) => row.net_roi !== null && row.stake_cents > 0)
     .map((row) => ({
       strategy: row.strategy,
-      roi_pct: (row.roi as number) * 100,
+      roi_pct: (row.net_roi as number) * 100,
       count: row.count,
     }))
     .sort((a, b) => b.roi_pct - a.roi_pct)
 
   return (
     <div className="rounded-lg border border-border bg-bg-card p-4">
-      <h3 className="mb-3 text-sm font-semibold text-text">ROI by strategy</h3>
+      <h3 className="mb-3 text-sm font-semibold text-text">Net ROI by strategy</h3>
       {data.length === 0 ? (
         <div className="flex h-48 items-center justify-center text-xs text-text-muted">
           No settled bets yet.

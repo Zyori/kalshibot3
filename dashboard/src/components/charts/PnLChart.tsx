@@ -15,29 +15,30 @@ type Bet = {
   placed_at: string | null
   settled_at: string | null
   pnl_cents: number | null
+  net_pnl_cents: number | null
 }
 
 /**
- * Cumulative P&L over time. Each settled bet contributes its pnl_cents
- * at its settled_at; the line is the running sum. Open bets contribute
- * nothing (their pnl is unknown). Empty state shows a message instead
- * of an empty chart frame.
+ * Cumulative net P&L over time. Each settled bet contributes its
+ * net_pnl_cents (after Kalshi fees) at its settled_at; the line is the
+ * running sum. Open bets contribute nothing (their final pnl is
+ * unknown). Empty state shows a message instead of an empty chart frame.
  */
 export default function PnLChart({ bets }: { bets: Bet[] }) {
   const data = useMemo(() => {
     const settled = bets
-      .filter((b) => b.pnl_cents !== null && b.settled_at !== null)
+      .filter((b) => b.net_pnl_cents !== null && b.settled_at !== null)
       .sort((a, b) => (a.settled_at! < b.settled_at! ? -1 : 1))
     let running = 0
     return settled.map((b) => {
-      running += b.pnl_cents!
+      running += b.net_pnl_cents!
       return { ts: b.settled_at!, cum_cents: running }
     })
   }, [bets])
 
   return (
     <div className="rounded-lg border border-border bg-bg-card p-4">
-      <h3 className="mb-3 text-sm font-semibold text-text">Cumulative P&amp;L</h3>
+      <h3 className="mb-3 text-sm font-semibold text-text">Cumulative net P&amp;L</h3>
       {data.length === 0 ? (
         <div className="flex h-48 items-center justify-center text-xs text-text-muted">
           No settled bets yet.

@@ -14,8 +14,14 @@ type Bet = {
   entry_price_cents: number
   exit_price_cents: number | null
   quantity: number
+  remaining_quantity: number
   stake_cents: number
   pnl_cents: number | null
+  realized_pnl_cents: number | null
+  entry_fees_cents: number
+  exit_fees_cents: number
+  fees_cents: number
+  net_pnl_cents: number | null
   status: 'open' | 'won' | 'lost' | 'cancelled'
   exit_type: string | null
   source: string
@@ -35,16 +41,40 @@ type Stats = {
   by_status: Record<string, number>
   total_pnl_cents: number
   total_stake_cents: number
+  total_fees_cents: number
+  total_net_pnl_cents: number
   win_rate: number | null
   roi: number | null
+  net_roi: number | null
   by_strategy: Array<{
     strategy: string
     count: number
     pnl_cents: number
     stake_cents: number
+    fees_cents: number
+    net_pnl_cents: number
     roi: number | null
+    net_roi: number | null
   }>
 }
+
+type BetFill = {
+  id: number
+  trade_id: string
+  order_id: string
+  ticker: string
+  side: 'yes' | 'no'
+  action: 'buy' | 'sell'
+  price_cents: number
+  quantity_centi: number
+  quantity: number
+  fee_cents: number | null
+  is_taker: boolean | null
+  fee_synced_at: string | null
+  created_time: string | null
+}
+
+type BetFillsResponse = { bet_id: number; fills: BetFill[] }
 
 const STATUS_OPTIONS = ['open', 'won', 'lost', 'cancelled'] as const
 const SOURCE_OPTIONS = ['human', 'ai', 'collaborative', 'external'] as const
@@ -174,13 +204,22 @@ export default function Ledger() {
 }
 
 function StatsStrip({ stats }: { stats: Stats | undefined }) {
-  const items: Array<{ label: string; value: string; tone?: 'gain' | 'loss' }> = []
+  type Item = {
+    label: string
+    value: string
+    sub?: string
+    tone?: 'gain' | 'loss'
+  }
+  const items: Item[] = []
   if (stats) {
-    const pnl = stats.total_pnl_cents
+    const net = stats.total_net_pnl_cents
+    const gross = stats.total_pnl_cents
+    const fees = stats.total_fees_cents
     items.push({
-      label: 'Total P&L',
-      value: pnl === 0 ? '$0.00' : `${pnl >= 0 ? '+' : ''}$${(pnl / 100).toFixed(2)}`,
-      tone: pnl > 0 ? 'gain' : pnl < 0 ? 'loss' : undefined,
+      label: 'Net P&L',
+      value: net === 0 ? '$0.00' : `${net >= 0 ? '+' : ''}$${(net / 100).toFixed(2)}`,
+      sub: `${gross >= 0 ? '+' : ''}$${(gross / 100).toFixed(2)} gross · −$${(fees / 100).toFixed(2)} fees`,
+      tone: net > 0 ? 'gain' : net < 0 ? 'loss' : undefined,
     })
     items.push({ label: 'Bets', value: String(stats.total_bets) })
     items.push({
@@ -188,9 +227,13 @@ function StatsStrip({ stats }: { stats: Stats | undefined }) {
       value: stats.win_rate === null ? '—' : `${(stats.win_rate * 100).toFixed(0)}%`,
     })
     items.push({
-      label: 'ROI',
-      value: stats.roi === null ? '—' : `${(stats.roi * 100).toFixed(1)}%`,
-      tone: stats.roi === null ? undefined : stats.roi > 0 ? 'gain' : 'loss',
+      label: 'Net ROI',
+      value: stats.net_roi === null ? '—' : `${(stats.net_roi * 100).toFixed(1)}%`,
+      sub:
+        stats.roi === null
+          ? undefined
+          : `${(stats.roi * 100).toFixed(1)}% gross`,
+      tone: stats.net_roi === null ? undefined : stats.net_roi > 0 ? 'gain' : 'loss',
     })
   }
   return (
@@ -210,6 +253,11 @@ function StatsStrip({ stats }: { stats: Stats | undefined }) {
               >
                 {it.value}
               </div>
+              {it.sub && (
+                <div className="mt-0.5 font-mono text-[10px] tabular-nums text-text-muted">
+                  {it.sub}
+                </div>
+              )}
             </div>
           ))
         : Array.from({ length: 4 }).map((_, i) => (
@@ -296,7 +344,8 @@ function BetsTable({
             <th className="px-3 py-2 text-left">Market</th>
             <th className="px-3 py-2 text-left">Side</th>
             <th className="px-3 py-2 text-right">Qty × Entry</th>
-            <th className="px-3 py-2 text-right">P&amp;L</th>
+            <th className="px-3 py-2 text-right">Fees</th>
+            <th className="px-3 py-2 text-right">Net P&amp;L</th>
             <th className="px-3 py-2 text-right">Return</th>
             <th className="px-3 py-2 text-left">Strategy</th>
             <th className="px-3 py-2 text-left">Status</th>
@@ -326,14 +375,15 @@ function BetRow({
   expanded: boolean
   onToggle: () => void
 }) {
-  const pnl = bet.pnl_cents
+  const gross = bet.pnl_cents
+  const net = bet.net_pnl_cents
+  // Use net PnL for tone — that's what actually changes your account.
   const pnlCls =
-    pnl === null ? 'text-text-muted' : pnl > 0 ? 'text-gain' : pnl < 0 ? 'text-loss' : 'text-text'
-  // Return % = pnl / stake. Use stake_cents (count × entry), not the
-  // notional contract value — that gives the answer that matches how
-  // a trader thinks about ROI ('I risked $X, made $Y, so my return is Y/X').
+    net === null ? 'text-text-muted' : net > 0 ? 'text-gain' : net < 0 ? 'text-loss' : 'text-text'
+  // Return % = net_pnl / stake. Net is what you actually pocket; gross
+  // would overstate ROI by hiding fees from the % figure.
   const returnPct =
-    pnl === null || bet.stake_cents === 0 ? null : (pnl / bet.stake_cents) * 100
+    net === null || bet.stake_cents === 0 ? null : (net / bet.stake_cents) * 100
   const statusCls =
     bet.status === 'won'
       ? 'text-gain'
@@ -342,6 +392,8 @@ function BetRow({
       : bet.status === 'cancelled'
       ? 'text-text-muted'
       : 'text-action'
+  const partialClose =
+    bet.status === 'open' && bet.remaining_quantity > 0 && bet.remaining_quantity < bet.quantity
   return (
     <>
       <tr
@@ -352,10 +404,35 @@ function BetRow({
         <td className="px-3 py-2 font-mono text-xs">{bet.ticker ?? '—'}</td>
         <td className="px-3 py-2 text-xs">{bet.side.toUpperCase()}</td>
         <td className="px-3 py-2 text-right font-mono tabular-nums text-xs">
-          {bet.quantity} × {bet.entry_price_cents}¢
+          {partialClose ? (
+            <span>
+              <span className="text-text-muted">{bet.quantity} → </span>
+              <span className="text-action">{bet.remaining_quantity}</span>
+              <span className="text-text-muted"> left</span>
+              <span className="ml-1 text-text-muted">@{bet.entry_price_cents}¢</span>
+            </span>
+          ) : (
+            <>
+              {bet.quantity} × {bet.entry_price_cents}¢
+            </>
+          )}
+        </td>
+        <td className="px-3 py-2 text-right font-mono tabular-nums text-xs text-text-muted">
+          {bet.fees_cents === 0 ? '—' : `−$${(bet.fees_cents / 100).toFixed(2)}`}
         </td>
         <td className={`px-3 py-2 text-right font-mono tabular-nums text-xs ${pnlCls}`}>
-          {pnl === null ? '—' : `${pnl >= 0 ? '+' : ''}$${(pnl / 100).toFixed(2)}`}
+          {net === null ? (
+            '—'
+          ) : (
+            <>
+              <div>{`${net >= 0 ? '+' : ''}$${(net / 100).toFixed(2)}`}</div>
+              {gross !== null && gross !== net && (
+                <div className="text-[10px] text-text-muted">
+                  {`${gross >= 0 ? '+' : ''}$${(gross / 100).toFixed(2)} gross`}
+                </div>
+              )}
+            </>
+          )}
         </td>
         <td className={`px-3 py-2 text-right font-mono tabular-nums text-xs ${pnlCls}`}>
           {returnPct === null
@@ -367,34 +444,131 @@ function BetRow({
           {bet.status}
         </td>
       </tr>
-      {expanded && (
-        <tr className="border-b border-border bg-bg last:border-b-0">
-          <td colSpan={8} className="px-3 py-3">
-            <dl className="grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
-              <Pair label="Source" value={bet.source} />
-              <Pair label="Confidence" value={bet.confidence} />
-              <Pair label="Timing" value={bet.timing} />
-              <Pair label="Exit type" value={bet.exit_type ?? '—'} />
-              <Pair
-                label="Exit price"
-                value={bet.exit_price_cents !== null ? `${bet.exit_price_cents}¢` : '—'}
-              />
-              <Pair label="Settled" value={formatET(bet.settled_at) || '—'} />
-              <Pair
-                label="Stake"
-                value={`$${(bet.stake_cents / 100).toFixed(2)}`}
-              />
-              {bet.human_reasoning && (
-                <Pair label="Human reasoning" value={bet.human_reasoning} wide />
-              )}
-              {bet.ai_reasoning && (
-                <Pair label="AI reasoning" value={bet.ai_reasoning} wide />
-              )}
-            </dl>
-          </td>
-        </tr>
-      )}
+      {expanded && <BetDetail bet={bet} />}
     </>
+  )
+}
+
+function BetDetail({ bet }: { bet: Bet }) {
+  const fills = useQuery<BetFillsResponse>({
+    queryKey: ['ledger_fills', bet.id],
+    queryFn: async () => {
+      const res = await fetch(`/api/ledger/${bet.id}/fills`)
+      if (!res.ok) throw new Error(`/api/ledger/${bet.id}/fills: ${res.status}`)
+      return res.json()
+    },
+    refetchInterval: 30_000,
+  })
+  return (
+    <tr className="border-b border-border bg-bg last:border-b-0">
+      <td colSpan={9} className="px-3 py-3">
+        <div className="grid gap-4 lg:grid-cols-2">
+          <dl className="grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
+            <Pair label="Source" value={bet.source} />
+            <Pair label="Confidence" value={bet.confidence} />
+            <Pair label="Timing" value={bet.timing} />
+            <Pair label="Exit type" value={bet.exit_type ?? '—'} />
+            <Pair
+              label="Avg exit price"
+              value={bet.exit_price_cents !== null ? `${bet.exit_price_cents}¢` : '—'}
+            />
+            <Pair label="Settled" value={formatET(bet.settled_at) || '—'} />
+            <Pair label="Stake" value={`$${(bet.stake_cents / 100).toFixed(2)}`} />
+            <Pair
+              label="Entry fees"
+              value={`$${(bet.entry_fees_cents / 100).toFixed(2)}`}
+            />
+            <Pair
+              label="Exit fees"
+              value={`$${(bet.exit_fees_cents / 100).toFixed(2)}`}
+            />
+            <Pair
+              label="Gross P&L"
+              value={
+                bet.pnl_cents === null
+                  ? '—'
+                  : `${bet.pnl_cents >= 0 ? '+' : ''}$${(bet.pnl_cents / 100).toFixed(2)}`
+              }
+            />
+            {bet.human_reasoning && (
+              <Pair label="Human reasoning" value={bet.human_reasoning} wide />
+            )}
+            {bet.ai_reasoning && (
+              <Pair label="AI reasoning" value={bet.ai_reasoning} wide />
+            )}
+          </dl>
+          <FillsList query={fills} />
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+function FillsList({
+  query,
+}: {
+  query: ReturnType<typeof useQuery<BetFillsResponse>>
+}) {
+  if (query.isPending) {
+    return <div className="h-24 animate-pulse rounded-md border border-border bg-bg-card" />
+  }
+  if (query.isError || !query.data) {
+    return (
+      <div className="rounded-md border border-border bg-bg-card p-3 text-xs text-text-muted">
+        Couldn't load fills.
+      </div>
+    )
+  }
+  const fills = query.data.fills
+  if (fills.length === 0) {
+    return (
+      <div className="rounded-md border border-border bg-bg-card p-3 text-xs text-text-muted">
+        No fills recorded yet.
+      </div>
+    )
+  }
+  return (
+    <div className="rounded-md border border-border bg-bg-card">
+      <div className="border-b border-border px-3 py-2 text-xs uppercase tracking-wide text-text-muted">
+        Fills ({fills.length})
+      </div>
+      <ul className="divide-y divide-border">
+        {fills.map((f) => {
+          const qty =
+            f.quantity_centi % 100 === 0
+              ? String(f.quantity_centi / 100)
+              : (f.quantity_centi / 100).toFixed(2)
+          const taker = f.is_taker === true
+          return (
+            <li
+              key={f.id}
+              className="grid grid-cols-[auto_1fr_auto] items-center gap-3 px-3 py-1.5 text-xs"
+            >
+              <span
+                className={`font-mono uppercase ${
+                  f.action === 'buy' ? 'text-action' : 'text-gain'
+                }`}
+              >
+                {f.action}
+              </span>
+              <span className="font-mono tabular-nums text-text">
+                {qty} @ {f.price_cents}¢
+                <span className="ml-2 text-[10px] uppercase text-text-muted">
+                  {taker ? 'taker' : 'maker'}
+                </span>
+              </span>
+              <span className="font-mono tabular-nums text-text-muted">
+                {f.fee_cents === null
+                  ? 'fee pending'
+                  : f.fee_cents === 0
+                  ? '$0.00 fee'
+                  : `−$${(f.fee_cents / 100).toFixed(2)} fee`}
+              </span>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
   )
 }
 
