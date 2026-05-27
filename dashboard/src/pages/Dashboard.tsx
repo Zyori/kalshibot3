@@ -232,6 +232,7 @@ function EventRow({ group, compact }: { group: EventGroup; compact: boolean }) {
     group.espn_period,
     group.espn_clock,
     group.espn_status_detail,
+    group.open_time,
   )
   const time = matchLabel ?? formatET(group.open_time)
   // Outcome order: put TIE last, otherwise alphabetical by yes_sub_title.

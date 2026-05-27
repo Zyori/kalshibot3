@@ -29,9 +29,16 @@ export function formatMatchClock(
   period: number | null | undefined,
   clock: string | null | undefined,
   statusDetail: string | null | undefined,
+  kickoffIso: string | null | undefined = null,
 ): string | null {
   if (!state) return null
-  if (state === 'pre') return 'Pre-game'
+  if (state === 'pre') {
+    // 'Pre-game' should only apply right around kickoff (Kalshi opened
+    // trading, ESPN hasn't ticked the clock yet). Earlier than that —
+    // hours or days out — return null so the caller falls back to the
+    // kickoff time, which is what the user actually wants to see.
+    return isPreGameWindow(kickoffIso) ? 'Pre-game' : null
+  }
   if (state === 'post') return 'Final'
   if (state !== 'in') return null
 
@@ -46,6 +53,24 @@ export function formatMatchClock(
   if (minutes === null) return statusDetail ? statusDetail : null
   const total = halfBase + Math.ceil(minutes)
   return `${total}'`
+}
+
+/**
+ * 'Pre-game' window: the ~10 minutes before scheduled kickoff. After
+ * kickoff time has passed but ESPN's state is still 'pre' (clock hasn't
+ * started), we also call it pre-game — that's the actual "game is about
+ * to start" feel. Anything earlier than 10 min out gets the kickoff time
+ * instead.
+ */
+function isPreGameWindow(kickoffIso: string | null | undefined): boolean {
+  if (!kickoffIso) return false
+  const kickoff = new Date(kickoffIso).getTime()
+  if (Number.isNaN(kickoff)) return false
+  const now = Date.now()
+  const minsToKickoff = (kickoff - now) / 60_000
+  // -30 means kickoff was 30 min ago but ESPN hasn't ticked the clock yet —
+  // unusual but possible (delayed kickoff, ESPN lag). Cap loosely.
+  return minsToKickoff <= 10 && minsToKickoff >= -30
 }
 
 function parseClockMinutes(clock: string | null | undefined): number | null {

@@ -168,6 +168,7 @@ function EventHeader({
     detail?.espn_period,
     detail?.espn_clock,
     detail?.espn_status_detail,
+    detail?.open_time,
   )
   const isLive = detail?.espn_state === 'in'
   return (
