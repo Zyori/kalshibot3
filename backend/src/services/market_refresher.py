@@ -158,8 +158,10 @@ class MarketRefresher:
                 log.exception("locked_book_sweep_failed")
 
     async def resync_locked(self, ticker: str) -> bool:
-        """If `ticker`'s book is locked (yes_bid + no_bid > 100, impossible),
-        force an immediate REST resync. Returns True if a resync ran.
+        """If `ticker`'s book is locked (yes_bid + no_bid >= 100, which means
+        either crossed or zero implied spread — both impossible at the
+        Kalshi wire), force an immediate REST resync. Returns True if a
+        resync ran.
 
         Rate-limited: only resyncs the same ticker once per RESYNC_COOLDOWN_S
         so a persistently broken book doesn't hammer Kalshi. The cooldown is

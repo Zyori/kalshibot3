@@ -96,16 +96,20 @@ class MarketBook:
 
     @property
     def is_locked(self) -> bool:
-        """A real Kalshi book always satisfies yes_bid + no_bid <= 100.
-        A locked book (sum > 100) means we missed a delete delta and have
-        zombie levels — the only correct response is to resync from REST,
-        not to keep serving the bad book to the user (which makes the
-        sanity guard fire with nonsense numbers like 'ask 42 < bid 67')."""
+        """A real Kalshi book always satisfies yes_bid + no_bid <= 99 —
+        Kalshi requires at least a 1¢ implied spread between bid and ask.
+        sum == 100 means the derived ask equals the derived bid (zero
+        spread) which Kalshi's wire never actually permits; sum > 100
+        means the book is crossed. Both are zombie-level states from a
+        missed delete delta and the correct response is the same: resync
+        from REST. The pre-2026-05-27 threshold was > 100, which let
+        sum==100 zombies through and made the UI show e.g. '24/24' for
+        markets actually trading 24/25."""
         yb = self.yes.best_price("bid")
         nb = self.no.best_price("bid")
         if yb is None or nb is None:
             return False
-        return yb + nb > 100
+        return yb + nb >= 100
 
     def clear(self) -> None:
         """Wipe both sides. Used by resync after detecting a locked book —

@@ -20,7 +20,8 @@ import { bestAsk, bestBid } from '../../lib/book'
 import { outcomeLabel } from '../../lib/format'
 import type { ChildMarket } from '../../lib/types'
 
-const COLOR_DOTS = ['bg-gain', 'bg-action', 'bg-loss', 'bg-blue-500', 'bg-purple-500', 'bg-cyan-500']
+// Match CombinedPriceChart.COLORS — green / red / blue / amber / purple / cyan.
+const COLOR_DOTS = ['bg-gain', 'bg-loss', 'bg-blue-500', 'bg-action', 'bg-purple-500', 'bg-cyan-500']
 
 export default function MarketCard({
   market,

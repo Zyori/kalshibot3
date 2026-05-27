@@ -36,7 +36,10 @@ type Trade = {
 
 type TradesResponse = { ticker: string; trades: Trade[] }
 
-const COLORS = ['#22c55e', '#f59e0b', '#ef4444', '#3b82f6', '#a855f7', '#06b6d4']
+// Red / green / blue — colorblind-friendly enough for protan + deutan because
+// of the saturation gap; tritan users separate red from green well. If a 4th
+// market ever shows up we extend with high-contrast amber/purple.
+const COLORS = ['#22c55e', '#ef4444', '#3b82f6', '#f59e0b', '#a855f7', '#06b6d4']
 
 export default function CombinedPriceChart({ markets }: { markets: ChildMarket[] }) {
   const queries = useQueries({
