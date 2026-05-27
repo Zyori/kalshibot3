@@ -341,7 +341,8 @@ async def test_cross_opener_sell_pro_rates_kalshi_fee(session: AsyncSession) -> 
     rows by quantity_centi. Each opener's exit_fees_cents should reflect
     its share — not the full fee landing on one opener."""
     from src.kalshi.schemas import Fill as RestFill
-    from src.services.fills_sync import _ingest_rest_fill, _recompute_bet_fees
+    from src.services.bet_service import recompute_bet_from_fills
+    from src.services.fills_sync import _ingest_rest_fill
 
     bet_a = await _open_bet(session, order_id="ord-a", qty=30, price=20)
     bet_b = await _open_bet(session, order_id="ord-b", qty=70, price=25)
@@ -381,7 +382,7 @@ async def test_cross_opener_sell_pro_rates_kalshi_fee(session: AsyncSession) -> 
     assert {bet_a.id, bet_b.id} == affected
     for bid in affected:
         bet = await session.get(Bet, bid)
-        await _recompute_bet_fees(session, bet=bet)
+        await recompute_bet_from_fills(session, bet=bet)
     await session.flush()
 
     await session.refresh(bet_a)
@@ -479,3 +480,51 @@ async def test_partial_close_net_pnl_uses_realized(session: AsyncSession) -> Non
     assert out["fees_cents"] == 3
     # Net falls back to realized - fees when pnl_cents is None.
     assert out["net_pnl_cents"] == 597
+
+
+@pytest.mark.asyncio
+async def test_cross_opener_sell_write_time_fee_split(session: AsyncSession) -> None:
+    """When the canonical bet_fill already has fee_cents (fills_sync ran
+    first), record_fill's cross-opener split should pro-rate the fee at
+    write time so the transient misallocation window doesn't exist."""
+    bet_a = await _open_bet(session, order_id="ord-a", qty=30, price=20)
+    bet_b = await _open_bet(session, order_id="ord-b", qty=70, price=25)
+    await record_fill(session, _make_fill(
+        trade_id="ba", order_id="ord-a", side="yes", action="buy",
+        price_cents=20, qty=30,
+    ))
+    await record_fill(session, _make_fill(
+        trade_id="bb", order_id="ord-b", side="yes", action="buy",
+        price_cents=25, qty=70,
+    ))
+
+    # Simulate fills_sync having seen the sell first (before WS).
+    pre = BetFill(
+        bet_id=None,
+        trade_id="sx",
+        order_id="sell-x",
+        ticker=SOCCER_TICKER,
+        side="yes",
+        action="sell",
+        price_cents=40,
+        quantity_centi=10000,
+        fee_cents=13,  # Kalshi's authoritative fee for the whole trade
+        is_taker=True,
+        fee_synced_at=datetime.now(timezone.utc),
+        created_time=datetime.now(timezone.utc),
+    )
+    session.add(pre)
+    await session.flush()
+
+    # Now WS delivers the sell.
+    await record_fill(session, _make_fill(
+        trade_id="sx", order_id="sell-x", side="yes", action="sell",
+        price_cents=40, qty=100,
+    ))
+    await session.refresh(bet_a)
+    await session.refresh(bet_b)
+
+    # Fee is split immediately, no fills_sync sweep needed.
+    assert bet_a.exit_fees_cents + bet_b.exit_fees_cents == 13
+    assert bet_a.exit_fees_cents == 4
+    assert bet_b.exit_fees_cents == 9

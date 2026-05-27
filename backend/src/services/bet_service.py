@@ -102,6 +102,52 @@ async def _recompute_bet_fees(session: AsyncSession, *, bet: Bet) -> None:
     )
 
 
+async def recompute_bet_from_fills(session: AsyncSession, *, bet: Bet) -> None:
+    """Recompute every derived field on Bet from its bet_fill rows. Used
+    when fills_sync back-links an orphan bet_fill to its Bet — we don't
+    know which buy/sell paths to re-run, so we re-derive the whole
+    aggregate state in one place.
+
+    This is also a natural future home for the buy/sell-path inline
+    recomputes; they currently duplicate slices of this logic."""
+    fills = (await session.execute(
+        select(BetFill).where(BetFill.bet_id == bet.id)
+    )).scalars().all()
+    buys = [f for f in fills if f.action == "buy"]
+    sells = [f for f in fills if f.action == "sell"]
+
+    buy_centi = sum(f.quantity_centi for f in buys)
+    if buy_centi > 0:
+        weighted = sum(f.price_cents * f.quantity_centi for f in buys)
+        bet.entry_price_cents = max(1, min(99, weighted // buy_centi))
+        bet.stake_cents = (bet.entry_price_cents * buy_centi) // 100
+
+    sell_centi = sum(f.quantity_centi for f in sells)
+    if sell_centi > 0:
+        weighted = sum(f.price_cents * f.quantity_centi for f in sells)
+        bet.exit_price_cents = max(1, min(99, weighted // sell_centi))
+        bet.realized_pnl_cents = (
+            sum((f.price_cents - bet.entry_price_cents) * f.quantity_centi for f in sells)
+            // 100
+        )
+
+    ordered_centi = bet.quantity * 100
+    bet.remaining_quantity_centi = max(0, ordered_centi - sell_centi)
+    bet.remaining_quantity = bet.remaining_quantity_centi // 100
+
+    bet.entry_fees_cents = sum((f.fee_cents or 0) for f in buys)
+    bet.exit_fees_cents = sum((f.fee_cents or 0) for f in sells)
+
+    if bet.remaining_quantity_centi == 0 and bet.status == BetStatus.OPEN and sell_centi > 0:
+        bet.status = (
+            BetStatus.WON if (bet.realized_pnl_cents or 0) > 0 else BetStatus.LOST
+        )
+        bet.exit_type = ExitType.CLOSED_EARLY
+        bet.settled_at = datetime.now(timezone.utc)
+        bet.pnl_cents = bet.realized_pnl_cents
+    bet.version += 1
+
+
 async def record_placed_order(
     session: AsyncSession,
     *,
@@ -443,6 +489,42 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
         )
 
         remaining_to_attribute_centi -= chunk_centi
+
+    # If fills_sync had already populated the REST fee on the canonical row
+    # before the WS sell arrived, pro-rate it across the row + any
+    # cross-opener splits NOW — don't wait for the next fills_sync sweep
+    # to heal the misallocation. Uses the same largest-remainder math as
+    # fills_sync._ingest_rest_fill.
+    if total_fee_to_split is not None and primary_bet_id is not None:
+        all_rows = (await session.execute(
+            select(BetFill).where(
+                (BetFill.trade_id == fill.msg.trade_id)
+                | (BetFill.trade_id.like(f"{fill.msg.trade_id}#%"))
+            )
+        )).scalars().all()
+        total_centi = sum(r.quantity_centi for r in all_rows)
+        if total_centi > 0 and len(all_rows) > 1:
+            allocations: list[tuple[BetFill, int, int]] = []
+            running = 0
+            for r in all_rows:
+                num = total_fee_to_split * r.quantity_centi
+                base = num // total_centi
+                allocations.append((r, base, num - base * total_centi))
+                running += base
+            leftover = total_fee_to_split - running
+            allocations.sort(key=lambda x: x[2], reverse=True)
+            touched: set[int] = set()
+            for idx, (row, base, _rem) in enumerate(allocations):
+                new_fee = base + (1 if idx < leftover else 0)
+                if row.fee_cents != new_fee:
+                    row.fee_cents = new_fee
+                    if row.bet_id is not None:
+                        touched.add(row.bet_id)
+            await session.flush()
+            for bid in touched:
+                touched_bet = await session.get(Bet, bid)
+                if touched_bet is not None:
+                    await _recompute_bet_fees(session, bet=touched_bet)
 
     await session.flush()
 

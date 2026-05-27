@@ -33,7 +33,7 @@ from src.core.logging import get_logger
 from src.kalshi.rest import KalshiRestClient
 from src.kalshi.schemas import Fill as RestFill
 from src.models import Bet, BetFill
-from src.services.bet_service import _recompute_bet_fees
+from src.services.bet_service import recompute_bet_from_fills
 from src.sports.soccer import is_soccer_ticker
 
 log = get_logger(__name__)
@@ -70,6 +70,19 @@ async def _ingest_rest_fill(
         total_centi = sum(r.quantity_centi for r in rows)
         if total_centi <= 0:
             return set()
+        # Back-link orphan rows whose bet didn't exist when they were first
+        # ingested. A WS buy fill that arrived before the orders route
+        # committed the Bet was dropped from the WS path; but if a row
+        # somehow exists with bet_id=NULL and a Bet now matches order_id,
+        # bind it so the bet's aggregates pick up the fill.
+        for row in rows:
+            if row.bet_id is None and row.action == "buy":
+                bet = await session.scalar(
+                    select(Bet).where(Bet.kalshi_order_id == row.order_id)
+                )
+                if bet is not None:
+                    row.bet_id = bet.id
+
         # Pro-rate the fee. Use largest-remainder rounding so cents sum
         # back to the original fee exactly (no off-by-one drift).
         allocations: list[tuple[BetFill, int, int]] = []  # (row, base_cents, remainder)
@@ -154,7 +167,10 @@ async def sync_fills_once() -> dict[str, int]:
         for bet_id in affected_bet_ids:
             bet = await session.get(Bet, bet_id)
             if bet is not None:
-                await _recompute_bet_fees(session, bet=bet)
+                # Full re-derive from bet_fill: catches orphan-buy back-links
+                # (entry_price + stake_cents reflect the now-bound fill) AND
+                # routine fee-only updates. Cheaper than two code paths.
+                await recompute_bet_from_fills(session, bet=bet)
         await session.commit()
 
     log.info(
