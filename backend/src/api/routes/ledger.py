@@ -145,7 +145,14 @@ async def list_bets(
     )
     if cursor is not None:
         stmt = stmt.where(Bet.id < cursor)
-    stmt = stmt.order_by(Bet.placed_at.desc().nulls_last(), Bet.id.desc()).limit(limit + 1)
+    # Order by id (newest first). placed_at on SQLite is stored as text and
+    # mixes two formats across the bet table — rows written before the
+    # batch_alter_table migration that added remaining_quantity have an ISO
+    # `T` and a `+00:00` suffix, rows written after have a space and no tz
+    # suffix. Text-sorting those mixes them out of chronological order. Since
+    # bet.id is monotonic and bets are inserted in placed_at order, id desc
+    # is the reliable chronological sort.
+    stmt = stmt.order_by(Bet.id.desc()).limit(limit + 1)
 
     rows = (await session.execute(stmt)).all()
     has_more = len(rows) > limit
