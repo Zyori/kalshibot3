@@ -57,6 +57,8 @@ SOCCER_GAME_SERIES_NAMES: dict[str, str] = {
     "KXLIGAMXGAME": "Liga MX",
     "KXARGPREMDIVGAME": "Argentina Primera División",
     "KXCOPADOBRASILGAME": "Copa do Brasil",
+    "KXCONMEBOLLIBGAME": "Copa Libertadores",
+    "KXCONMEBOLSUDGAME": "Copa Sudamericana",
     "KXCHLLDPGAME": "Chile Liga de Primera",
     "KXURYPDGAME": "Uruguay Primera División",
     "KXPERLIGA1GAME": "Peru Liga 1",

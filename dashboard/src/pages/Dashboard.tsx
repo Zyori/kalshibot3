@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import InlineError from '../components/InlineError'
 import Skeleton from '../components/Skeleton'
-import { formatET, outcomeLabel } from '../lib/format'
+import { formatET } from '../lib/format'
 
 type FeedMarket = {
   ticker: string
@@ -137,6 +137,40 @@ function FeedSkeleton() {
   )
 }
 
+/**
+ * Group markets by event_ticker, preserving the per-event order of the
+ * input (Section already sorts upstream). Each group is `{event, markets}`
+ * where `event` carries the metadata shared across children.
+ */
+type EventGroup = {
+  event_ticker: string
+  event_title: string
+  league: string | null
+  open_time: string | null
+  bucket: FeedMarket['bucket']
+  markets: FeedMarket[]
+}
+
+function groupByEvent(rows: FeedMarket[]): EventGroup[] {
+  const map = new Map<string, EventGroup>()
+  for (const m of rows) {
+    let g = map.get(m.event_ticker)
+    if (!g) {
+      g = {
+        event_ticker: m.event_ticker,
+        event_title: m.event_title,
+        league: m.league,
+        open_time: m.open_time,
+        bucket: m.bucket,
+        markets: [],
+      }
+      map.set(m.event_ticker, g)
+    }
+    g.markets.push(m)
+  }
+  return Array.from(map.values())
+}
+
 function Section({
   title,
   subtitle,
@@ -153,20 +187,23 @@ function Section({
   collapsed?: boolean
 }) {
   if (markets.length === 0 && !showWhenEmpty) return null
+  const events = groupByEvent(markets)
 
   return (
     <section>
       <div className="mb-2 flex items-baseline justify-between">
         <h3 className="text-sm font-semibold text-text">{title}</h3>
-        <span className="text-xs text-text-muted">{markets.length}</span>
+        <span className="text-xs text-text-muted">
+          {events.length} {events.length === 1 ? 'event' : 'events'}
+        </span>
       </div>
       {subtitle && <p className="mb-3 text-xs text-text-muted">{subtitle}</p>}
-      {markets.length === 0 ? (
+      {events.length === 0 ? (
         <SectionMessage>{empty}</SectionMessage>
       ) : (
         <ul className={collapsed ? 'grid gap-1' : 'grid gap-2'}>
-          {markets.map((m) => (
-            <MarketRow key={m.ticker} market={m} compact={collapsed} />
+          {events.map((g) => (
+            <EventRow key={g.event_ticker} group={g} compact={collapsed} />
           ))}
         </ul>
       )}
@@ -174,49 +211,59 @@ function Section({
   )
 }
 
-function MarketRow({ market, compact }: { market: FeedMarket; compact: boolean }) {
-  const time = formatET(market.open_time)
+function EventRow({ group, compact }: { group: EventGroup; compact: boolean }) {
+  const time = formatET(group.open_time)
+  // Outcome order: put TIE last, otherwise alphabetical by yes_sub_title.
+  // Stable across renders so the price chips don't reshuffle.
+  const sorted = [...group.markets].sort((a, b) => {
+    const at = a.yes_sub_title?.toLowerCase() === 'tie' ? 1 : 0
+    const bt = b.yes_sub_title?.toLowerCase() === 'tie' ? 1 : 0
+    if (at !== bt) return at - bt
+    return (a.yes_sub_title ?? a.ticker).localeCompare(b.yes_sub_title ?? b.ticker)
+  })
   return (
     <li>
       <Link
-        to={`/event/${encodeURIComponent(market.event_ticker)}?market=${encodeURIComponent(market.ticker)}`}
-        className="grid items-center gap-3 rounded-md border border-border bg-bg-card px-3 py-2 transition-colors hover:bg-bg-hover"
-        style={{ gridTemplateColumns: '1fr auto auto' }}
+        to={`/event/${encodeURIComponent(group.event_ticker)}`}
+        className="block rounded-md border border-border bg-bg-card px-3 py-2 transition-colors hover:bg-bg-hover"
       >
-        <div className="min-w-0">
-          <div className="truncate text-sm text-text">
-            {market.league && (
+        <div className="flex items-baseline justify-between gap-3">
+          <div className="min-w-0 truncate text-sm text-text">
+            {group.league && (
               <span className="mr-2 text-[10px] font-semibold uppercase tracking-wide text-action">
-                {market.league}
+                {group.league}
               </span>
             )}
-            {market.event_title}
+            {group.event_title}
           </div>
-          {!compact && (
-            <div className="truncate text-xs text-text-muted">
-              {outcomeLabel(market.yes_sub_title)}
-            </div>
-          )}
+          <span className="shrink-0 text-right text-xs text-text-muted tabular-nums">
+            {time}
+          </span>
         </div>
-        {!compact && (
-          <Price yes_bid={market.yes_bid_cents} yes_ask={market.yes_ask_cents} />
+        {!compact && sorted.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            {sorted.map((m) => (
+              <OutcomeChip key={m.ticker} market={m} />
+            ))}
+          </div>
         )}
-        <div className="text-right text-xs text-text-muted tabular-nums">{time}</div>
       </Link>
     </li>
   )
 }
 
-function Price({ yes_bid, yes_ask }: { yes_bid: number | null; yes_ask: number | null }) {
-  if (yes_bid === null && yes_ask === null) {
-    return <span className="text-xs text-text-muted">—</span>
-  }
+function OutcomeChip({ market }: { market: FeedMarket }) {
+  const label =
+    market.yes_sub_title?.toLowerCase() === 'tie'
+      ? 'Draw'
+      : market.yes_sub_title ?? market.ticker
+  const price = market.yes_ask_cents ?? market.yes_bid_cents
   return (
-    <span className="text-xs font-mono tabular-nums text-text-muted">
-      {yes_bid ?? '—'}
-      <span className="px-0.5 text-text-muted">/</span>
-      {yes_ask ?? '—'}
-      <span className="ml-1 text-text-muted">¢</span>
+    <span className="flex items-baseline gap-1 text-text-muted">
+      <span>{label}</span>
+      <span className="font-mono tabular-nums text-text">
+        {price !== null ? `${price}¢` : '—'}
+      </span>
     </span>
   )
 }
