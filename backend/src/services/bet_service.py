@@ -184,6 +184,50 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
     )
 
 
+async def mark_bet_terminal_by_order_id(
+    session: AsyncSession,
+    *,
+    order_id: str,
+    status: BetStatus,
+    exit_type: ExitType | None = None,
+) -> Bet | None:
+    """Transition the BET matching `order_id` to a terminal status (CANCELLED
+    or one of WON/LOST/etc.). Idempotent — already-terminal bets are left
+    alone so we don't clobber a settled WON with a CANCELLED.
+
+    Used by:
+      - the cancel route, after Kalshi acks the cancel (mark CANCELLED).
+      - the WS user_order handler, when status arrives as 'canceled' or
+        'executed' on the wire (defense in depth — the route already
+        handles the cancel-from-us case).
+
+    Returns the updated BET (or None if we have no BET for this order).
+    """
+    bet = await session.scalar(
+        select(Bet).where(Bet.kalshi_order_id == order_id)
+    )
+    if bet is None:
+        # External order or one we never recorded — no-op. See
+        # feedback_no_external_fill_reconciliation: we don't auto-create
+        # BETs for stuff that bypassed our place route.
+        return None
+    if bet.status != BetStatus.OPEN:
+        # Already terminal. Don't overwrite a WON with CANCELLED if a
+        # late cancel event arrives after settlement, for example.
+        return bet
+    bet.status = status
+    if exit_type is not None:
+        bet.exit_type = exit_type
+    bet.version += 1
+    await session.flush()
+    log.info(
+        "bet_transitioned",
+        bet_id=bet.id, order_id=order_id,
+        new_status=status, exit_type=exit_type,
+    )
+    return bet
+
+
 async def settle_bets_for_market(
     session: AsyncSession,
     *,

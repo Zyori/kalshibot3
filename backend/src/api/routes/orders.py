@@ -29,8 +29,9 @@ from src.core.exceptions import KalshiError
 from src.core.logging import get_logger
 from src.kalshi.rest import KalshiRestClient, new_client_order_id
 from src.kalshi.schemas import PlaceOrderRequest
+from src.core.types import BetStatus, ExitType
 from src.models import Market, Position
-from src.services.bet_service import record_placed_order
+from src.services.bet_service import mark_bet_terminal_by_order_id, record_placed_order
 from src.services.order_sanity import SanityInput, Verdict, check_order
 from src.sports.soccer import is_soccer_ticker
 
@@ -279,7 +280,10 @@ def _normalize_price_cents(raw: Any) -> int | None:
 
 
 @router.delete("/orders/{order_id}")
-async def cancel_order(order_id: str) -> dict[str, Any]:
+async def cancel_order(
+    order_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
     """Cancel a resting order. Returns the updated order state.
 
     No is_soccer_ticker check here because we don't know the ticker yet —
@@ -287,6 +291,12 @@ async def cancel_order(order_id: str) -> dict[str, Any]:
     the UI if the cancelled order isn't soccer (cross-market isolation:
     if a malicious caller somehow gets an order_id from another market,
     we don't leak its details back through this app).
+
+    After Kalshi confirms the cancel, transition the matching BET row to
+    CANCELLED status so the bankroll-deployed math doesn't keep counting
+    its stake as in-flight. (The WS user_order handler does the same on
+    its side; this is the synchronous path so the route caller sees the
+    state change before the next /api/ledger/stats poll.)
     """
     async with KalshiRestClient() as client:
         try:
@@ -302,6 +312,13 @@ async def cancel_order(order_id: str) -> dict[str, Any]:
             order_id=order_id, ticker=ticker,
         )
         raise HTTPException(status_code=400, detail="cross-market isolation violation")
+
+    await mark_bet_terminal_by_order_id(
+        session,
+        order_id=order_id,
+        status=BetStatus.CANCELLED,
+    )
+    await session.commit()
 
     return {
         "kalshi_order_id": resp.order.order_id,

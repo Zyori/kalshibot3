@@ -33,8 +33,13 @@ from src.kalshi.ws import (
     BACKOFF_MAX_S,
     KalshiWsClient,
 )
-from src.kalshi.ws_wire import Fill, KalshiWsMessage, MarketLifecycle
-from src.services.bet_service import record_fill, settle_bets_for_market
+from src.core.types import BetStatus
+from src.kalshi.ws_wire import Fill, KalshiWsMessage, MarketLifecycle, UserOrder
+from src.services.bet_service import (
+    mark_bet_terminal_by_order_id,
+    record_fill,
+    settle_bets_for_market,
+)
 from src.services.market_refresher import MarketRefresher
 from src.services.market_tier import MarketTier, classify
 from src.services.position_sync import PositionSyncer
@@ -63,6 +68,8 @@ class Supervisor:
         # Lifecycle handler: settle OPEN bets when Kalshi reports the market
         # as terminal (status=settled with a settlement_value).
         self.kalshi_ws.set_lifecycle_handler(self._on_market_lifecycle)
+        # User order handler: transition BET rows to CANCELLED on cancel.
+        self.kalshi_ws.set_user_order_handler(self._on_user_order)
 
         # ESPN scoreboard is the source of truth for kickoff times — Kalshi's
         # `occurrence_datetime` is the settlement deadline, off by 3+ hours
@@ -134,6 +141,34 @@ class Supervisor:
         # the cached balance so the banner reflects the payout fast.
         if self.app_state is not None:
             self.app_state._balance_refreshed_at_mono = 0.0
+
+    async def _on_user_order(self, msg: UserOrder) -> None:
+        """Transition BET rows to CANCELLED when a user_order goes terminal.
+
+        Kalshi sends user_order events on every state change of one of our
+        orders. We only care about terminal states here (canceled, executed)
+        since OPEN -> CANCELLED is the transition we need to record;
+        executed is left as-is because the fill handler already covers the
+        WON/LOST path via record_fill + settlement.
+
+        Defense in depth alongside the cancel route's synchronous BET
+        update: catches cancels done directly on kalshi.com, and the rare
+        case where the cancel route completes the Kalshi call but the
+        post-cancel DB write fails (then the WS event reconciles).
+        """
+        if msg.msg.status != "canceled":
+            return
+        factory = get_session_factory()
+        try:
+            async with factory() as session:
+                await mark_bet_terminal_by_order_id(
+                    session,
+                    order_id=msg.msg.order_id,
+                    status=BetStatus.CANCELLED,
+                )
+                await session.commit()
+        except Exception:  # noqa: BLE001
+            log.exception("user_order_cancel_persist_failed", order_id=msg.msg.order_id)
 
     async def _on_discovery_refresh(self, feed: MarketFeed) -> None:
         """Classify every known ticker by tier and dispatch to the right path.

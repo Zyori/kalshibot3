@@ -77,6 +77,7 @@ class KalshiWsClient:
         self.on_fill: "asyncio.Future | None" = None  # set externally
         self._fill_handler: "Any | None" = None
         self._lifecycle_handler: "Any | None" = None
+        self._user_order_handler: "Any | None" = None
 
         self._ws: ClientConnection | None = None
         self._market_tickers: set[str] = set()
@@ -272,6 +273,8 @@ class KalshiWsClient:
                 asyncio.create_task(self._lifecycle_handler(msg))
         elif isinstance(msg, UserOrder):
             self.live_state.apply_user_order(msg)
+            if self._user_order_handler is not None:
+                asyncio.create_task(self._user_order_handler(msg))
         elif isinstance(msg, Fill):
             # LiveState only notes the liveness timestamp. The supervisor
             # wires a fill handler (bet_service.record_fill) via set_fill_handler
@@ -316,6 +319,17 @@ class KalshiWsClient:
         set_fill_handler — spawned as its own task.
         """
         self._lifecycle_handler = handler
+
+    def set_user_order_handler(self, handler) -> None:  # noqa: ANN001
+        """Register an async callback fired on every UserOrder event.
+
+        Signature: `async def handler(msg: UserOrder) -> None`. Supervisor
+        uses this to transition BET rows to CANCELLED when an order goes
+        terminal — covers both cancels we issued and cancels the user
+        made directly on kalshi.com (defense in depth alongside the
+        cancel route's synchronous BET update).
+        """
+        self._user_order_handler = handler
 
     async def close(self) -> None:
         self.live_state.connected = False
