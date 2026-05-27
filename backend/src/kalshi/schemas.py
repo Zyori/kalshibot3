@@ -283,10 +283,22 @@ class PlaceOrderRequest(WireModel):
 
 
 class Order(WireModelLoose):
-    """A Kalshi order as returned in responses."""
+    """A Kalshi order as returned in responses.
+
+    Wire-format quirks (verified 2026-05-27 against live Kalshi):
+      - Prices come as dollar strings (`yes_price_dollars: "0.0200"`) on
+        responses, not as int cents the way `Market` returns them. We
+        translate to int cents in the model validator below.
+      - Counts come as float strings (`initial_count_fp: "1.00"`,
+        `remaining_count_fp: "1.00"`). Translated to int.
+      - The legacy int-cent fields (`yes_price`, `count`, `remaining_count`)
+        are still present on some endpoints, so we accept both shapes.
+    """
 
     order_id: str
-    client_order_id: str
+    client_order_id: str | None = ""
+    """Some Kalshi responses (e.g. /portfolio/orders without our placement)
+    omit client_order_id entirely; defaulting keeps the parser happy."""
     ticker: str
     side: Literal["yes", "no"]
     action: Literal["buy", "sell"]
@@ -298,6 +310,29 @@ class Order(WireModelLoose):
     remaining_count: int = Field(default=0, ge=0)
     created_time: datetime | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_kalshi_wire(cls, obj: Any) -> Any:
+        # Runs on every validation path, including nested (PlaceOrderResponse,
+        # CancelOrderResponse). Overriding model_validate doesn't, because
+        # the parent's validator drives nested children through its own path.
+        if not isinstance(obj, dict):
+            return obj
+        out = dict(obj)
+        # Prices: dollar strings → int cents.
+        if "yes_price" not in out and "yes_price_dollars" in out:
+            out["yes_price"] = _dollar_str_to_cents(out["yes_price_dollars"])
+        if "no_price" not in out and "no_price_dollars" in out:
+            out["no_price"] = _dollar_str_to_cents(out["no_price_dollars"])
+        # Counts: float strings → int.
+        if "count" not in out and "initial_count_fp" in out:
+            out["count"] = int(float(out["initial_count_fp"]))
+        if "remaining_count" not in out and "remaining_count_fp" in out:
+            out["remaining_count"] = int(float(out["remaining_count_fp"]))
+        out.setdefault("type", "limit")
+        out.setdefault("action", "buy")
+        return out
+
 
 class PlaceOrderResponse(WireModelLoose):
     order: Order
@@ -306,6 +341,18 @@ class PlaceOrderResponse(WireModelLoose):
 class CancelOrderResponse(WireModelLoose):
     order: Order
     reduced_by: int | None = None
+    """Legacy int field. Kalshi also sends `reduced_by_fp` (float string);
+    we accept either via the validator below."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_kalshi_wire(cls, obj: Any) -> Any:
+        if not isinstance(obj, dict):
+            return obj
+        out = dict(obj)
+        if "reduced_by" not in out and "reduced_by_fp" in out:
+            out["reduced_by"] = int(float(out["reduced_by_fp"]))
+        return out
 
 
 # === Events (Kalshi groups markets into events) ===

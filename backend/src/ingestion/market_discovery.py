@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from typing import Any
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -29,7 +30,7 @@ from src.core.logging import get_logger
 from src.ingestion.espn_scoreboard import EspnScoreboard
 from src.kalshi.rest import KalshiRestClient
 from src.kalshi.schemas import Event, Market
-from src.services.kickoff_matcher import find_kickoff
+from src.services.kickoff_matcher import find_match
 from src.sports.soccer import SOCCER_GAME_SERIES, espn_slug_for
 
 log = get_logger(__name__)
@@ -115,6 +116,17 @@ class FeedMarket:
     bucket: str = "unknown"
     """One of: live, upcoming, recent. Set by the classifier."""
 
+    # ESPN-derived live-game state. None when ESPN didn't match or game
+    # isn't in progress.
+    espn_state: str | None = None
+    """'pre' | 'in' | 'post' as ESPN reports it."""
+    espn_period: int | None = None
+    """1 = first half, 2 = second half, 3/4 = extra time, 5 = penalties."""
+    espn_clock: str | None = None
+    """'67:42' or '45+2:00' — only meaningful when espn_state == 'in'."""
+    espn_status_detail: str | None = None
+    """ESPN's short label: 'HT', 'FT', 'AET', etc."""
+
 
 @dataclass
 class MarketFeed:
@@ -172,18 +184,19 @@ def _classify(market: FeedMarket, now: datetime) -> str | None:
 def _event_to_feed_markets(
     event: Event,
     series: str,
-    espn_kickoff: datetime | None,
+    espn_match: Any | None,
 ) -> list[FeedMarket]:
     """Flatten one event into FeedMarket rows for each market it contains.
 
-    Kickoff source priority (chosen at the caller, passed in via
-    `espn_kickoff`):
+    Kickoff source priority (chosen at the caller, passed in via `espn_match`):
       1. ESPN's per-league scoreboard, when we have a confident match —
-         that's the actual kickoff to the minute.
+         that's the actual kickoff to the minute. Also carries live game
+         state (period, clock, status_detail) when state=='in'.
       2. Kalshi's `occurrence_datetime` (fallback). Observed to be the
          settlement deadline, not kickoff — runs 3+ hours past real
          kickoff on CONMEBOL games. Better than nothing.
     """
+    espn_kickoff = espn_match.kickoff_utc if espn_match is not None else None
     open_time = espn_kickoff or (event.markets[0].occurrence_datetime if event.markets else None)
     rows: list[FeedMarket] = []
     for m in event.markets or []:
@@ -198,6 +211,10 @@ def _event_to_feed_markets(
             open_time=open_time,
             close_time=m.close_time,
             volume=m.volume,
+            espn_state=espn_match.state if espn_match else None,
+            espn_period=espn_match.period if espn_match else None,
+            espn_clock=espn_match.clock_display if espn_match else None,
+            espn_status_detail=espn_match.status_detail if espn_match else None,
         ))
     return rows
 
@@ -307,16 +324,15 @@ class MarketDiscovery:
             )
             now_utc = datetime.now(timezone.utc)
             for event in resp.events:
-                espn_kickoff: datetime | None = None
+                espn_match = None
                 if espn_snapshot is not None and espn_slug is not None:
-                    match = find_kickoff(
+                    espn_match = find_match(
                         espn_snapshot,
                         event_ticker=event.event_ticker,
                         event_title=event.title,
                         espn_slug=espn_slug,
                     )
-                    if match is not None:
-                        espn_kickoff = match[0]
+                    if espn_match is not None:
                         self._espn_match_count += 1
                     else:
                         # Only count as a "miss" if the game is within 24h —
@@ -333,7 +349,7 @@ class MarketDiscovery:
                                 title=event.title,
                                 kalshi_kickoff=kalshi_kickoff.isoformat(),
                             )
-                rows.extend(_event_to_feed_markets(event, series, espn_kickoff))
+                rows.extend(_event_to_feed_markets(event, series, espn_match))
             cursor = resp.cursor
             if not cursor or not resp.events:
                 break

@@ -28,7 +28,7 @@ import Skeleton from '../components/Skeleton'
 import TopOfBook from '../components/trading/TopOfBook'
 import type { MarketBook } from '../contexts/WebSocketProvider'
 import { bestAsk, bestBid } from '../lib/book'
-import { formatET, outcomeLabel } from '../lib/format'
+import { formatET, formatMatchClock, outcomeLabel } from '../lib/format'
 
 type ChildPosition = {
   side: 'yes' | 'no'
@@ -58,6 +58,10 @@ type EventDetail = {
   open_time: string | null
   close_time: string | null
   bucket: 'live' | 'upcoming' | 'recent'
+  espn_state: 'pre' | 'in' | 'post' | null
+  espn_period: number | null
+  espn_clock: string | null
+  espn_status_detail: string | null
   markets: ChildMarket[]
 }
 
@@ -160,6 +164,13 @@ function EventHeader({
   decoded: string
 }) {
   const kickoff = formatET(detail?.open_time)
+  const matchLabel = formatMatchClock(
+    detail?.espn_state,
+    detail?.espn_period,
+    detail?.espn_clock,
+    detail?.espn_status_detail,
+  )
+  const isLive = detail?.espn_state === 'in'
   return (
     <header className="flex items-start justify-between gap-4">
       <div className="min-w-0">
@@ -176,13 +187,16 @@ function EventHeader({
         </h2>
         {detail && (
           <p className="mt-1 text-xs text-text-muted">
-            {kickoff && <>Kickoff {kickoff} · </>}
-            {detail.bucket === 'live' ? (
-              <span className="text-action">LIVE</span>
-            ) : (
-              detail.bucket
-            )}{' '}
-            · {detail.markets.length} markets
+            {matchLabel && (
+              <>
+                <span className={isLive ? 'font-semibold text-action' : 'text-text'}>
+                  {matchLabel}
+                </span>
+                {' · '}
+              </>
+            )}
+            {!isLive && kickoff && <>Kickoff {kickoff} · </>}
+            {detail.markets.length} markets
           </p>
         )}
       </div>

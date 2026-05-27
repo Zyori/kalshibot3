@@ -110,15 +110,16 @@ def _ticker_date(ticker_or_event: str) -> date | None:
         return None
 
 
-def find_kickoff(
+def find_match(
     snapshot: EspnSnapshot,
     *,
     event_ticker: str,
     event_title: str,
     espn_slug: str | None,
-) -> tuple[datetime, str] | None:
-    """Best ESPN match for a Kalshi event. Returns (kickoff_utc, state)
-    or None if no high-confidence match exists.
+) -> EspnEvent | None:
+    """Best ESPN match for a Kalshi event. Returns the full EspnEvent or
+    None if no high-confidence match exists. Use .kickoff_utc for kickoff
+    time, .state/.period/.clock_display/.status_detail for live game info.
 
     `espn_slug` narrows the candidate set to ESPN events from the same
     league — same Kalshi series → same ESPN slug. Skipping this would
@@ -163,5 +164,8 @@ def find_kickoff(
                 (e.kickoff_utc.date() - target_date).total_seconds()
             )
         )
-    chosen = candidates[0]
-    return chosen.kickoff_utc.astimezone(timezone.utc), chosen.state
+    return candidates[0]
+
+
+# Back-compat alias for the previous name.
+find_kickoff = find_match

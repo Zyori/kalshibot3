@@ -59,6 +59,10 @@ def _feed_market_to_dict(m: Any, live_state: Any) -> dict[str, Any]:
         "yes_ask_cents": yes_ask,
         "volume": m.volume,
         "bucket": m.bucket,
+        "espn_state": m.espn_state,
+        "espn_period": m.espn_period,
+        "espn_clock": m.espn_clock,
+        "espn_status_detail": m.espn_status_detail,
     }
 
 

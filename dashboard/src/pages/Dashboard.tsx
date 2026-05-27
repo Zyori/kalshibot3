@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import InlineError from '../components/InlineError'
 import Skeleton from '../components/Skeleton'
-import { formatET } from '../lib/format'
+import { formatET, formatMatchClock } from '../lib/format'
 
 type FeedMarket = {
   ticker: string
@@ -20,6 +20,10 @@ type FeedMarket = {
   yes_ask_cents: number | null
   volume: number | null
   bucket: 'live' | 'upcoming' | 'recent'
+  espn_state: 'pre' | 'in' | 'post' | null
+  espn_period: number | null
+  espn_clock: string | null
+  espn_status_detail: string | null
 }
 
 type FeedResponse = {
@@ -148,6 +152,10 @@ type EventGroup = {
   league: string | null
   open_time: string | null
   bucket: FeedMarket['bucket']
+  espn_state: FeedMarket['espn_state']
+  espn_period: number | null
+  espn_clock: string | null
+  espn_status_detail: string | null
   markets: FeedMarket[]
 }
 
@@ -162,6 +170,10 @@ function groupByEvent(rows: FeedMarket[]): EventGroup[] {
         league: m.league,
         open_time: m.open_time,
         bucket: m.bucket,
+        espn_state: m.espn_state,
+        espn_period: m.espn_period,
+        espn_clock: m.espn_clock,
+        espn_status_detail: m.espn_status_detail,
         markets: [],
       }
       map.set(m.event_ticker, g)
@@ -212,7 +224,16 @@ function Section({
 }
 
 function EventRow({ group, compact }: { group: EventGroup; compact: boolean }) {
-  const time = formatET(group.open_time)
+  // For live games show the match clock ('68\'', 'Half time'). For pre/post
+  // show the ESPN-derived label ('Pre-game', 'Final'). Fallback to the
+  // kickoff time when ESPN didn't match — better than blank.
+  const matchLabel = formatMatchClock(
+    group.espn_state,
+    group.espn_period,
+    group.espn_clock,
+    group.espn_status_detail,
+  )
+  const time = matchLabel ?? formatET(group.open_time)
   // Outcome order: put TIE last, otherwise alphabetical by yes_sub_title.
   // Stable across renders so the price chips don't reshuffle.
   const sorted = [...group.markets].sort((a, b) => {
@@ -236,7 +257,11 @@ function EventRow({ group, compact }: { group: EventGroup; compact: boolean }) {
             )}
             {group.event_title}
           </div>
-          <span className="shrink-0 text-right text-xs text-text-muted tabular-nums">
+          <span
+            className={`shrink-0 text-right text-xs tabular-nums ${
+              group.espn_state === 'in' ? 'font-semibold text-action' : 'text-text-muted'
+            }`}
+          >
             {time}
           </span>
         </div>

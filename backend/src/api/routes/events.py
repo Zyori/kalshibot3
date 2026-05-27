@@ -138,5 +138,9 @@ async def get_event(
         "open_time": head.open_time.isoformat() if head.open_time else None,
         "close_time": head.close_time.isoformat() if head.close_time else None,
         "bucket": head.bucket,
+        "espn_state": head.espn_state,
+        "espn_period": head.espn_period,
+        "espn_clock": head.espn_clock,
+        "espn_status_detail": head.espn_status_detail,
         "markets": [child_dict(m) for m in children],
     }

@@ -36,7 +36,8 @@ log = get_logger(__name__)
 
 ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer"
 HTTP_TIMEOUT_S = 8.0
-POLL_INTERVAL_S = 1800  # 30 min — kickoff times don't move often
+POLL_INTERVAL_IDLE_S = 1800   # 30 min when no games are live
+POLL_INTERVAL_LIVE_S = 60     # 1 min when at least one game is in progress
 FETCH_WINDOW_DAYS_BACK = 1  # yesterday — covers UTC/ET date-boundary games
 FETCH_WINDOW_DAYS_FORWARD = 3  # today + next 2 days
 # Total window: 4 days. ESPN buckets events by US-local date, so a Kalshi
@@ -52,6 +53,14 @@ class EspnEvent:
     slug: str
     kickoff_utc: datetime
     state: str  # 'pre' | 'in' | 'post'
+    period: int | None
+    """Soccer: 1 = first half, 2 = second half, 3 = ET first, 4 = ET second,
+    5 = penalties. None for pre/post."""
+    clock_display: str | None
+    """e.g. '67:42' or '45+2:00'. None for pre/post."""
+    status_detail: str | None
+    """ESPN's human label: 'HT', 'FT', 'AET', 'Penalties', etc. Useful
+    for halftime / fulltime where clock alone is ambiguous."""
     home_names: tuple[str, ...]   # display + short + abbreviation
     away_names: tuple[str, ...]
 
@@ -99,7 +108,18 @@ def _event_from_raw(raw: dict[str, Any], slug: str) -> EspnEvent | None:
     kickoff = _parse_kickoff(date)
     if kickoff is None:
         return None
-    state = raw.get("status", {}).get("type", {}).get("state", "")
+    status = raw.get("status", {})
+    state = status.get("type", {}).get("state", "")
+    # ESPN sends a few related fields for in-progress games:
+    #   status.period: int (1, 2, etc.)
+    #   status.displayClock: '67:42' or '45+2:00'
+    #   status.type.shortDetail / detail: human like 'HT', '67', 'FT'
+    period = status.get("period")
+    period_int = int(period) if isinstance(period, (int, float)) and period > 0 else None
+    clock = status.get("displayClock")
+    clock_str = str(clock) if clock else None
+    detail = status.get("type", {}).get("shortDetail") or status.get("type", {}).get("detail")
+    detail_str = str(detail) if detail else None
     comps = raw.get("competitions", [{}])
     if not comps:
         return None
@@ -113,6 +133,9 @@ def _event_from_raw(raw: dict[str, Any], slug: str) -> EspnEvent | None:
         slug=slug,
         kickoff_utc=kickoff.astimezone(timezone.utc),
         state=state or "pre",
+        period=period_int,
+        clock_display=clock_str,
+        status_detail=detail_str,
         home_names=_team_names(home.get("team", {})),
         away_names=_team_names(away.get("team", {})),
     )
@@ -138,10 +161,14 @@ class EspnScoreboard:
         self._task: asyncio.Task | None = None
 
     async def run(self) -> None:
-        """Long-running poller. Initial fetch on start, then on interval."""
+        """Long-running poller. Initial fetch on start, then adaptive cadence:
+        30 min when nothing is live, 60s when at least one game is in
+        progress (so the match-clock UI updates roughly per minute)."""
         await self._refresh_once()
         while not self._stopped:
-            await asyncio.sleep(POLL_INTERVAL_S)
+            live_now = any(e.state == "in" for e in self.snapshot.events)
+            interval = POLL_INTERVAL_LIVE_S if live_now else POLL_INTERVAL_IDLE_S
+            await asyncio.sleep(interval)
             try:
                 await self._refresh_once()
             except Exception:  # noqa: BLE001 — never let a bad poll kill the loop
