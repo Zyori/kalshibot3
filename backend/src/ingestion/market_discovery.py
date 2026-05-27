@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from src.core.logging import get_logger
-from src.ingestion.espn_scoreboard import EspnScoreboard
+from src.ingestion.espn_scoreboard import EspnEvent, EspnScoreboard
 from src.kalshi.rest import KalshiRestClient
 from src.kalshi.schemas import Event, Market
 from src.services.kickoff_matcher import find_match
@@ -126,6 +126,10 @@ class FeedMarket:
     """'67:42' or '45+2:00' — only meaningful when espn_state == 'in'."""
     espn_status_detail: str | None = None
     """ESPN's short label: 'HT', 'FT', 'AET', etc."""
+    espn_event: EspnEvent | None = None
+    """Raw ESPN payload. Carrier for live score/stats/last-event to the
+    event API. Per-feed-row reference, never mutated — refreshed when the
+    discovery cycle re-resolves the match."""
 
 
 @dataclass
@@ -215,6 +219,7 @@ def _event_to_feed_markets(
             espn_period=espn_match.period if espn_match else None,
             espn_clock=espn_match.clock_display if espn_match else None,
             espn_status_detail=espn_match.status_detail if espn_match else None,
+            espn_event=espn_match,
         ))
     return rows
 

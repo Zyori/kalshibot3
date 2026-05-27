@@ -72,3 +72,68 @@ export type BetFill = {
 }
 
 export type BetFillsResponse = { bet_id: number; fills: BetFill[] }
+
+// === Event API (one page per game) ===
+
+export type TeamLiveStats = {
+  score: number | null
+  shots: number | null
+  shots_on_target: number | null
+  possession_pct: number | null
+  corners: number | null
+  fouls: number | null
+  yellow_cards: number
+  red_cards: number
+}
+
+export type MatchEvent = {
+  kind: 'goal' | 'yellow' | 'red' | 'other'
+  minute: string | null
+  player: string | null
+  side: 'home' | 'away' | null
+  text: string
+}
+
+export type LiveSnapshot = {
+  home_name: string | null
+  away_name: string | null
+  home: TeamLiveStats
+  away: TeamLiveStats
+  last_event: MatchEvent | null
+}
+
+export type ChildPosition = {
+  side: 'yes' | 'no'
+  quantity: number
+  avg_entry_price_cents: number | null
+  current_price_cents: number | null
+  unrealized_pnl_cents: number | null
+}
+
+export type ChildMarket = {
+  ticker: string
+  yes_sub_title: string | null
+  market_title: string | null
+  status: string
+  yes_bid_cents: number | null
+  yes_ask_cents: number | null
+  no_bid_cents: number | null
+  no_ask_cents: number | null
+  position: ChildPosition | null
+}
+
+export type EventDetail = {
+  event_ticker: string
+  event_title: string | null
+  series: string
+  league: string | null
+  open_time: string | null
+  close_time: string | null
+  bucket: 'live' | 'upcoming' | 'recent'
+  espn_state: 'pre' | 'in' | 'post' | null
+  espn_period: number | null
+  espn_clock: string | null
+  espn_status_detail: string | null
+  live: LiveSnapshot | null
+  markets: ChildMarket[]
+}

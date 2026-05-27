@@ -47,6 +47,35 @@ FETCH_WINDOW_DAYS_FORWARD = 3  # today + next 2 days
 
 
 @dataclass(frozen=True)
+class TeamStats:
+    """In-game stats per side. Numeric fields are int (counts) or float
+    (percentages). None means ESPN didn't ship the stat (pre-match, or
+    leagues without that breakdown)."""
+    score: int | None = None
+    shots: int | None = None
+    shots_on_target: int | None = None
+    possession_pct: float | None = None
+    corners: int | None = None
+    fouls: int | None = None
+    yellow_cards: int = 0
+    red_cards: int = 0
+
+
+@dataclass(frozen=True)
+class MatchEvent:
+    """One detail row from ESPN's `competition.details` — a goal, card,
+    substitution, etc. We only carry the ones we display in-line."""
+    kind: str
+    """'goal' | 'yellow' | 'red' | 'other'."""
+    minute: str | None
+    """ESPN's `clock.displayValue`: '23'', '45+2'', or None."""
+    player: str | None
+    side: str | None  # 'home' | 'away' | None
+    text: str
+    """ESPN's raw text label, e.g. 'Yellow Card', 'Goal - Header'."""
+
+
+@dataclass(frozen=True)
 class EspnEvent:
     """One ESPN event normalized into the fields we care about."""
     espn_id: str
@@ -63,6 +92,12 @@ class EspnEvent:
     for halftime / fulltime where clock alone is ambiguous."""
     home_names: tuple[str, ...]   # display + short + abbreviation
     away_names: tuple[str, ...]
+    home_stats: TeamStats = field(default_factory=TeamStats)
+    away_stats: TeamStats = field(default_factory=TeamStats)
+    last_event: MatchEvent | None = None
+    """The most recent goal/card/etc. — what we render as 'Last: ...' in
+    the header. None when nothing has happened yet (pre or quiet first
+    few minutes)."""
 
 
 @dataclass
@@ -81,7 +116,12 @@ def _parse_kickoff(iso: str) -> datetime | None:
 
 
 def _team_names(team: dict[str, Any]) -> tuple[str, ...]:
-    """All the names we'll try to match on. De-duped, non-empty, lower-cased."""
+    """All the names we'll try to match on. De-duped, non-empty.
+
+    Index 0 is the displayName preserved in its original case (used by the
+    event API for the live score header). Subsequent entries are lower-cased
+    for case-insensitive matching against Kalshi titles. Consumers that
+    only care about matching should `.lower()` the entries themselves."""
     raw = (
         team.get("displayName"),
         team.get("shortDisplayName"),
@@ -89,13 +129,124 @@ def _team_names(team: dict[str, Any]) -> tuple[str, ...]:
         team.get("abbreviation"),
     )
     seen: list[str] = []
-    for r in raw:
+    for i, r in enumerate(raw):
         if not r:
             continue
-        v = str(r).strip().lower()
+        v = str(r).strip() if i == 0 else str(r).strip().lower()
         if v and v not in seen:
             seen.append(v)
     return tuple(seen)
+
+
+_STAT_KEYS = {
+    "totalShots": "shots",
+    "shotsOnTarget": "shots_on_target",
+    "possessionPct": "possession_pct",
+    "wonCorners": "corners",
+    "foulsCommitted": "fouls",
+}
+
+
+def _parse_team_stats(competitor: dict[str, Any]) -> TeamStats:
+    """Pull the in-game numeric stats off a competitor. Score comes from
+    competitor.score (string); the rest live under competitor.statistics
+    as {name, displayValue, abbreviation}."""
+    raw_score = competitor.get("score")
+    score: int | None
+    try:
+        score = int(raw_score) if raw_score is not None else None
+    except (TypeError, ValueError):
+        score = None
+
+    kwargs: dict[str, Any] = {"score": score}
+    for stat in competitor.get("statistics") or []:
+        name = stat.get("name")
+        key = _STAT_KEYS.get(name)
+        if key is None:
+            continue
+        raw = stat.get("displayValue")
+        if raw is None:
+            continue
+        try:
+            kwargs[key] = float(raw) if "Pct" in name else int(float(raw))
+        except (TypeError, ValueError):
+            continue
+
+    return TeamStats(**kwargs)
+
+
+def _classify_detail(text: str) -> str:
+    """Map ESPN's verbose `type.text` to one of our kinds."""
+    t = (text or "").lower()
+    if "red card" in t:
+        return "red"
+    if "yellow card" in t:
+        return "yellow"
+    if "goal" in t and "no goal" not in t:
+        return "goal"
+    return "other"
+
+
+def _enrich_with_details(
+    raw_details: list[dict[str, Any]],
+    home_id: str | None,
+    away_id: str | None,
+    home_stats: TeamStats,
+    away_stats: TeamStats,
+) -> tuple[TeamStats, TeamStats, MatchEvent | None]:
+    """Walk `competition.details` (in event order) to count yellow/red cards
+    per side and to find the most recent display-worthy event. ESPN's score
+    is already in the competitor block; we don't double-count goals here."""
+    yellow = {"home": 0, "away": 0}
+    red = {"home": 0, "away": 0}
+    last: MatchEvent | None = None
+    for d in raw_details:
+        text = (d.get("type") or {}).get("text") or ""
+        kind = _classify_detail(text)
+        team_id = str((d.get("team") or {}).get("id") or "")
+        side = (
+            "home" if team_id == home_id
+            else "away" if team_id == away_id
+            else None
+        )
+        if kind == "yellow" and side is not None:
+            yellow[side] += 1
+        elif kind == "red" and side is not None:
+            red[side] += 1
+
+        if kind in ("goal", "yellow", "red"):
+            athletes = d.get("athletesInvolved") or []
+            player = athletes[0].get("displayName") if athletes else None
+            clock = (d.get("clock") or {}).get("displayValue")
+            last = MatchEvent(
+                kind=kind,
+                minute=clock,
+                player=player,
+                side=side,
+                text=text,
+            )
+
+    home_out = TeamStats(
+        score=home_stats.score,
+        shots=home_stats.shots,
+        shots_on_target=home_stats.shots_on_target,
+        possession_pct=home_stats.possession_pct,
+        corners=home_stats.corners,
+        fouls=home_stats.fouls,
+        yellow_cards=yellow["home"],
+        red_cards=red["home"],
+    )
+    away_out = TeamStats(
+        score=away_stats.score,
+        shots=away_stats.shots,
+        shots_on_target=away_stats.shots_on_target,
+        possession_pct=away_stats.possession_pct,
+        corners=away_stats.corners,
+        fouls=away_stats.fouls,
+        yellow_cards=yellow["away"],
+        red_cards=red["away"],
+    )
+    return home_out, away_out, last
 
 
 def _event_from_raw(raw: dict[str, Any], slug: str) -> EspnEvent | None:
@@ -123,11 +274,25 @@ def _event_from_raw(raw: dict[str, Any], slug: str) -> EspnEvent | None:
     comps = raw.get("competitions", [{}])
     if not comps:
         return None
-    teams = comps[0].get("competitors", [])
+    comp = comps[0]
+    teams = comp.get("competitors", [])
     home = next((t for t in teams if t.get("homeAway") == "home"), None)
     away = next((t for t in teams if t.get("homeAway") == "away"), None)
     if home is None or away is None:
         return None
+
+    home_stats_raw = _parse_team_stats(home)
+    away_stats_raw = _parse_team_stats(away)
+    home_id = str((home.get("team") or {}).get("id") or "")
+    away_id = str((away.get("team") or {}).get("id") or "")
+    home_stats, away_stats, last_event = _enrich_with_details(
+        comp.get("details") or [],
+        home_id=home_id,
+        away_id=away_id,
+        home_stats=home_stats_raw,
+        away_stats=away_stats_raw,
+    )
+
     return EspnEvent(
         espn_id=str(espn_id),
         slug=slug,
@@ -138,6 +303,9 @@ def _event_from_raw(raw: dict[str, Any], slug: str) -> EspnEvent | None:
         status_detail=detail_str,
         home_names=_team_names(home.get("team", {})),
         away_names=_team_names(away.get("team", {})),
+        home_stats=home_stats,
+        away_stats=away_stats,
+        last_event=last_event,
     )
 
 
