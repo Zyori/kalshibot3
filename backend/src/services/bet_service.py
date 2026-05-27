@@ -92,52 +92,6 @@ async def record_placed_order(
     # row — the discovery poller will fill in the rest on its next cycle.
     market_id = await _get_or_create_market(session, ticker=order.ticker)
 
-    # Sell path: close the oldest OPEN BET on (market, side) instead of
-    # inserting. Sell price = order.yes_price (the side we're selling).
-    # The ghost-share guard upstream already refused this if no position
-    # exists, so we trust that an OPEN BET should be found here. If none
-    # is found anyway (race, external-fill weirdness), we fall through to
-    # the insert path so the trade isn't silently lost — better a slightly
-    # mis-attributed BET than no record.
-    if order.action == "sell":
-        side_enum = BetSide(order.side)
-        oldest_open = await session.scalar(
-            select(Bet)
-            .where(Bet.market_id == market_id)
-            .where(Bet.side == side_enum)
-            .where(Bet.status == BetStatus.OPEN)
-            .order_by(Bet.placed_at.asc().nulls_last(), Bet.id.asc())
-        )
-        if oldest_open is not None:
-            exit_price = order.yes_price or requested_price_cents
-            if side_enum is BetSide.YES:
-                pnl = (exit_price - oldest_open.entry_price_cents) * oldest_open.quantity
-            else:
-                pnl = (oldest_open.entry_price_cents - exit_price) * oldest_open.quantity
-            oldest_open.exit_price_cents = exit_price
-            oldest_open.pnl_cents = pnl
-            oldest_open.status = BetStatus.WON if pnl > 0 else BetStatus.LOST
-            oldest_open.exit_type = ExitType.CLOSED_EARLY
-            oldest_open.settled_at = datetime.now(timezone.utc)
-            # Store the sell order_id on kalshi_fill_id so we can trace
-            # the close back to its Kalshi order without losing the
-            # opening order_id (kalshi_order_id stays the buy's).
-            oldest_open.kalshi_fill_id = order.order_id
-            oldest_open.version += 1
-            await session.flush()
-            log.info(
-                "bet_closed_by_sell",
-                bet_id=oldest_open.id,
-                exit_price_cents=exit_price,
-                pnl_cents=pnl,
-                sell_order_id=order.order_id,
-            )
-            return oldest_open
-        log.warning(
-            "sell_without_open_bet",
-            ticker=order.ticker, side=order.side, order_id=order.order_id,
-        )
-
     bet = Bet(
         sport=_ticker_to_sport(order.ticker),
         market_id=market_id,
@@ -187,12 +141,20 @@ async def record_placed_order(
 
 
 async def record_fill(session: AsyncSession, fill: Fill) -> None:
-    """Update the BET matching the fill's order_id with refined fields.
+    """Apply a fill event to the right BET row.
 
-    Fills carry the actual execution price, which may differ from the
-    quoted price on a market order. We update entry_price_cents (weighted
-    average across multiple fills) but don't transition status here —
-    status transitions happen on settlement, not on fills.
+    Two paths:
+      - BUY fill: find the BET by order_id, refine entry_price with the
+        real execution price. Status stays OPEN.
+      - SELL fill: find the BET for this sell order (created at place-
+        time) AND the oldest matching OPEN BET on the same (market, side)
+        that this sell is closing. Close the opener with the real fill
+        price; delete the sell row (it was a placeholder, not its own
+        round-trip).
+
+    Settlement (WON/LOST from market resolution) happens elsewhere via
+    settle_bets_for_market; this function only handles close-on-fill for
+    user-initiated sells.
     """
     ticker = fill.msg.ticker
     if not is_soccer_ticker(ticker):
@@ -203,11 +165,12 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
         select(Bet).where(Bet.kalshi_order_id == fill.msg.order_id)
     )
     if bet is None:
-        # Fill for an order we don't have a BET for — reconcile in chunk 13.
+        # Fill for an order we don't have a BET for. Per
+        # feedback_no_external_fill_reconciliation: external trades stay
+        # external. Log and drop.
         log.info("fill_orphan", order_id=fill.msg.order_id, ticker=ticker)
         return
 
-    # Weighted average: existing_qty * existing_price + new_qty * new_price.
     new_qty = fill.msg.count
     new_price = (
         fill.msg.yes_price_cents if bet.side == BetSide.YES
@@ -216,12 +179,54 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
     if new_qty <= 0 or new_price < 1 or new_price > 99:
         return  # bug-input guard
 
-    # If this fill is the first reported one, just take its price as
-    # entry_price. Otherwise blend.
+    # SELL fill: close the opening BET, delete this sell-side row.
+    if fill.msg.action == "sell":
+        opener = await session.scalar(
+            select(Bet)
+            .where(Bet.market_id == bet.market_id)
+            .where(Bet.side == bet.side)
+            .where(Bet.status == BetStatus.OPEN)
+            .where(Bet.id != bet.id)
+            .order_by(Bet.placed_at.asc().nulls_last(), Bet.id.asc())
+        )
+        if opener is None:
+            # No opening BET found — shouldn't happen because the
+            # ghost-share guard refuses sells with no position. If it
+            # does, leave the sell BET in place so we have a record.
+            log.warning(
+                "sell_fill_no_opener",
+                bet_id=bet.id, ticker=ticker, order_id=fill.msg.order_id,
+            )
+            return
+        if bet.side is BetSide.YES:
+            pnl = (new_price - opener.entry_price_cents) * opener.quantity
+        else:
+            pnl = (opener.entry_price_cents - new_price) * opener.quantity
+        opener.exit_price_cents = new_price
+        opener.pnl_cents = pnl
+        opener.status = BetStatus.WON if pnl > 0 else BetStatus.LOST
+        opener.exit_type = ExitType.CLOSED_EARLY
+        opener.settled_at = datetime.now(timezone.utc)
+        # Link the close to its Kalshi fill for audit (the sell order_id
+        # lived on `bet` which we're about to delete).
+        opener.kalshi_fill_id = fill.msg.trade_id
+        opener.version += 1
+        await session.delete(bet)
+        await session.flush()
+        log.info(
+            "bet_closed_by_sell_fill",
+            opener_bet_id=opener.id,
+            deleted_sell_bet_id=bet.id,
+            exit_price_cents=new_price,
+            pnl_cents=pnl,
+        )
+        return
+
+    # BUY fill: refine entry price.
     if bet.kalshi_fill_id is None:
         bet.entry_price_cents = new_price
     else:
-        # We don't track partial fills with per-fill rows yet; this blends.
+        # Multiple fills against the same buy: weighted-average the entry.
         blended = (
             (bet.entry_price_cents * bet.quantity) + (new_price * new_qty)
         ) // (bet.quantity + new_qty)
