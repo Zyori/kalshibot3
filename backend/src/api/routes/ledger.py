@@ -35,7 +35,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
-from src.core.types import BetStatus, utc_iso
+from src.core.types import (
+    BetSource,
+    BetStatus,
+    Confidence,
+    Strategy,
+    Timing,
+    utc_iso,
+)
 from src.models import Bet, BetFill, Market
 from src.services.bet_service import settle_bets_for_market
 
@@ -81,6 +88,7 @@ def _bet_to_dict(
         "human_reasoning": b.human_reasoning,
         "ai_reasoning": b.ai_reasoning,
         "tags": b.tags,
+        "metadata_edited_at": utc_iso(b.metadata_edited_at),
         "placed_at": utc_iso(b.placed_at),
         "settled_at": utc_iso(b.settled_at),
         "created_at": utc_iso(b.created_at),
@@ -363,3 +371,100 @@ async def force_settle_bet(
         "ticker": market.kalshi_ticker,
         "settlement_value_cents": body.settlement_value_cents,
     }
+
+
+# === Reflective metadata edit ============================================
+#
+# A bet's "why" often crystallizes after the trade, not at placement. The
+# fields below are user-reflective — they shape AI prompt context but
+# never affect money math. Editable forever. Everything else (price,
+# quantity, status, fees, PnL) is system-of-record and not touchable
+# from this endpoint.
+
+# Allow None on each field so the user can blank a memo or clear a typo'd
+# tag list without deleting and re-tagging.
+class MetadataPatch(BaseModel):
+    strategy: Strategy | None = None
+    source: BetSource | None = None
+    timing: Timing | None = None
+    confidence: Confidence | None = None
+    tags: list[str] | None = None
+    human_reasoning: str | None = None
+
+
+@router.patch("/ledger/{bet_id}/metadata")
+async def edit_bet_metadata(
+    bet_id: int,
+    body: MetadataPatch,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Edit reflective metadata on a bet. Money / state fields untouched.
+
+    A field omitted from the request body is left as-is. Passing an
+    explicit null clears that field (tags → empty list, memo → null).
+    """
+    bet = await session.get(Bet, bet_id)
+    if bet is None:
+        raise HTTPException(404, "bet not found")
+
+    payload = body.model_dump(exclude_unset=True)
+    if not payload:
+        raise HTTPException(400, "no fields to update")
+
+    if "strategy" in payload:
+        bet.strategy = payload["strategy"]
+    if "source" in payload:
+        bet.source = payload["source"]
+    if "timing" in payload:
+        bet.timing = payload["timing"]
+    if "confidence" in payload:
+        bet.confidence = payload["confidence"]
+    if "tags" in payload:
+        # Normalize to a JSON list. Empty list → store [] so the column
+        # reads consistently rather than flipping between [] and null.
+        raw = payload["tags"] or []
+        cleaned = [t.strip() for t in raw if t and t.strip()]
+        # De-dup, preserve first-seen order.
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for t in cleaned:
+            if t not in seen:
+                seen.add(t)
+                deduped.append(t)
+        bet.tags = deduped
+    if "human_reasoning" in payload:
+        memo = payload["human_reasoning"]
+        bet.human_reasoning = memo.strip() if memo else None
+
+    bet.metadata_edited_at = datetime.now(timezone.utc)
+    bet.version = (bet.version or 1) + 1
+
+    market = await session.get(Market, bet.market_id)
+    await session.commit()
+    await session.refresh(bet)
+    return _bet_to_dict(
+        bet,
+        market.kalshi_ticker if market else None,
+        market.status if market else None,
+    )
+
+
+@router.get("/ledger/tags")
+async def list_tags(
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, list[str]]:
+    """Distinct tag strings across all bets — autocomplete source for the
+    edit panel. Tags live inside a JSON column, so we flatten in Python
+    rather than reach for a DB-specific JSON operator."""
+    rows = (await session.execute(select(Bet.tags))).scalars().all()
+    seen: set[str] = set()
+    for row in rows:
+        if not row:
+            continue
+        # tags is typed as dict | None on the column but we store list[str].
+        # Be defensive: accept either shape, ignore anything else.
+        items = row if isinstance(row, list) else []
+        for t in items:
+            if isinstance(t, str) and t.strip():
+                seen.add(t.strip())
+    return {"tags": sorted(seen)}

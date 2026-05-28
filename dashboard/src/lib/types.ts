@@ -29,6 +29,8 @@ export type Bet = {
   timing: string
   human_reasoning: string | null
   ai_reasoning: string | null
+  tags: string[] | null
+  metadata_edited_at: string | null
   placed_at: string | null
   settled_at: string | null
   created_at: string

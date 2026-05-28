@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import InlineError from '../components/InlineError'
 import PnLChart from '../components/charts/PnLChart'
 import StrategyBreakdown from '../components/charts/StrategyBreakdown'
+import BetMetadataForm from '../components/ledger/BetMetadataForm'
+import { SportBadge, KNOWN_SPORTS } from '../components/ledger/SportBadge'
 import { formatET, formatDollars, formatFee, formatSignedDollars } from '../lib/format'
 import type { Bet, BetFillsResponse, LedgerStats as Stats } from '../lib/types'
 
@@ -24,6 +26,7 @@ const STRATEGY_OPTIONS = [
 const TIMING_OPTIONS = ['pre_match', 'live', 'futures'] as const
 
 type Filters = {
+  sport: string[]
   status: string[]
   source: string[]
   strategy: string[]
@@ -32,15 +35,18 @@ type Filters = {
 
 export default function Ledger() {
   const [filters, setFilters] = useState<Filters>({
+    sport: [],
     status: [],
     source: [],
     strategy: [],
     timing: [],
   })
   const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [editingId, setEditingId] = useState<number | null>(null)
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams()
+    for (const v of filters.sport) params.append('sport', v)
     for (const v of filters.status) params.append('status', v)
     for (const v of filters.source) params.append('source', v)
     for (const v of filters.strategy) params.append('strategy', v)
@@ -98,6 +104,12 @@ export default function Ledger() {
       </div>
 
       <FilterBar
+        title="Sport"
+        options={KNOWN_SPORTS}
+        selected={filters.sport}
+        onToggle={(v) => toggle('sport', v)}
+      />
+      <FilterBar
         title="Status"
         options={STATUS_OPTIONS as readonly string[]}
         selected={filters.status}
@@ -129,7 +141,13 @@ export default function Ledger() {
           bets={bets.data?.bets ?? []}
           isLoading={bets.isPending}
           expandedId={expandedId}
-          onToggleExpand={(id) => setExpandedId((cur) => (cur === id ? null : id))}
+          editingId={editingId}
+          onToggleExpand={(id) => {
+            setExpandedId((cur) => (cur === id ? null : id))
+            setEditingId(null)
+          }}
+          onStartEdit={(id) => setEditingId(id)}
+          onStopEdit={() => setEditingId(null)}
         />
       )}
     </div>
@@ -242,12 +260,18 @@ function BetsTable({
   bets,
   isLoading,
   expandedId,
+  editingId,
   onToggleExpand,
+  onStartEdit,
+  onStopEdit,
 }: {
   bets: Bet[]
   isLoading: boolean
   expandedId: number | null
+  editingId: number | null
   onToggleExpand: (id: number) => void
+  onStartEdit: (id: number) => void
+  onStopEdit: () => void
 }) {
   if (isLoading) {
     return (
@@ -273,6 +297,7 @@ function BetsTable({
       <table className="w-full text-sm">
         <thead className="border-b border-border bg-bg text-xs uppercase tracking-wide text-text-muted">
           <tr>
+            <th className="px-3 py-2 text-left"></th>
             <th className="px-3 py-2 text-left">Placed</th>
             <th className="px-3 py-2 text-left">Market</th>
             <th className="px-3 py-2 text-left">Side</th>
@@ -290,7 +315,10 @@ function BetsTable({
               key={b.id}
               bet={b}
               expanded={expandedId === b.id}
+              editing={editingId === b.id}
               onToggle={() => onToggleExpand(b.id)}
+              onStartEdit={() => onStartEdit(b.id)}
+              onStopEdit={onStopEdit}
             />
           ))}
         </tbody>
@@ -302,11 +330,17 @@ function BetsTable({
 function BetRow({
   bet,
   expanded,
+  editing,
   onToggle,
+  onStartEdit,
+  onStopEdit,
 }: {
   bet: Bet
   expanded: boolean
+  editing: boolean
   onToggle: () => void
+  onStartEdit: () => void
+  onStopEdit: () => void
 }) {
   const gross = bet.pnl_cents
   const net = bet.net_pnl_cents
@@ -341,6 +375,9 @@ function BetRow({
         onClick={onToggle}
         className="cursor-pointer border-b border-border last:border-b-0 hover:bg-bg-hover"
       >
+        <td className="px-3 py-2 text-center">
+          <SportBadge sport={bet.sport} compact />
+        </td>
         <td className="px-3 py-2 text-xs text-text-muted">{formatET(bet.placed_at)}</td>
         <td className="px-3 py-2 font-mono text-xs">{bet.ticker ?? '—'}</td>
         <td className="px-3 py-2 text-xs">{bet.side.toUpperCase()}</td>
@@ -380,7 +417,17 @@ function BetRow({
             ? '—'
             : `${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(0)}%`}
         </td>
-        <td className="px-3 py-2 text-xs">{bet.strategy}</td>
+        <td className="px-3 py-2 text-xs">
+          <span>{bet.strategy}</span>
+          {bet.metadata_edited_at && (
+            <span
+              className="ml-1 text-[10px] text-text-muted"
+              title={`Edited ${formatET(bet.metadata_edited_at)}`}
+            >
+              ✎
+            </span>
+          )}
+        </td>
         <td className={`px-3 py-2 text-xs font-semibold uppercase ${statusCls}`}>
           {awaitingSettlement ? (
             <span className="text-action" title="Market closed on Kalshi; sweeper will resolve this shortly.">
@@ -391,12 +438,29 @@ function BetRow({
           )}
         </td>
       </tr>
-      {expanded && <BetDetail bet={bet} />}
+      {expanded && (
+        <BetDetail
+          bet={bet}
+          editing={editing}
+          onStartEdit={onStartEdit}
+          onStopEdit={onStopEdit}
+        />
+      )}
     </>
   )
 }
 
-function BetDetail({ bet }: { bet: Bet }) {
+function BetDetail({
+  bet,
+  editing,
+  onStartEdit,
+  onStopEdit,
+}: {
+  bet: Bet
+  editing: boolean
+  onStartEdit: () => void
+  onStopEdit: () => void
+}) {
   const fills = useQuery<BetFillsResponse>({
     queryKey: ['ledger_fills', bet.id],
     queryFn: async () => {
@@ -408,33 +472,57 @@ function BetDetail({ bet }: { bet: Bet }) {
   })
   return (
     <tr className="border-b border-border bg-bg last:border-b-0">
-      <td colSpan={9} className="px-3 py-3">
+      <td colSpan={10} className="px-3 py-3">
         {bet.status === 'open' && <ForceSettleControl bet={bet} />}
+        <div className="mb-2 flex items-center justify-end">
+          {!editing ? (
+            <button
+              type="button"
+              onClick={onStartEdit}
+              className="rounded border border-border px-2 py-0.5 text-[11px] text-text-muted hover:bg-bg-hover hover:text-text"
+            >
+              ✎ Edit details
+            </button>
+          ) : null}
+        </div>
         <div className="grid gap-4 lg:grid-cols-2">
-          <dl className="grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
-            <Pair label="Source" value={bet.source} />
-            <Pair label="Confidence" value={bet.confidence} />
-            <Pair label="Timing" value={bet.timing} />
-            <Pair label="Exit type" value={bet.exit_type ?? '—'} />
-            <Pair
-              label="Avg exit price"
-              value={bet.exit_price_cents !== null ? `${bet.exit_price_cents}¢` : '—'}
-            />
-            <Pair label="Settled" value={formatET(bet.settled_at) || '—'} />
-            <Pair label="Stake" value={formatDollars(bet.stake_cents)} />
-            <Pair label="Entry fees" value={formatDollars(bet.entry_fees_cents)} />
-            <Pair label="Exit fees" value={formatDollars(bet.exit_fees_cents)} />
-            <Pair
-              label="Gross P&L"
-              value={bet.pnl_cents === null ? '—' : formatSignedDollars(bet.pnl_cents)}
-            />
-            {bet.human_reasoning && (
-              <Pair label="Human reasoning" value={bet.human_reasoning} wide />
-            )}
-            {bet.ai_reasoning && (
-              <Pair label="AI reasoning" value={bet.ai_reasoning} wide />
-            )}
-          </dl>
+          {editing ? (
+            <BetMetadataForm bet={bet} onDone={onStopEdit} />
+          ) : (
+            <dl className="grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
+              <Pair label="Source" value={bet.source} />
+              <Pair label="Confidence" value={bet.confidence} />
+              <Pair label="Timing" value={bet.timing} />
+              <Pair label="Exit type" value={bet.exit_type ?? '—'} />
+              <Pair
+                label="Avg exit price"
+                value={bet.exit_price_cents !== null ? `${bet.exit_price_cents}¢` : '—'}
+              />
+              <Pair label="Settled" value={formatET(bet.settled_at) || '—'} />
+              <Pair label="Stake" value={formatDollars(bet.stake_cents)} />
+              <Pair label="Entry fees" value={formatDollars(bet.entry_fees_cents)} />
+              <Pair label="Exit fees" value={formatDollars(bet.exit_fees_cents)} />
+              <Pair
+                label="Gross P&L"
+                value={bet.pnl_cents === null ? '—' : formatSignedDollars(bet.pnl_cents)}
+              />
+              {bet.tags && bet.tags.length > 0 && (
+                <Pair label="Tags" value={bet.tags.join(', ')} wide />
+              )}
+              {bet.human_reasoning && (
+                <Pair label="Why" value={bet.human_reasoning} wide />
+              )}
+              {bet.ai_reasoning && (
+                <Pair label="AI reasoning" value={bet.ai_reasoning} wide />
+              )}
+              {bet.metadata_edited_at && (
+                <Pair
+                  label="Last edited"
+                  value={formatET(bet.metadata_edited_at) || '—'}
+                />
+              )}
+            </dl>
+          )}
           <FillsList query={fills} />
         </div>
       </td>
