@@ -14,7 +14,8 @@ const STRATEGY_OPTIONS = [
   'underdog',
   'moon_parlay',
   'draw_value',
-  'live_event',
+  'scalp',
+  'hedge',
   'manual',
 ] as const
 const SOURCE_OPTIONS = ['human', 'ai', 'collaborative', 'external'] as const

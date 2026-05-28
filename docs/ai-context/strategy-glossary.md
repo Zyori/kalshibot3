@@ -6,14 +6,15 @@ short, fill in the blanks. Update as your thinking sharpens.
 
 ## Strategy
 
-- **mean_reversion** — _fill in: when do you take this? what's the read?_
-- **mean_confirmation** — _fill in._
-- **lock_parlay** — _fill in._
-- **underdog** — _fill in._
-- **moon_parlay** — _fill in._
-- **draw_value** — _fill in._
-- **live_event** — _fill in._
-- **manual** — catch-all when none of the above fits; describe the real shape in the memo.
+- **mean_reversion** — Betting against an early outlier swing while there's still enough time on the clock for the price to drift back toward fair. Tends to be held longer / to resolution.
+- **mean_confirmation** — Riding a favorite that's leading early and confirming the opening line rather than fighting it.
+- **lock_parlay** — Chain of high-confidence picks expected to all hit; modest combined return.
+- **moon_parlay** — Chain of longshots, high-confidence underdogs, or one underdog paired with locks for added value.
+- **underdog** — Single underdog you think is mispriced — value the market isn't seeing.
+- **draw_value** — Riding draw odds skewed long by recreational money piling on favorites.
+- **scalp** — Opportunistic quick trade for a smaller, faster return — often news-driven (red card, injury, momentum swing). In and out, not held to resolution.
+- **hedge** — Closing risk on an open position by taking the other side; common when one leg of a parlay is left and the locked value beats the variance.
+- **manual** — Catch-all when none of the above fits; describe the real shape in the memo.
 
 ## Source
 

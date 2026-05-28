@@ -101,7 +101,13 @@ class BetSource(StrEnum):
 
 
 class Strategy(StrEnum):
-    """Strategic intent behind the bet."""
+    """Strategic intent behind the bet.
+
+    LIVE_EVENT is kept for backwards-compat with any historical rows but is
+    no longer offered as a choice in the UI — superseded by SCALP (quick
+    opportunistic trade) plus the TIMING.LIVE flag. New bets should pick
+    one of the others.
+    """
 
     MEAN_REVERSION = "mean_reversion"
     MEAN_CONFIRMATION = "mean_confirmation"
@@ -109,8 +115,10 @@ class Strategy(StrEnum):
     UNDERDOG = "underdog"
     MOON_PARLAY = "moon_parlay"
     DRAW_VALUE = "draw_value"
-    LIVE_EVENT = "live_event"
+    SCALP = "scalp"
+    HEDGE = "hedge"
     MANUAL = "manual"
+    LIVE_EVENT = "live_event"
 
 
 class Confidence(StrEnum):
