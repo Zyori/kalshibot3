@@ -45,6 +45,18 @@ def _feed_market_to_dict(m: Any, live_state: Any) -> dict[str, Any]:
     book = live_state.books.get(m.ticker)
     yes_bid = book.yes_best_bid if book else None
     yes_ask = book.yes_best_ask if book else None
+    # Score header: ESPN's home/away displayName + score. Only meaningful
+    # while the game is in progress, but we surface it for post-game rows
+    # too (the recent block shows the final score).
+    home_name: str | None = None
+    away_name: str | None = None
+    home_score: int | None = None
+    away_score: int | None = None
+    if m.espn_event is not None:
+        home_name = m.espn_event.home_names[0] if m.espn_event.home_names else None
+        away_name = m.espn_event.away_names[0] if m.espn_event.away_names else None
+        home_score = m.espn_event.home_stats.score
+        away_score = m.espn_event.away_stats.score
     return {
         "ticker": m.ticker,
         "event_ticker": m.event_ticker,
@@ -64,6 +76,10 @@ def _feed_market_to_dict(m: Any, live_state: Any) -> dict[str, Any]:
         "espn_period": m.espn_period,
         "espn_clock": m.espn_clock,
         "espn_status_detail": m.espn_status_detail,
+        "home_name": home_name,
+        "away_name": away_name,
+        "home_score": home_score,
+        "away_score": away_score,
     }
 
 

@@ -40,6 +40,7 @@ from src.kalshi.schemas import (
     PlaceOrderRequest,
     PlaceOrderResponse,
     PositionsResponse,
+    SettlementsResponse,
 )
 
 log = get_logger(__name__)
@@ -194,6 +195,25 @@ class KalshiRestClient:
             params["min_ts"] = min_ts
         data = await self._request("GET", "/portfolio/fills", params=params or None)
         return FillsResponse.model_validate(data)
+
+    async def get_settlements(
+        self,
+        *,
+        ticker: str | None = None,
+        limit: int = 200,
+        cursor: str | None = None,
+    ) -> SettlementsResponse:
+        """`GET /portfolio/settlements`. Authoritative source for resolved
+        position payouts when the WS market_lifecycle event was missed or
+        when the market endpoint doesn't carry settlement_value (e.g.
+        3-way soccer moneylines)."""
+        params: dict[str, Any] = {"limit": limit}
+        if ticker:
+            params["ticker"] = ticker
+        if cursor:
+            params["cursor"] = cursor
+        data = await self._request("GET", "/portfolio/settlements", params=params)
+        return SettlementsResponse.model_validate(data)
 
     async def get_orders(
         self,

@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import InlineError from '../components/InlineError'
 import { formatET, formatSignedDollars } from '../lib/format'
-import type { Bet, LedgerLedgerStats } from '../lib/types'
+import type { Bet, LedgerStats } from '../lib/types'
 
 export default function SportPortal() {
   const { slug } = useParams<{ slug: string }>()

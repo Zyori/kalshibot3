@@ -44,6 +44,7 @@ from src.services.fills_sync import FillsSyncer
 from src.services.market_refresher import MarketRefresher
 from src.services.market_tier import MarketTier, classify
 from src.services.position_sync import PositionSyncer
+from src.services.settlement_sweeper import SettlementSweeper
 
 log = get_logger(__name__)
 
@@ -88,6 +89,11 @@ class Supervisor:
         )
         self.position_syncer = PositionSyncer()
         self.fills_syncer = FillsSyncer()
+        self.settlement_sweeper = SettlementSweeper()
+        # position_syncer fires this when a Kalshi position drops to zero
+        # while we still have an OPEN bet on that market — strong signal
+        # that the position was paid out and we missed the WS lifecycle event.
+        self.position_syncer.set_on_position_closed(self.settlement_sweeper.trigger)
 
         # Track each ticker's last-known tier so we can detect transitions
         # (FAR→SOON, LIVE→DONE, etc.) and run the right hand-off logic.
@@ -326,10 +332,14 @@ class Supervisor:
         self._tasks.append(asyncio.create_task(
             self.fills_syncer.run(), name="fills_sync",
         ))
+        self._tasks.append(asyncio.create_task(
+            self.settlement_sweeper.run(), name="settlement_sweep",
+        ))
         log.info("supervisor_started", tasks=len(self._tasks))
 
     async def stop(self) -> None:
         """Cancel every task and await its cleanup."""
+        await self.settlement_sweeper.stop()
         await self.fills_syncer.stop()
         await self.position_syncer.stop()
         await self.market_discovery.stop()

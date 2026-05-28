@@ -24,6 +24,10 @@ type FeedMarket = {
   espn_period: number | null
   espn_clock: string | null
   espn_status_detail: string | null
+  home_name: string | null
+  away_name: string | null
+  home_score: number | null
+  away_score: number | null
 }
 
 type FeedResponse = {
@@ -156,6 +160,10 @@ type EventGroup = {
   espn_period: number | null
   espn_clock: string | null
   espn_status_detail: string | null
+  home_name: string | null
+  away_name: string | null
+  home_score: number | null
+  away_score: number | null
   markets: FeedMarket[]
 }
 
@@ -174,6 +182,10 @@ function groupByEvent(rows: FeedMarket[]): EventGroup[] {
         espn_period: m.espn_period,
         espn_clock: m.espn_clock,
         espn_status_detail: m.espn_status_detail,
+        home_name: m.home_name,
+        away_name: m.away_name,
+        home_score: m.home_score,
+        away_score: m.away_score,
         markets: [],
       }
       map.set(m.event_ticker, g)
@@ -235,6 +247,12 @@ function EventRow({ group, compact }: { group: EventGroup; compact: boolean }) {
     group.open_time,
   )
   const time = matchLabel ?? formatET(group.open_time)
+  // Live score header — shown for in-progress games (and finals when we
+  // got a score from ESPN). Hidden for pre-game and when ESPN didn't match.
+  const hasScore =
+    group.home_score !== null &&
+    group.away_score !== null &&
+    (group.espn_state === 'in' || group.espn_state === 'post')
   // Outcome order: put TIE last, otherwise alphabetical by yes_sub_title.
   // Stable across renders so the price chips don't reshuffle.
   const sorted = [...group.markets].sort((a, b) => {
@@ -258,13 +276,29 @@ function EventRow({ group, compact }: { group: EventGroup; compact: boolean }) {
             )}
             {group.event_title}
           </div>
-          <span
-            className={`shrink-0 text-right text-xs tabular-nums ${
-              group.espn_state === 'in' ? 'font-semibold text-action' : 'text-text-muted'
-            }`}
-          >
-            {time}
-          </span>
+          <div className="flex shrink-0 items-baseline gap-2 text-right text-xs tabular-nums">
+            {hasScore && (
+              <span
+                className={`font-mono font-semibold ${
+                  group.espn_state === 'in' ? 'text-text' : 'text-text-muted'
+                }`}
+                title={
+                  group.home_name && group.away_name
+                    ? `${group.home_name} vs ${group.away_name}`
+                    : undefined
+                }
+              >
+                {group.home_score}–{group.away_score}
+              </span>
+            )}
+            <span
+              className={
+                group.espn_state === 'in' ? 'font-semibold text-action' : 'text-text-muted'
+              }
+            >
+              {time}
+            </span>
+          </div>
         </div>
         {!compact && sorted.length > 0 && (
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">

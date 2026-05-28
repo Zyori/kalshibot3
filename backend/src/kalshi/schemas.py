@@ -306,6 +306,52 @@ class FillsResponse(WireModelLoose):
     cursor: str | None = None
 
 
+# === Settlements ===
+
+class Settlement(WireModelLoose):
+    """`GET /portfolio/settlements` row — one resolved position payout.
+
+    Authoritative source of "what did this market pay me?" Used when the
+    WS market_lifecycle event was missed (subscription dropped before
+    settlement, reconnect gap, etc.) and the market endpoint doesn't
+    carry settlement_value (notably 3-way moneyline soccer markets where
+    `result == "scalar"`).
+
+    Wire format (verified against Kalshi docs):
+      ticker                str
+      market_result         "yes" | "no" | ""    YES-side winner indicator
+      yes_count             int                  contracts you held YES-side
+      no_count              int                  contracts you held NO-side
+      revenue               int cents            payout received
+      settled_time          ISO timestamp
+
+    settlement_value_cents is derived: 100 if market_result == "yes",
+    0 if "no". For scalar settlements (rare on soccer moneylines) we
+    fall back to revenue / quantity but the common path is binary.
+    """
+
+    ticker: str
+    market_result: Literal["yes", "no", ""] = ""
+    yes_count: int = Field(default=0, ge=0)
+    no_count: int = Field(default=0, ge=0)
+    revenue: int = Field(default=0)
+    settled_time: datetime | None = None
+
+    @property
+    def settlement_value_cents(self) -> int | None:
+        """YES-side payoff in cents. None if Kalshi hasn't determined yet."""
+        if self.market_result == "yes":
+            return 100
+        if self.market_result == "no":
+            return 0
+        return None
+
+
+class SettlementsResponse(WireModelLoose):
+    settlements: list[Settlement] = Field(default_factory=list)
+    cursor: str | None = None
+
+
 # === Orders: place / response ===
 
 class PlaceOrderRequest(WireModel):

@@ -24,12 +24,14 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from collections.abc import Awaitable, Callable
+
 from src.core.db import get_session_factory
 from src.core.logging import get_logger
-from src.core.types import BetSide, MarketStatus, Sport
+from src.core.types import BetSide, BetStatus, MarketStatus, Sport
 from src.kalshi.rest import KalshiRestClient
 from src.kalshi.schemas import PortfolioPosition
-from src.models import Market, Position
+from src.models import Bet, Market, Position
 from src.sports.soccer import is_soccer_ticker
 
 log = get_logger(__name__)
@@ -142,8 +144,11 @@ def _estimate_avg_entry(p: PortfolioPosition) -> int:
     return max(1, min(99, raw))
 
 
-async def sync_positions_once() -> dict[str, int]:
-    """One full reconciliation pass. Returns counts for logging/health."""
+async def sync_positions_once() -> dict[str, object]:
+    """One full reconciliation pass. Returns counts and the set of tickers
+    that transitioned from held to closed this pass — used to trigger
+    settlement sweeps on the markets where Kalshi just paid us out.
+    """
     soccer_positions: list[PortfolioPosition] = []
     other_count = 0
 
@@ -162,6 +167,7 @@ async def sync_positions_once() -> dict[str, int]:
                 break
 
     factory = get_session_factory()
+    closed_with_open_bet: set[str] = set()
     async with factory() as session:
         # Snapshot which tickers we currently have in our DB so we can null
         # out the ones Kalshi no longer reports.
@@ -186,6 +192,17 @@ async def sync_positions_once() -> dict[str, int]:
                 select(Position).where(Position.kalshi_ticker == ticker)
             )).scalars():
                 await session.delete(row)
+            # If there's still an OPEN bet on this market, the position
+            # vanishing is likely a settlement payout we missed via WS.
+            still_open = await session.scalar(
+                select(Bet.id)
+                .join(Market, Market.id == Bet.market_id)
+                .where(Market.kalshi_ticker == ticker)
+                .where(Bet.status == BetStatus.OPEN)
+                .limit(1)
+            )
+            if still_open is not None:
+                closed_with_open_bet.add(ticker)
 
         await session.commit()
 
@@ -193,10 +210,12 @@ async def sync_positions_once() -> dict[str, int]:
         "position_sync_complete",
         soccer=len(soccer_positions),
         non_soccer_skipped=other_count,
+        closed_with_open_bet=len(closed_with_open_bet),
     )
     return {
         "soccer": len(soccer_positions),
         "non_soccer_skipped": other_count,
+        "closed_with_open_bet": closed_with_open_bet,
     }
 
 
@@ -206,6 +225,15 @@ class PositionSyncer:
     def __init__(self) -> None:
         self._stopped = False
         self._last_run_at: float | None = None
+        self._on_position_closed: Callable[[], Awaitable[None]] | None = None
+
+    def set_on_position_closed(
+        self, cb: Callable[[], Awaitable[None]]
+    ) -> None:
+        """Called after a sync that detected a Kalshi position dropping to
+        zero while we still have an OPEN bet on that market — the supervisor
+        wires this to settlement_sweeper.trigger()."""
+        self._on_position_closed = cb
 
     @property
     def last_run_age_s(self) -> float | None:
@@ -222,10 +250,17 @@ class PositionSyncer:
 
     async def _tick(self) -> None:
         try:
-            await sync_positions_once()
+            result = await sync_positions_once()
             self._last_run_at = time.monotonic()
         except Exception:  # noqa: BLE001
             log.exception("position_sync_failed")
+            return
+        closed = result.get("closed_with_open_bet") or set()
+        if closed and self._on_position_closed is not None:
+            try:
+                await self._on_position_closed()
+            except Exception:  # noqa: BLE001
+                log.exception("on_position_closed_callback_failed")
 
     async def trigger(self) -> None:
         """Fire an extra sync now — called after order placement."""

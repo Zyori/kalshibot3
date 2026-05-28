@@ -29,18 +29,24 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
-from src.core.types import utc_iso
+from src.core.types import BetStatus, utc_iso
 from src.models import Bet, BetFill, Market
+from src.services.bet_service import settle_bets_for_market
 
 router = APIRouter()
 
 
-def _bet_to_dict(b: Bet, ticker: str | None) -> dict[str, Any]:
+def _bet_to_dict(
+    b: Bet,
+    ticker: str | None,
+    market_status: str | None = None,
+) -> dict[str, Any]:
     fees_cents = (b.entry_fees_cents or 0) + (b.exit_fees_cents or 0)
     # Show running net PnL on partial closes. pnl_cents is None while the
     # bet is OPEN; realized_pnl_cents holds the running total as sells
@@ -51,6 +57,7 @@ def _bet_to_dict(b: Bet, ticker: str | None) -> dict[str, Any]:
         "id": b.id,
         "sport": b.sport,
         "ticker": ticker,
+        "market_status": market_status,
         "market_id": b.market_id,
         "kalshi_order_id": b.kalshi_order_id,
         "side": b.side,
@@ -129,7 +136,7 @@ async def list_bets(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Paginated bet history. Cursor is the last seen bet.id (descending)."""
-    stmt = select(Bet, Market.kalshi_ticker).join(
+    stmt = select(Bet, Market.kalshi_ticker, Market.status).join(
         Market, Market.id == Bet.market_id, isouter=True
     )
     stmt = _apply_filters(
@@ -157,7 +164,7 @@ async def list_bets(
     rows = (await session.execute(stmt)).all()
     has_more = len(rows) > limit
     rows = rows[:limit]
-    out = [_bet_to_dict(b, ticker) for b, ticker in rows]
+    out = [_bet_to_dict(b, ticker, market_status) for b, ticker, market_status in rows]
     next_cursor = rows[-1][0].id if has_more and rows else None
     return {"bets": out, "next_cursor": next_cursor}
 
@@ -313,4 +320,46 @@ async def list_bet_fills(
             }
             for f in rows
         ],
+    }
+
+
+class ForceSettleBody(BaseModel):
+    settlement_value_cents: int = Field(ge=0, le=100)
+
+
+@router.post("/ledger/{bet_id}/force-settle")
+async def force_settle_bet(
+    bet_id: int,
+    body: ForceSettleBody,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Escape hatch when a market settled outside our detection paths.
+
+    Drives the same settle_bets_for_market path the WS lifecycle and the
+    sweeper use — single code path. Settles every OPEN bet on the same
+    market (Kalshi resolves a market as a whole, not per-bet).
+
+    settlement_value_cents = YES-side payoff (0 = NO won, 100 = YES won,
+    50 = void/refund).
+    """
+    bet = await session.get(Bet, bet_id)
+    if bet is None:
+        raise HTTPException(404, "bet not found")
+    if bet.status != BetStatus.OPEN:
+        raise HTTPException(409, f"bet is {bet.status}, not open")
+
+    market = await session.get(Market, bet.market_id)
+    if market is None:
+        raise HTTPException(500, "bet has no market row")
+
+    settled = await settle_bets_for_market(
+        session,
+        ticker=market.kalshi_ticker,
+        settlement_value_cents=body.settlement_value_cents,
+    )
+    await session.commit()
+    return {
+        "settled_count": settled,
+        "ticker": market.kalshi_ticker,
+        "settlement_value_cents": body.settlement_value_cents,
     }

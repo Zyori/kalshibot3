@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import InlineError from '../components/InlineError'
 import PnLChart from '../components/charts/PnLChart'
@@ -313,10 +313,12 @@ function BetRow({
   // Use net PnL for tone — that's what actually changes your account.
   const pnlCls =
     net === null ? 'text-text-muted' : net > 0 ? 'text-gain' : net < 0 ? 'text-loss' : 'text-text'
-  // Return % = net_pnl / stake. Net is what you actually pocket; gross
-  // would overstate ROI by hiding fees from the % figure.
-  const returnPct =
-    net === null || bet.stake_cents === 0 ? null : (net / bet.stake_cents) * 100
+  // Return % = net_pnl / total committed capital (stake + entry fees).
+  // Using stake alone produced > -100% on fully-lost bets because the entry
+  // fee was in the numerator but not the denominator. The fee was real
+  // capital out the door — count it on both sides.
+  const committed = bet.stake_cents + bet.entry_fees_cents
+  const returnPct = net === null || committed === 0 ? null : (net / committed) * 100
   const statusCls =
     bet.status === 'won'
       ? 'text-gain'
@@ -327,6 +329,12 @@ function BetRow({
       : 'text-action'
   const partialClose =
     bet.status === 'open' && bet.remaining_quantity > 0 && bet.remaining_quantity < bet.quantity
+  // The market settled on Kalshi but our row hasn't caught up. Sweeper
+  // runs every 60s; this label tells the user the system knows and is
+  // waiting rather than stuck.
+  const awaitingSettlement =
+    bet.status === 'open' &&
+    (bet.market_status === 'closed' || bet.market_status === 'settled')
   return (
     <>
       <tr
@@ -374,7 +382,13 @@ function BetRow({
         </td>
         <td className="px-3 py-2 text-xs">{bet.strategy}</td>
         <td className={`px-3 py-2 text-xs font-semibold uppercase ${statusCls}`}>
-          {bet.status}
+          {awaitingSettlement ? (
+            <span className="text-action" title="Market closed on Kalshi; sweeper will resolve this shortly.">
+              awaiting settlement
+            </span>
+          ) : (
+            bet.status
+          )}
         </td>
       </tr>
       {expanded && <BetDetail bet={bet} />}
@@ -395,6 +409,7 @@ function BetDetail({ bet }: { bet: Bet }) {
   return (
     <tr className="border-b border-border bg-bg last:border-b-0">
       <td colSpan={9} className="px-3 py-3">
+        {bet.status === 'open' && <ForceSettleControl bet={bet} />}
         <div className="grid gap-4 lg:grid-cols-2">
           <dl className="grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
             <Pair label="Source" value={bet.source} />
@@ -424,6 +439,76 @@ function BetDetail({ bet }: { bet: Bet }) {
         </div>
       </td>
     </tr>
+  )
+}
+
+function ForceSettleControl({ bet }: { bet: Bet }) {
+  const qc = useQueryClient()
+  const mut = useMutation({
+    mutationFn: async (value: number) => {
+      const res = await fetch(`/api/ledger/${bet.id}/force-settle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settlement_value_cents: value }),
+      })
+      if (!res.ok) {
+        const body = await res.text()
+        throw new Error(`force-settle ${res.status}: ${body}`)
+      }
+      return res.json()
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ledger'] })
+      qc.invalidateQueries({ queryKey: ['ledger_stats'] })
+      qc.invalidateQueries({ queryKey: ['ledger_fills', bet.id] })
+    },
+  })
+  // YES-side payoff. NO won = 0, YES won = 100, void = 50.
+  const lostValue = bet.side === 'yes' ? 0 : 100
+  const wonValue = bet.side === 'yes' ? 100 : 0
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-bg-card p-2 text-xs">
+      <span className="text-text-muted">Force-settle (escape hatch):</span>
+      <button
+        type="button"
+        disabled={mut.isPending}
+        onClick={() => {
+          if (confirm(`Mark this ${bet.side.toUpperCase()} bet as LOST?`)) {
+            mut.mutate(lostValue)
+          }
+        }}
+        className="rounded border border-loss/40 px-2 py-0.5 text-loss hover:bg-loss/10 disabled:opacity-50"
+      >
+        Lost
+      </button>
+      <button
+        type="button"
+        disabled={mut.isPending}
+        onClick={() => {
+          if (confirm(`Mark this ${bet.side.toUpperCase()} bet as WON?`)) {
+            mut.mutate(wonValue)
+          }
+        }}
+        className="rounded border border-gain/40 px-2 py-0.5 text-gain hover:bg-gain/10 disabled:opacity-50"
+      >
+        Won
+      </button>
+      <button
+        type="button"
+        disabled={mut.isPending}
+        onClick={() => {
+          if (confirm('Mark market as VOIDED (refund at 50¢)?')) {
+            mut.mutate(50)
+          }
+        }}
+        className="rounded border border-border px-2 py-0.5 text-text-muted hover:bg-bg-hover disabled:opacity-50"
+      >
+        Void
+      </button>
+      {mut.isError && (
+        <span className="text-loss">{(mut.error as Error).message}</span>
+      )}
+    </div>
   )
 }
 
