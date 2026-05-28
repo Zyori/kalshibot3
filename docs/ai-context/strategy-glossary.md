@@ -31,9 +31,18 @@ short, fill in the blanks. Update as your thinking sharpens.
 
 ## Confidence
 
-- **high** — _fill in: what does high actually mean to you?_
-- **medium** — _fill in._
-- **low** — _fill in: speculative, small stake, or just unsure?_
+Pure gut, expressed as sizing intent. Floor is already "I'd bet this" —
+if conviction is below that, no bet gets placed, so there's no `none`
+bucket. The three values describe **degrees of yes**, anchored to a
+rough multiple of your standard unit.
+
+Record what you *felt at order time*. **Do not retag confidence after a
+bet resolves** — it poisons the calibration signal the AI uses to learn
+when your gut is sharp.
+
+- **high** — Strong conviction. Sized around 2× unit. The "I'm sure" pick.
+- **medium** — Standard play. Sized at 1 unit. Default bucket — most bets land here.
+- **low** — Borderline-pass, but enough edge to take a swing. Sized around 0.5× unit.
 
 ## Tags (free-form)
 
