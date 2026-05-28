@@ -167,16 +167,10 @@ function StatsStrip({ stats }: { stats: Stats | undefined }) {
     const net = stats.total_net_pnl_cents
     const gross = stats.total_pnl_cents
     const fees = stats.total_fees_cents
-    items.push({
-      label: 'Net P&L',
-      value: formatSignedDollars(net),
-      sub: `${formatSignedDollars(gross)} gross · -${formatDollars(fees)} fees`,
-      tone: net > 0 ? 'gain' : net < 0 ? 'loss' : undefined,
-    })
     items.push({ label: 'Bets', value: String(stats.total_bets) })
     items.push({
-      label: 'Win rate',
-      value: stats.win_rate === null ? '—' : `${(stats.win_rate * 100).toFixed(0)}%`,
+      label: 'Wagered',
+      value: formatDollars(stats.total_stake_cents),
     })
     items.push({
       label: 'Net ROI',
@@ -187,9 +181,19 @@ function StatsStrip({ stats }: { stats: Stats | undefined }) {
           : `${(stats.roi * 100).toFixed(1)}% gross`,
       tone: stats.net_roi === null ? undefined : stats.net_roi > 0 ? 'gain' : 'loss',
     })
+    items.push({
+      label: 'Win rate',
+      value: stats.win_rate === null ? '—' : `${(stats.win_rate * 100).toFixed(0)}%`,
+    })
+    items.push({
+      label: 'Net P&L',
+      value: formatSignedDollars(net),
+      sub: `${formatSignedDollars(gross)} gross · -${formatDollars(fees)} fees`,
+      tone: net > 0 ? 'gain' : net < 0 ? 'loss' : undefined,
+    })
   }
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
       {items.length > 0
         ? items.map((it) => (
             <div key={it.label} className="rounded-lg border border-border bg-bg-card p-3">
@@ -212,7 +216,7 @@ function StatsStrip({ stats }: { stats: Stats | undefined }) {
               )}
             </div>
           ))
-        : Array.from({ length: 4 }).map((_, i) => (
+        : Array.from({ length: 5 }).map((_, i) => (
             <div
               key={i}
               className="h-[68px] animate-pulse rounded-lg border border-border bg-bg-card"
