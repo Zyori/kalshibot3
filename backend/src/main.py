@@ -25,7 +25,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api import ws as ws_endpoint
-from src.api.routes import events, health, ledger, markets, orders, positions
+from src.api.routes import (
+    events,
+    health,
+    ledger,
+    markets,
+    orders,
+    positions,
+    settings,
+)
 from src.config import get_settings
 from src.core.db import dispose_engine, get_engine
 from src.core.exceptions import AuthenticationError, KalshiError
@@ -154,6 +162,7 @@ app.include_router(orders.router, prefix="/api")
 app.include_router(positions.router, prefix="/api")
 app.include_router(ledger.router, prefix="/api")
 app.include_router(events.router, prefix="/api")
+app.include_router(settings.router, prefix="/api")
 app.include_router(ws_endpoint.router)
 
 
