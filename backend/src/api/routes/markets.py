@@ -171,8 +171,8 @@ async def get_market(ticker: str, request: Request) -> dict[str, Any]:
     return {
         "ticker": book.ticker,
         "status": book.status,
-        "yes": [{"price": p, "qty": q} for p, q in sorted(book.yes.levels.items(), reverse=True)],
-        "no":  [{"price": p, "qty": q} for p, q in sorted(book.no.levels.items(), reverse=True)],
+        "yes": [{"price": p, "qty": q} for p, q in sorted(book.yes.int_levels().items(), reverse=True)],
+        "no":  [{"price": p, "qty": q} for p, q in sorted(book.no.int_levels().items(), reverse=True)],
         "yes_best_bid": book.yes_best_bid,
         "yes_best_ask": book.yes_best_ask,
         "no_best_bid": book.no_best_bid,

@@ -17,8 +17,10 @@ export default function DepthLadder({
   side: BookSide
   rows?: number
 }) {
+  // Stored quantities are exact fractional sums of Kalshi's fixed-point deltas
+  // (see WebSocketProvider orderbook_delta). Round to whole contracts on read.
   const levels = Object.entries(side)
-    .map(([p, q]) => ({ price: Number(p), qty: q }))
+    .map(([p, q]) => ({ price: Number(p), qty: Math.round(q) }))
     .sort((a, b) => b.price - a.price)
     .slice(0, rows)
 

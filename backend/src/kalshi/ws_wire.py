@@ -74,7 +74,14 @@ class OrderbookDeltaPayload(WireBase):
     market_ticker: str
     market_id: str
     price_cents: int = Field(ge=1, le=99)
-    delta: int = Field(description="Signed: positive adds liquidity, negative removes.")
+    delta: float = Field(
+        description="Signed change in resting quantity. Positive adds liquidity, "
+        "negative removes. Kalshi's `delta_fp` is fixed-point and individual "
+        "deltas can be FRACTIONAL (e.g. 330.96); only the running per-level sum "
+        "is integral. Must be summed exactly — never truncate a single delta, or "
+        "rounding error accumulates and leaves phantom levels (crossed book). "
+        "See the 2026-05-29 stale-book investigation."
+    )
     side: Literal["yes", "no"]
     ts: datetime | None = None
 
@@ -257,8 +264,11 @@ def parse_kalshi_ws_message(raw: dict) -> KalshiWsMessage | None:
         msg = raw.get("msg", {})
         price_raw = msg.get("price_dollars") or msg.get("price")
         price_cents = _dollars_str_to_cents(price_raw) if isinstance(price_raw, str) else int(price_raw)
+        # delta_fp is fixed-point and can be fractional — keep the exact float.
+        # Truncating here (the old `int(float(...))`) dropped the fraction on
+        # every delta, accumulating error that left phantom top-of-book levels.
         delta_raw = msg.get("delta_fp") or msg.get("delta")
-        delta = int(float(delta_raw)) if isinstance(delta_raw, str) else int(delta_raw)
+        delta = float(delta_raw)
         return OrderbookDelta(
             type="orderbook_delta",
             sid=raw["sid"],

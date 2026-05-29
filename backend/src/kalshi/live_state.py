@@ -26,18 +26,31 @@ from src.kalshi.ws_wire import (
 )
 
 
+# A level with a rounded quantity at or below this is treated as empty and
+# dropped. Kalshi's per-level resting quantity is always a whole number of
+# contracts; fractional `delta_fp` values only ever sum back to integers, so a
+# level whose exact float sum rounds to 0 has genuinely been emptied.
+_EMPTY_QTY_EPSILON = 0.5
+
+
 @dataclass
 class BookSide:
-    """One side (yes or no) of a market's orderbook, keyed by price_cents."""
-    levels: dict[int, int] = field(default_factory=dict)
-    """price_cents -> aggregate quantity at that level"""
+    """One side (yes or no) of a market's orderbook, keyed by price_cents.
+
+    Quantities are stored as exact floats because Kalshi's delta_fp values are
+    fractional and must be summed without loss — see OrderbookDeltaPayload.delta.
+    Readers see whole contracts via `quantity_at` / `int_levels`."""
+    levels: dict[int, float] = field(default_factory=dict)
+    """price_cents -> exact aggregate quantity at that level (fractional sum)"""
 
     def apply_snapshot(self, levels: list[BookLevel]) -> None:
-        self.levels = {l.price_cents: l.quantity for l in levels if l.quantity > 0}
+        self.levels = {l.price_cents: float(l.quantity) for l in levels if l.quantity > 0}
 
-    def apply_delta(self, price_cents: int, delta: int) -> None:
-        new_qty = self.levels.get(price_cents, 0) + delta
-        if new_qty <= 0:
+    def apply_delta(self, price_cents: int, delta: float) -> None:
+        new_qty = self.levels.get(price_cents, 0.0) + delta
+        # Round the running sum to decide presence: an emptied level lands on
+        # ~0.0 (within float noise), a real level on a positive integer.
+        if new_qty < _EMPTY_QTY_EPSILON:
             self.levels.pop(price_cents, None)
         else:
             self.levels[price_cents] = new_qty
@@ -47,6 +60,11 @@ class BookSide:
         if not self.levels:
             return None
         return max(self.levels) if side == "bid" else min(self.levels)
+
+    def int_levels(self) -> dict[int, int]:
+        """Levels with quantities rounded to whole contracts, for display/wire.
+        Empty levels are already absent (dropped in apply_delta)."""
+        return {p: round(q) for p, q in self.levels.items()}
 
 
 @dataclass
