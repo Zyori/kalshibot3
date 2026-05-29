@@ -226,6 +226,7 @@ class PositionSyncer:
         self._stopped = False
         self._last_run_at: float | None = None
         self._on_position_closed: Callable[[], Awaitable[None]] | None = None
+        self._on_synced: Callable[[], Awaitable[None]] | None = None
 
     def set_on_position_closed(
         self, cb: Callable[[], Awaitable[None]]
@@ -234,6 +235,13 @@ class PositionSyncer:
         zero while we still have an OPEN bet on that market — the supervisor
         wires this to settlement_sweeper.trigger()."""
         self._on_position_closed = cb
+
+    def set_on_synced(self, cb: Callable[[], Awaitable[None]]) -> None:
+        """Called after every successful sync commit. The supervisor wires
+        this to broadcast a `position_synced` browser event — emitting it
+        post-commit guarantees any refetch it triggers reads fresh DB state
+        (the fix for the lag between a fill and the position appearing)."""
+        self._on_synced = cb
 
     @property
     def last_run_age_s(self) -> float | None:
@@ -255,6 +263,11 @@ class PositionSyncer:
         except Exception:  # noqa: BLE001
             log.exception("position_sync_failed")
             return
+        if self._on_synced is not None:
+            try:
+                await self._on_synced()
+            except Exception:  # noqa: BLE001
+                log.exception("on_synced_callback_failed")
         closed = result.get("closed_with_open_bet") or set()
         if closed and self._on_position_closed is not None:
             try:

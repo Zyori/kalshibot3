@@ -94,6 +94,10 @@ class Supervisor:
         # while we still have an OPEN bet on that market — strong signal
         # that the position was paid out and we missed the WS lifecycle event.
         self.position_syncer.set_on_position_closed(self.settlement_sweeper.trigger)
+        # After every sync commit, nudge browsers to refetch positions. Fired
+        # post-commit so the refetch reads the row this sync just wrote — kills
+        # the gap between a fill and the position showing up in the UI.
+        self.position_syncer.set_on_synced(self._broadcast_position_synced)
 
         # Track each ticker's last-known tier so we can detect transitions
         # (FAR→SOON, LIVE→DONE, etc.) and run the right hand-off logic.
@@ -132,6 +136,11 @@ class Supervisor:
         # handler's critical path.
         if self.app_state is not None:
             self.app_state._balance_refreshed_at_mono = 0.0
+
+    async def _broadcast_position_synced(self) -> None:
+        """Tell browsers a position reconciliation just committed. They
+        refetch the event/positions/ledger queries off this signal."""
+        await self.broadcast.broadcast_app_event({"type": "position_synced"})
 
     async def _on_market_lifecycle(self, msg: MarketLifecycle) -> None:
         """Settle BETs when Kalshi reports a terminal market status.

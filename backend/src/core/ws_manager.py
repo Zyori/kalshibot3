@@ -125,6 +125,11 @@ class BroadcastManager:
         # accumulate in _pending_list.
         self._pending_collapsed: dict[str, KalshiWsMessage] = {}
         self._pending_list: list[KalshiWsMessage] = []
+        # App-level events (not from Kalshi WS): already-serialized dicts that
+        # bypass _serialize. Keyed by `type` so repeats within one flush window
+        # collapse to a single notification — e.g. two fills firing two
+        # position_synced signals only wakes the browser once.
+        self._pending_app: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         self._flush_task: asyncio.Task | None = None
         self._stopped = False
@@ -155,6 +160,17 @@ class BroadcastManager:
         while not self._stopped:
             msg = await queue.get()
             await self.enqueue(msg)
+
+    async def broadcast_app_event(self, event: dict[str, Any]) -> None:
+        """Push an app-level event (not a Kalshi WS message) to browsers.
+
+        The payload is the final wire dict — it must carry its own `type` and
+        is sent verbatim, skipping _serialize. Used for server-derived signals
+        like `position_synced`, which fires only after a position reconciliation
+        commits so the refetch it triggers reads fresh DB state.
+        """
+        async with self._lock:
+            self._pending_app[event["type"]] = event
 
     # === Flush loop ===
 
@@ -187,16 +203,23 @@ class BroadcastManager:
 
     async def _flush_once(self) -> None:
         async with self._lock:
-            if not self._pending_collapsed and not self._pending_list:
+            if (
+                not self._pending_collapsed
+                and not self._pending_list
+                and not self._pending_app
+            ):
                 return
             batch = list(self._pending_collapsed.values()) + self._pending_list
+            app_events = list(self._pending_app.values())
             self._pending_collapsed.clear()
             self._pending_list.clear()
+            self._pending_app.clear()
 
         if not self._clients:
             return  # nobody listening; drop the batch
 
         events = [s for s in (_serialize(m) for m in batch) if s is not None]
+        events.extend(app_events)
         if not events:
             return
         payload = {"events": events}

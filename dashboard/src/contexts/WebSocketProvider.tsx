@@ -66,12 +66,20 @@ type MarketLifecycleEvent = {
   settlement_value: number | null
 }
 
+// Server-derived signal: a position reconciliation just committed. Carries no
+// payload — it's a "refetch your position-bearing queries now" nudge, emitted
+// post-commit so the refetch reads fresh DB state.
+type PositionSyncedEvent = {
+  type: 'position_synced'
+}
+
 type WsEvent =
   | OrderbookSnapshotEvent
   | OrderbookDeltaEvent
   | FillEvent
   | UserOrderEvent
   | MarketLifecycleEvent
+  | PositionSyncedEvent
 
 type WsPayload = { events: WsEvent[] }
 
@@ -243,12 +251,22 @@ function applyEvent(qc: ReturnType<typeof useQueryClient>, event: WsEvent) {
       return
     }
     case 'fill': {
-      // Fills land in the BET ledger via the backend; the frontend gets the
-      // updated ledger on its next REST query. We do invalidate the ledger
+      // Fills land in the BET ledger via the backend. Invalidate the ledger
       // here (cold-bootstrap data, not hot) so the user sees their fill
-      // immediately.
+      // immediately. Position-bearing queries are NOT refetched here — a fill
+      // triggers a backend position sync, and we refetch those on the
+      // `position_synced` signal it emits, which fires post-commit. Refetching
+      // on `fill` would race that sync and read pre-fill state.
       qc.invalidateQueries({ queryKey: ['ledger'] })
+      return
+    }
+    case 'position_synced': {
+      // A position reconciliation committed. Refetch everything that carries
+      // position data: the event page (markets[].position lives in ['event']),
+      // the positions list, and the ledger (unrealized P&L tracks positions).
+      qc.invalidateQueries({ queryKey: ['event'] })
       qc.invalidateQueries({ queryKey: ['positions'] })
+      qc.invalidateQueries({ queryKey: ['ledger'] })
       return
     }
     case 'market_lifecycle': {
