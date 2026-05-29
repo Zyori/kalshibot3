@@ -257,6 +257,15 @@ class MarketRefresher:
     ) -> None:
         ob = await client.get_orderbook(ticker, depth=ORDERBOOK_DEPTH)
         book = self.live_state.get_or_create_book(ticker)
+        # If WS already owns this book, its delta stream is the source of truth
+        # and a REST snapshot here would desync the baseline (deltas would apply
+        # on top of REST levels they weren't computed against). Drop the REST
+        # data on the floor — the only safe action. Still (optionally)
+        # reschedule so a later FAR demotion resumes polling.
+        if book.ws_owned:
+            if reschedule:
+                self._reschedule(ticker)
+            return
         # Translate from schemas.OrderbookLevel (REST shape) to ws_wire.BookLevel
         # (LiveState shape) — same fields, different module names. Once the
         # snapshot is applied, downstream readers can't tell which path filled

@@ -156,6 +156,10 @@ class KalshiWsClient:
         if not targets:
             return
         self._market_tickers -= targets
+        # WS no longer feeds these books — release ownership so a later REST
+        # poll (FAR demotion) can re-establish the baseline.
+        for t in targets:
+            self.live_state.release_ws_ownership(t)
         if self._ws is None or self._orderbook_sid is None:
             return
         if not self._market_tickers:

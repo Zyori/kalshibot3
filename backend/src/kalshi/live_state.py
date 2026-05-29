@@ -58,6 +58,14 @@ class MarketBook:
     last_update: float = 0.0
     status: str = "open"
     """Mirrors Kalshi market_lifecycle.status. settled markets reject orders."""
+    ws_owned: bool = False
+    """True once a WS orderbook_snapshot has established this book's baseline.
+    The WS delta stream computes deltas against the WS snapshot, so once that
+    snapshot lands REST must never overwrite the book — a REST snapshot has a
+    different baseline, and subsequent deltas applied on top of it never
+    reconcile, leaving frozen phantom levels (a stale, crossed book). REST
+    seeding is only valid as a pre-subscribe cold start. Reset on unsubscribe
+    so a market dropping back to FAR can be REST-polled again."""
 
     # Kalshi's `yes` and `no` arrays both hold BIDS — people offering to BUY
     # that side at the listed price. The implied ASK on one side is derived
@@ -157,6 +165,16 @@ class LiveState:
         book.yes.apply_snapshot(m.msg.yes)
         book.no.apply_snapshot(m.msg.no)
         book.last_update = time.monotonic()
+        # This WS snapshot is now the baseline the delta stream is computed
+        # against. From here, REST must not overwrite this book.
+        book.ws_owned = True
+
+    def release_ws_ownership(self, ticker: str) -> None:
+        """Drop WS ownership of a book (on unsubscribe). A later REST poll or
+        a fresh WS snapshot can re-establish the baseline."""
+        book = self.books.get(ticker)
+        if book is not None:
+            book.ws_owned = False
 
     def apply_orderbook_delta(self, m: OrderbookDelta) -> None:
         book = self.get_or_create_book(m.msg.market_ticker)

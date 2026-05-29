@@ -82,7 +82,7 @@ async def get_event(
     try:
         await supervisor.kalshi_ws.add_market_subscriptions(child_tickers)
     except Exception as e:  # noqa: BLE001 — never fail the read on a sub failure
-        log.warning("event_subscribe_failed", event=event_ticker, error=str(e)[:120])
+        log.warning("event_subscribe_failed", event_ticker=event_ticker, error=str(e)[:120])
 
     # Seed any child whose LiveState book is missing/empty with one REST
     # snapshot, so the response carries a real top-of-book on first view
