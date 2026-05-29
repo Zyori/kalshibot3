@@ -26,20 +26,13 @@ from src.kalshi.ws_wire import (
 )
 
 
-# A level with a rounded quantity at or below this is treated as empty and
-# dropped. Kalshi's per-level resting quantity is always a whole number of
-# contracts; fractional `delta_fp` values only ever sum back to integers, so a
-# level whose exact float sum rounds to 0 has genuinely been emptied.
-_EMPTY_QTY_EPSILON = 0.5
-
-
 @dataclass
 class BookSide:
     """One side (yes or no) of a market's orderbook, keyed by price_cents.
 
     Quantities are stored as exact floats because Kalshi's delta_fp values are
     fractional and must be summed without loss — see OrderbookDeltaPayload.delta.
-    Readers see whole contracts via `quantity_at` / `int_levels`."""
+    Readers see whole contracts via `int_levels`."""
     levels: dict[int, float] = field(default_factory=dict)
     """price_cents -> exact aggregate quantity at that level (fractional sum)"""
 
@@ -48,9 +41,13 @@ class BookSide:
 
     def apply_delta(self, price_cents: int, delta: float) -> None:
         new_qty = self.levels.get(price_cents, 0.0) + delta
-        # Round the running sum to decide presence: an emptied level lands on
-        # ~0.0 (within float noise), a real level on a positive integer.
-        if new_qty < _EMPTY_QTY_EPSILON:
+        # Presence is derived from the SAME rounding readers see (int_levels):
+        # a level is kept iff it rounds to >= 1 whole contract. Deriving the
+        # drop decision from round() — not a separate epsilon — guarantees a
+        # stored level never renders/selects as qty 0 (the boundary case where
+        # sum==0.5 was kept but round(0.5)==0). Kalshi per-level resting
+        # quantities are integral; a drained level lands on ~0.0 and is dropped.
+        if round(new_qty) < 1:
             self.levels.pop(price_cents, None)
         else:
             self.levels[price_cents] = new_qty

@@ -138,6 +138,77 @@ async def test_failed_poll_reschedules_at_normal_cadence():
     assert refresher._next_refresh_at["KX-BAD"] > time.monotonic() + 5 * 3600
 
 
+@pytest.mark.asyncio
+async def test_poll_one_drops_rest_data_for_ws_owned_book():
+    """Once WS owns a book, a REST poll must not overwrite it — the REST
+    snapshot has a different baseline and would desync the delta stream."""
+    live = LiveState()
+    refresher = MarketRefresher(live)
+    book = live.get_or_create_book("KX-1")
+    book.yes.levels = {60: 100.0}
+    book.ws_owned = True
+
+    mock_client = AsyncMock()
+    mock_client.get_orderbook.return_value = _fake_orderbook(yes=[(55, 5)], no=[(40, 5)])
+
+    await refresher._poll_one(mock_client, "KX-1")
+
+    # REST data dropped — book unchanged.
+    assert live.books["KX-1"].yes.levels == {60: 100.0}
+
+
+@pytest.mark.asyncio
+async def test_poll_one_writes_when_not_ws_owned():
+    live = LiveState()
+    refresher = MarketRefresher(live)
+    refresher._kickoff["KX-1"] = None
+
+    mock_client = AsyncMock()
+    mock_client.get_orderbook.return_value = _fake_orderbook(yes=[(55, 5)], no=[(40, 5)])
+
+    await refresher._poll_one(mock_client, "KX-1")
+
+    assert live.books["KX-1"].yes.levels == {55: 5}
+
+
+@pytest.mark.asyncio
+async def test_refresh_now_await_does_not_enter_far_schedule():
+    """One-shot seed must not register the ticker in the FAR poll schedule —
+    it's WS-subscribed and the deltas own it."""
+    live = LiveState()
+    refresher = MarketRefresher(live)
+
+    mock_client = AsyncMock()
+    mock_client.get_orderbook.return_value = _fake_orderbook(yes=[(55, 5)], no=[(40, 5)])
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("src.services.market_refresher.KalshiRestClient", return_value=mock_client):
+        await refresher.refresh_now_await("KX-1")
+
+    assert live.books["KX-1"].yes.levels == {55: 5}
+    assert "KX-1" not in refresher._next_refresh_at
+
+
+@pytest.mark.asyncio
+async def test_resync_locked_skips_ws_authoritative_ticker():
+    """A locked book for a WS-subscribed ticker must NOT trigger a REST resync —
+    WS is the source of truth; a REST repoll races the delta stream."""
+    live = LiveState()
+    refresher = MarketRefresher(live, is_ws_authoritative=lambda _t: True)
+    # A crossed/locked book (yes_bid + no_bid >= 100).
+    book = live.get_or_create_book("KX-1")
+    book.yes.levels = {60: 10.0}
+    book.no.levels = {50: 10.0}
+
+    mock_client = AsyncMock()
+    with patch("src.services.market_refresher.KalshiRestClient", return_value=mock_client):
+        ran = await refresher.resync_locked("KX-1")
+
+    assert ran is False
+    mock_client.get_orderbook.assert_not_called()
+
+
 def test_orderbook_response_parses_real_wire_format():
     """The OrderbookResponse model must handle Kalshi's `orderbook_fp` shape
     with dollar-string prices and notional-dollar quantities."""

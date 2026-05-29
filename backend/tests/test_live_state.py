@@ -34,7 +34,7 @@ def _snapshot(ticker: str, yes_levels: list[tuple[int, int]], no_levels: list[tu
     )
 
 
-def _delta(ticker: str, side: str, price_cents: int, delta: int) -> OrderbookDelta:
+def _delta(ticker: str, side: str, price_cents: int, delta: float) -> OrderbookDelta:
     return OrderbookDelta(
         type="orderbook_delta", sid=1, seq=2,
         msg=OrderbookDeltaPayload(
@@ -105,6 +105,100 @@ class TestOrderbookIngestion:
         book = s.get_or_create_book("KX-EMPTY")
         assert book.yes_best_bid is None
         assert book.no_best_ask is None
+
+
+class TestFractionalDeltaAccumulation:
+    """Kalshi's delta_fp is fixed-point and individual deltas can be fractional
+    (e.g. 330.96); only the running per-level sum is integral. The book must
+    accumulate them exactly and never truncate — truncating each delta was the
+    root cause of phantom levels / crossed books. See the 2026-05-29 fix."""
+
+    def test_fractional_deltas_sum_exactly(self) -> None:
+        s = LiveState()
+        s.apply_orderbook_snapshot(_snapshot("KX-1", [], []))
+        # 330.96 + 1655.00 + 13.04 == 1999.0 exactly; truncating each (330, 1655,
+        # 13) would give 1998 and drift the level forever.
+        for d in (330.96, 1655.00, 13.04):
+            s.apply_orderbook_delta(_delta("KX-1", "yes", 42, d))
+        assert s.books["KX-1"].yes.int_levels()[42] == 1999
+
+    def test_fractional_deltas_summing_to_zero_drop_level(self) -> None:
+        """A level Kalshi drives to exactly 0 (via fractional steps) must be
+        removed — the bug was a residual keeping it alive as a phantom."""
+        s = LiveState()
+        s.apply_orderbook_snapshot(_snapshot("KX-1", [(42, 100), (41, 50)], []))
+        # -0.96 then -99.04 sums to -100, emptying the level.
+        s.apply_orderbook_delta(_delta("KX-1", "yes", 42, -0.96))
+        s.apply_orderbook_delta(_delta("KX-1", "yes", 42, -99.04))
+        book = s.books["KX-1"]
+        assert 42 not in book.yes.levels
+        assert book.yes_best_bid == 41
+
+    def test_transient_sub_one_residual_does_not_strand_level(self) -> None:
+        """A fractional partial that transiently lands a level below 1 contract,
+        then a restoring delta, must reconcile to the true integer — not drop
+        and rebuild at the fractional remainder."""
+        s = LiveState()
+        s.apply_orderbook_snapshot(_snapshot("KX-1", [(42, 1)], []))
+        # Net zero change across two fractional deltas; level stays at 1.
+        s.apply_orderbook_delta(_delta("KX-1", "yes", 42, -0.4))
+        s.apply_orderbook_delta(_delta("KX-1", "yes", 42, 0.4))
+        assert s.books["KX-1"].yes.int_levels()[42] == 1
+
+    def test_long_run_of_fractional_deltas_does_not_drift(self) -> None:
+        """Exact accumulation over many fractional deltas stays on the integer
+        — the failure mode was slow drift across thousands of updates."""
+        s = LiveState()
+        s.apply_orderbook_snapshot(_snapshot("KX-1", [(42, 1000)], []))
+        # 1000 deltas of +0.1 and -0.1 alternating net to 0 exactly.
+        for i in range(1000):
+            s.apply_orderbook_delta(_delta("KX-1", "yes", 42, 0.1 if i % 2 == 0 else -0.1))
+        assert s.books["KX-1"].yes.int_levels()[42] == 1000
+
+
+class TestPresenceMatchesDisplay:
+    """A stored level must never render or be selected as qty 0 — presence and
+    display rounding are derived from the same round()."""
+
+    def test_int_levels_rounds_to_whole_contracts(self) -> None:
+        s = LiveState()
+        s.apply_orderbook_snapshot(_snapshot("KX-1", [], []))
+        s.apply_orderbook_delta(_delta("KX-1", "yes", 42, 99.6))
+        assert s.books["KX-1"].yes.int_levels() == {42: 100}
+
+    def test_level_below_half_contract_is_dropped(self) -> None:
+        s = LiveState()
+        s.apply_orderbook_snapshot(_snapshot("KX-1", [(42, 1)], []))
+        s.apply_orderbook_delta(_delta("KX-1", "yes", 42, -0.6))  # -> 0.4, rounds to 0
+        assert 42 not in s.books["KX-1"].yes.levels
+
+    def test_kept_level_never_renders_zero(self) -> None:
+        """Every present level rounds to >= 1; best_price never points at a
+        level int_levels shows as 0."""
+        s = LiveState()
+        s.apply_orderbook_snapshot(_snapshot("KX-1", [(42, 1)], []))
+        s.apply_orderbook_delta(_delta("KX-1", "yes", 42, -0.4))  # -> 0.6, rounds to 1
+        book = s.books["KX-1"]
+        assert book.yes_best_bid == 42
+        assert book.yes.int_levels()[42] == 1
+
+
+class TestWsOwnership:
+    def test_snapshot_sets_ws_owned(self) -> None:
+        s = LiveState()
+        assert s.get_or_create_book("KX-1").ws_owned is False
+        s.apply_orderbook_snapshot(_snapshot("KX-1", [(42, 10)], []))
+        assert s.books["KX-1"].ws_owned is True
+
+    def test_release_clears_ws_owned(self) -> None:
+        s = LiveState()
+        s.apply_orderbook_snapshot(_snapshot("KX-1", [(42, 10)], []))
+        s.release_ws_ownership("KX-1")
+        assert s.books["KX-1"].ws_owned is False
+
+    def test_release_on_unknown_ticker_is_noop(self) -> None:
+        s = LiveState()
+        s.release_ws_ownership("KX-NONE")  # must not raise
 
 
 class TestUserOrderIngestion:

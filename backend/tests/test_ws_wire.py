@@ -93,6 +93,26 @@ class TestOrderbookDelta:
         assert isinstance(msg, OrderbookDelta)
         assert msg.msg.delta == -10
 
+    def test_delta_fp_fractional_value_preserved(self) -> None:
+        """delta_fp is fixed-point and can be fractional — the parser must keep
+        the fraction, not truncate it (truncation was the stale-book bug)."""
+        msg = parse_kalshi_ws_message({
+            "type": "orderbook_delta",
+            "sid": 1, "seq": 1,
+            "msg": {"market_ticker": "X", "market_id": "1", "price_dollars": "0.34", "delta_fp": "330.96", "side": "yes"},
+        })
+        assert isinstance(msg, OrderbookDelta)
+        assert msg.msg.delta == 330.96
+
+    def test_delta_fp_small_fraction_preserved(self) -> None:
+        msg = parse_kalshi_ws_message({
+            "type": "orderbook_delta",
+            "sid": 1, "seq": 1,
+            "msg": {"market_ticker": "X", "market_id": "1", "price_dollars": "0.34", "delta_fp": "-0.04", "side": "yes"},
+        })
+        assert isinstance(msg, OrderbookDelta)
+        assert msg.msg.delta == -0.04
+
 
 class TestFill:
     def test_fill_with_dollar_prices(self) -> None:

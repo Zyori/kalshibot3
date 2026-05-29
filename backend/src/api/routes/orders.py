@@ -82,8 +82,10 @@ def _book_snapshot(request: Request, ticker: str) -> dict[str, int | None]:
         "yes_best_ask": yes_ask,
         "no_best_bid": book.no_best_bid,
         "no_best_ask": no_ask,
-        "yes_top_qty": book.yes.levels.get(yes_ask) if yes_ask is not None else None,
-        "no_top_qty": book.no.levels.get(no_ask) if no_ask is not None else None,
+        # int_levels() — levels store exact floats; the sanity guard's qty
+        # fields are int. Round on read at this boundary (not raw .levels).
+        "yes_top_qty": book.yes.int_levels().get(yes_ask) if yes_ask is not None else None,
+        "no_top_qty": book.no.int_levels().get(no_ask) if no_ask is not None else None,
     }
 
 

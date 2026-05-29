@@ -76,16 +76,16 @@ class MarketRefresher:
     ) -> None:
         self.live_state = live_state
         self.broadcast_queue = broadcast_queue
+        """Browser-WS queue. When set, every REST snapshot (from polling or
+        from a locked-book resync) is also pushed here as an OrderbookSnapshot
+        event so connected browsers replace their stale cache atomically,
+        rather than waiting for the next page reload."""
         self._is_ws_authoritative = is_ws_authoritative or (lambda _t: False)
         """Returns True for tickers whose book comes from the WS delta stream.
         The locked-book sweep and resync skip these: WS is the source of truth,
         and clearing + REST-repolling a live book races incoming deltas, which
         is what corrupts it. REST repair is only for FAR-tier books with no WS
         feed. See the 2026-05-29 stale-book investigation."""
-        """Browser-WS queue. When set, every REST snapshot (from polling or
-        from a locked-book resync) is also pushed here as an OrderbookSnapshot
-        event so connected browsers replace their stale cache atomically,
-        rather than waiting for the next page reload."""
         self._next_refresh_at: dict[str, float] = {}
         """ticker -> monotonic deadline. Past deadlines are due now."""
         self._kickoff: dict[str, float | None] = {}

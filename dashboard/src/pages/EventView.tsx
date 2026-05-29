@@ -62,11 +62,20 @@ export default function EventView() {
               | null,
           ) => {
             if (!snap) return
-            queryClient.setQueryData<MarketBook>(['book', m.ticker], {
-              ticker: m.ticker,
-              yes: Object.fromEntries(snap.yes.map((l) => [l.price, l.qty])),
-              no: Object.fromEntries(snap.no.map((l) => [l.price, l.qty])),
-            })
+            // Seed only when the cache is empty. If WS deltas have already
+            // populated this book, the producer no-ops — a REST snapshot
+            // (rounded ints) must not clobber the live exact-float WS state.
+            // The WS snapshot handler, which IS authoritative, still overwrites
+            // unconditionally. Frontend counterpart to the backend ws_owned guard.
+            queryClient.setQueryData<MarketBook>(
+              ['book', m.ticker],
+              (prev) =>
+                prev ?? {
+                  ticker: m.ticker,
+                  yes: Object.fromEntries(snap.yes.map((l) => [l.price, l.qty])),
+                  no: Object.fromEntries(snap.no.map((l) => [l.price, l.qty])),
+                },
+            )
           },
         )
         .catch(() => {})

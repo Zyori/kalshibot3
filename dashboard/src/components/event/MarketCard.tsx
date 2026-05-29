@@ -108,9 +108,9 @@ type MarketDetailResponse = {
 }
 
 function ExpandedBody({ ticker }: { ticker: string }) {
-  // Same snapshot-on-expand pattern the old MarketPanel used: hit /api/markets
-  // for a fresh book, clobber the cache (server side-effect: triggers a
-  // locked-book resync), then let WS deltas keep it fresh.
+  // Snapshot-on-expand: hit /api/markets for a fresh book to seed the cache
+  // when empty, then let WS deltas keep it fresh. Seeding is guarded below so
+  // a re-expand can't clobber a live WS book.
   const queryClient = useQueryClient()
   const { data: liveBook } = useQuery<MarketBook | undefined>({
     queryKey: ['book', ticker],
@@ -128,11 +128,19 @@ function ExpandedBody({ ticker }: { ticker: string }) {
   })
   useEffect(() => {
     if (!snapshot.data) return
-    queryClient.setQueryData<MarketBook>(['book', ticker], {
-      ticker,
-      yes: Object.fromEntries(snapshot.data.yes.map((l) => [l.price, l.qty])),
-      no: Object.fromEntries(snapshot.data.no.map((l) => [l.price, l.qty])),
-    })
+    // Seed only when the cache is empty. The card re-fetches on every
+    // expand/collapse; without this guard a re-expand would clobber the live
+    // exact-float WS book with rounded REST ints. Producer no-ops once WS owns
+    // the cache. Frontend counterpart to the backend ws_owned guard.
+    queryClient.setQueryData<MarketBook>(
+      ['book', ticker],
+      (prev) =>
+        prev ?? {
+          ticker,
+          yes: Object.fromEntries(snapshot.data.yes.map((l) => [l.price, l.qty])),
+          no: Object.fromEntries(snapshot.data.no.map((l) => [l.price, l.qty])),
+        },
+    )
   }, [snapshot.data, ticker, queryClient])
 
   return (

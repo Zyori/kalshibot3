@@ -239,7 +239,7 @@ def parse_kalshi_ws_message(raw: dict) -> KalshiWsMessage | None:
 
     Conversion responsibilities:
       - orderbook_snapshot: yes/no arrays of [price_dollar_str, qty] → list[BookLevel]
-      - orderbook_delta:    price_dollars + delta_fp (string) → price_cents + delta (int)
+      - orderbook_delta:    price_dollars + delta_fp (string) → price_cents (int) + delta (float)
       - fill / user_order:  yes_price_dollars / yes_price → cents
     """
     msg_type = raw.get("type")

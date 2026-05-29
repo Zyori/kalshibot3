@@ -180,6 +180,14 @@ class KalshiWsClient:
         self._personal_channels_active = False
         await self._ensure_personal_channels()
         if self._market_tickers:
+            # A new socket invalidates every prior WS snapshot — the deltas that
+            # will arrive are computed against the *fresh* snapshot, not the one
+            # the old connection delivered. Release WS ownership so a book that
+            # goes stale before its fresh snapshot lands can still be repaired by
+            # REST (resync_locked / the sweep), instead of being locked out until
+            # the resubscribe completes. The fresh snapshot re-asserts ownership.
+            for t in self._market_tickers:
+                self.live_state.release_ws_ownership(t)
             await self._send_initial_orderbook_subscribe(sorted(self._market_tickers))
 
     def _alloc_request_id(self) -> int:

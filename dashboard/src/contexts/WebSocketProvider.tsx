@@ -221,17 +221,18 @@ function applyEvent(qc: ReturnType<typeof useQueryClient>, event: WsEvent) {
       // event.delta is Kalshi's fixed-point delta and can be FRACTIONAL
       // (e.g. 330.96); only the running per-level sum is integral. Store the
       // EXACT running sum (never round the stored value — that would lose the
-      // fraction across deltas and re-introduce the drift), drop a level whose
-      // sum falls below 0.5 (genuinely emptied). Display rounds on read. Popping
-      // on `<= 0` instead would leave phantom levels (stale, crossed book).
-      // Mirrors the backend BookSide logic — see 2026-05-29 stale-book invest.
+      // fraction across deltas and re-introduce the drift). Presence is derived
+      // from the SAME rounding the display uses (Math.round, see DepthLadder):
+      // a level is kept iff it rounds to >= 1 contract, so a stored level never
+      // renders as 0. Mirrors backend BookSide.apply_delta (live_state.py) —
+      // keep the two in lockstep. See the 2026-05-29 stale-book investigation.
       qc.setQueryData<MarketBook>(queryKeyForBook(event.ticker), (prev) => {
         const base: MarketBook = prev ?? { ticker: event.ticker, yes: {}, no: {} }
         const sideKey = event.side
         const sideMap: BookSide = { ...base[sideKey] }
         const current = sideMap[event.price] ?? 0
         const next = current + event.delta
-        if (next < 0.5) delete sideMap[event.price]
+        if (Math.round(next) < 1) delete sideMap[event.price]
         else sideMap[event.price] = next
         return { ...base, [sideKey]: sideMap }
       })

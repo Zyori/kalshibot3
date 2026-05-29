@@ -153,6 +153,21 @@ class BroadcastManager:
             if key is None:
                 self._pending_list.append(msg)
             else:
+                # A snapshot supersedes every delta for the same ticker that
+                # arrived earlier in this flush window. The flush emits collapsed
+                # snapshots before the delta list, so a pre-snapshot delta left
+                # in _pending_list would be applied to the post-snapshot baseline
+                # on the browser — a transient mispriced level. Drop those stale
+                # deltas now.
+                if isinstance(msg, OrderbookSnapshot):
+                    ticker = msg.msg.market_ticker
+                    self._pending_list = [
+                        m for m in self._pending_list
+                        if not (
+                            isinstance(m, OrderbookDelta)
+                            and m.msg.market_ticker == ticker
+                        )
+                    ]
                 self._pending_collapsed[key] = msg
 
     async def consume_queue(self, queue: asyncio.Queue[KalshiWsMessage]) -> None:

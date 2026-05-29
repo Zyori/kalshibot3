@@ -15,6 +15,7 @@ already soccer-only.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -84,21 +85,30 @@ async def get_event(
     except Exception as e:  # noqa: BLE001 — never fail the read on a sub failure
         log.warning("event_subscribe_failed", event_ticker=event_ticker, error=str(e)[:120])
 
-    # Seed any child whose LiveState book is missing/empty with one REST
-    # snapshot, so the response carries a real top-of-book on first view
-    # (the WS snapshot from the subscribe above is in flight and won't have
-    # landed yet). Once seeded, WS deltas keep it fresh — we do NOT resync
-    # locked books here: WS is authoritative for subscribed markets, and a
-    # REST repoll would race the delta stream. See the 2026-05-29 stale-book
-    # investigation.
-    for t in child_tickers:
-        book = supervisor.live_state.books.get(t)
-        if book is not None and book.yes.levels and book.no.levels:
-            continue
-        try:
-            await supervisor.market_refresher.refresh_now_await(t)
-        except Exception:  # noqa: BLE001
-            log.warning("event_book_seed_failed", ticker=t, exc_info=True)
+    # Seed any child whose book WS doesn't own yet with one REST snapshot, so
+    # the response carries a real top-of-book on first view (the WS snapshot
+    # from the subscribe above is in flight and won't have landed yet). Once
+    # WS owns the book, WS deltas keep it fresh — we do NOT resync locked books
+    # here: WS is authoritative for subscribed markets, and a REST repoll would
+    # race the delta stream. See the 2026-05-29 stale-book investigation.
+    # Skip the seed once WS owns the book. Keying on ws_owned (not both-sides-
+    # non-empty) avoids re-fetching every load for a legitimately one-sided book.
+    unseeded = [
+        t for t in child_tickers
+        if not (
+            (book := supervisor.live_state.books.get(t)) is not None
+            and book.ws_owned
+        )
+    ]
+    # Concurrent seeds — independent REST calls; gather so a 3-way moneyline's
+    # children don't stack sequentially on first load.
+    seed_results = await asyncio.gather(
+        *(supervisor.market_refresher.refresh_now_await(t) for t in unseeded),
+        return_exceptions=True,
+    )
+    for t, result in zip(unseeded, seed_results):
+        if isinstance(result, Exception):
+            log.warning("event_book_seed_failed", ticker=t, error=str(result)[:120])
 
     # Bulk-load positions for these tickers in one query.
     rows = (
