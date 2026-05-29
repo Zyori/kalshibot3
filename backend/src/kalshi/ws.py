@@ -98,6 +98,13 @@ class KalshiWsClient:
         """sid -> last seq we saw. Detects dropped messages."""
         self._last_message_at: float = 0.0
 
+    def is_subscribed(self, ticker: str) -> bool:
+        """True if `ticker` is on our orderbook_delta subscription — i.e. WS is
+        the authoritative source for its book. The REST market_refresher uses
+        this to keep its hands off subscribed books (clearing + REST-repolling
+        a live book races the delta stream and corrupts it)."""
+        return ticker in self._market_tickers
+
     def _auth_headers(self) -> dict[str, str]:
         """Kalshi WS signs the path /trade-api/ws/v2 same way REST does the route."""
         timestamp_ms = str(int(time.time() * 1000))

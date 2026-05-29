@@ -84,14 +84,21 @@ async def get_event(
     except Exception as e:  # noqa: BLE001 — never fail the read on a sub failure
         log.warning("event_subscribe_failed", event=event_ticker, error=str(e)[:120])
 
-    # Locked-book guard for every child: drop crossed books and force a
-    # REST resync. Rate-limited inside the refresher so this is safe to
-    # call on every event-page load.
+    # Seed any child whose LiveState book is missing/empty with one REST
+    # snapshot, so the response carries a real top-of-book on first view
+    # (the WS snapshot from the subscribe above is in flight and won't have
+    # landed yet). Once seeded, WS deltas keep it fresh — we do NOT resync
+    # locked books here: WS is authoritative for subscribed markets, and a
+    # REST repoll would race the delta stream. See the 2026-05-29 stale-book
+    # investigation.
     for t in child_tickers:
+        book = supervisor.live_state.books.get(t)
+        if book is not None and book.yes.levels and book.no.levels:
+            continue
         try:
-            await supervisor.market_refresher.resync_locked(t)
+            await supervisor.market_refresher.refresh_now_await(t)
         except Exception:  # noqa: BLE001
-            log.warning("resync_locked_failed", ticker=t, exc_info=True)
+            log.warning("event_book_seed_failed", ticker=t, exc_info=True)
 
     # Bulk-load positions for these tickers in one query.
     rows = (

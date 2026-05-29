@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from src.core.logging import get_logger
 from src.kalshi.live_state import LiveState
@@ -72,9 +72,16 @@ class MarketRefresher:
         self,
         live_state: LiveState,
         broadcast_queue: "asyncio.Queue[KalshiWsMessage] | None" = None,
+        is_ws_authoritative: "Callable[[str], bool] | None" = None,
     ) -> None:
         self.live_state = live_state
         self.broadcast_queue = broadcast_queue
+        self._is_ws_authoritative = is_ws_authoritative or (lambda _t: False)
+        """Returns True for tickers whose book comes from the WS delta stream.
+        The locked-book sweep and resync skip these: WS is the source of truth,
+        and clearing + REST-repolling a live book races incoming deltas, which
+        is what corrupts it. REST repair is only for FAR-tier books with no WS
+        feed. See the 2026-05-29 stale-book investigation."""
         """Browser-WS queue. When set, every REST snapshot (from polling or
         from a locked-book resync) is also pushed here as an OrderbookSnapshot
         event so connected browsers replace their stale cache atomically,
@@ -126,6 +133,14 @@ class MarketRefresher:
         self._next_refresh_at[ticker] = time.monotonic()
         self._tick_event.set()
 
+    async def refresh_now_await(self, ticker: str) -> None:
+        """Poll one ticker's orderbook inline and await it. Used by the event
+        route to seed a freshly-subscribed book before responding, so the
+        first render shows a real top-of-book instead of waiting for the WS
+        snapshot in flight. Unlike `refresh_now`, this does the fetch now."""
+        async with KalshiRestClient() as client:
+            await self._poll_one(client, ticker, reschedule=False)
+
     async def sweep_locked_books(self) -> int:
         """Scan every cached book once, resync any that's locked. Returns
         the count repaired. Called from the background task every
@@ -170,6 +185,14 @@ class MarketRefresher:
 
         Inline (not scheduled) because the caller is usually a route that
         wants the fixed book before responding to the user."""
+        # WS-authoritative books are repaired by the delta stream / reconnect,
+        # never by REST. Clearing and REST-repolling a live book races the
+        # incoming deltas: deltas land on the freshly-cleared (empty) book and
+        # accrete into garbage before the REST snapshot arrives, and the
+        # snapshot itself is already stale on a fast market. That race was the
+        # cause of the persistent sum==100 "locked" state on live markets.
+        if self._is_ws_authoritative(ticker):
+            return False
         book = self.live_state.books.get(ticker)
         if book is None or not book.is_locked:
             return False
@@ -183,8 +206,9 @@ class MarketRefresher:
             ticker=ticker,
             yes_bid=book.yes_best_bid, no_bid=book.no_best_bid,
         )
-        # Clear first so a partial fetch doesn't leave a half-stale book.
-        book.clear()
+        # Fetch first, then apply atomically. _poll_one calls apply_snapshot,
+        # which replaces each side wholesale — no pre-clear needed, and no
+        # empty-book window for a concurrent FAR-tier poll to read.
         try:
             async with KalshiRestClient() as client:
                 await self._poll_one(client, ticker)
@@ -228,7 +252,9 @@ class MarketRefresher:
                     # hammer a misbehaving market.
                     self._reschedule(ticker)
 
-    async def _poll_one(self, client: KalshiRestClient, ticker: str) -> None:
+    async def _poll_one(
+        self, client: KalshiRestClient, ticker: str, *, reschedule: bool = True
+    ) -> None:
         ob = await client.get_orderbook(ticker, depth=ORDERBOOK_DEPTH)
         book = self.live_state.get_or_create_book(ticker)
         # Translate from schemas.OrderbookLevel (REST shape) to ws_wire.BookLevel
@@ -262,7 +288,10 @@ class MarketRefresher:
                 # Same behavior as the upstream Kalshi WS consumer — drop on
                 # overflow. The next sweep tick re-broadcasts if still locked.
                 pass
-        self._reschedule(ticker)
+        # One-shot seeds (event-route book seeding) must not enter the FAR
+        # poll schedule — that ticker is WS-subscribed and the deltas own it.
+        if reschedule:
+            self._reschedule(ticker)
 
     def _reschedule(self, ticker: str) -> None:
         sec_to_kickoff = self._kickoff.get(ticker)

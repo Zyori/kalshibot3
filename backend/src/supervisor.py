@@ -86,6 +86,7 @@ class Supervisor:
         # corrected state only on the next page reload.
         self.market_refresher = MarketRefresher(
             self.live_state, broadcast_queue=self.kalshi_to_browser,
+            is_ws_authoritative=self.kalshi_ws.is_subscribed,
         )
         self.position_syncer = PositionSyncer()
         self.fills_syncer = FillsSyncer()
