@@ -222,6 +222,15 @@ function OpenPositionsTile() {
             const pnl = p.unrealized_pnl_cents
             const tone =
               pnl === null ? 'text-text-muted' : pnl >= 0 ? 'text-gain' : 'text-loss'
+            // % return on cost basis (entry × qty). Both the exact fractional
+            // entry and quantity are on the row, so derive here rather than
+            // adding a backend field. null when we can't compute (no entry/pnl).
+            const entry = p.avg_entry_price ?? p.avg_entry_price_cents
+            const costCents = entry !== null ? entry * p.quantity : null
+            const pct =
+              pnl !== null && costCents !== null && costCents > 0
+                ? (pnl / costCents) * 100
+                : null
             return (
               <li key={`${p.ticker}:${p.side}`}>
                 <Link
@@ -238,6 +247,11 @@ function OpenPositionsTile() {
                     </span>
                     <span className={`font-mono ${tone}`}>
                       {pnl === null ? '—' : formatSignedDollars(pnl)}
+                      {pct !== null && (
+                        <span className="ml-1">
+                          ({pct >= 0 ? '+' : ''}{pct.toFixed(1)}%)
+                        </span>
+                      )}
                     </span>
                   </span>
                 </Link>
