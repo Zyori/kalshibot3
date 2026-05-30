@@ -42,7 +42,7 @@ export default function EventView() {
       }
       return res.json()
     },
-    refetchInterval: 30_000,
+    refetchInterval: 10_000,
   })
 
   // Seed every child's book cache on event load so collapsed cards show

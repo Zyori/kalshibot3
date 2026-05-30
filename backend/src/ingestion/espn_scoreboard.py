@@ -37,7 +37,8 @@ log = get_logger(__name__)
 ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer"
 HTTP_TIMEOUT_S = 8.0
 POLL_INTERVAL_IDLE_S = 1800   # 30 min when no games are live
-POLL_INTERVAL_LIVE_S = 60     # 1 min when at least one game is in progress
+POLL_INTERVAL_LIVE_S = 40     # when at least one game is in progress — keeps
+                              # the score/clock within ~1 poll of real time
 FETCH_WINDOW_DAYS_BACK = 1  # yesterday — covers UTC/ET date-boundary games
 FETCH_WINDOW_DAYS_FORWARD = 3  # today + next 2 days
 # Total window: 4 days. ESPN buckets events by US-local date, so a Kalshi
