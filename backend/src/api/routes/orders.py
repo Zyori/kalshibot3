@@ -30,7 +30,7 @@ from src.core.logging import get_logger
 from src.kalshi.rest import KalshiRestClient, new_client_order_id
 from src.kalshi.schemas import PlaceOrderRequest
 from src.core.types import BetStatus, ExitType
-from src.models import Market, Position
+from src.models import Bet, Market, Position
 from src.services.bet_service import mark_bet_terminal_by_order_id, record_placed_order
 from src.services.order_sanity import SanityInput, Verdict, check_order
 from src.sports.soccer import is_soccer_ticker
@@ -291,11 +291,11 @@ async def cancel_order(
 ) -> dict[str, Any]:
     """Cancel a resting order. Returns the updated order state.
 
-    No is_soccer_ticker check here because we don't know the ticker yet —
-    Kalshi's response carries it. We log a warning + refuse to surface to
-    the UI if the cancelled order isn't soccer (cross-market isolation:
-    if a malicious caller somehow gets an order_id from another market,
-    we don't leak its details back through this app).
+    Cross-market isolation: we cancel ONLY orders we placed (orders with a
+    matching BET row in our ledger). Validating before the Kalshi call is
+    load-bearing — checking the ticker on Kalshi's *response* would already
+    have cancelled the order. An order_id from another market (politics,
+    crypto) has no BET row here, so it's refused without ever reaching Kalshi.
 
     After Kalshi confirms the cancel, transition the matching BET row to
     CANCELLED status so the bankroll-deployed math doesn't keep counting
@@ -303,20 +303,22 @@ async def cancel_order(
     its side; this is the synchronous path so the route caller sees the
     state change before the next /api/ledger/stats poll.)
     """
+    # Refuse to cancel an order we have no record of placing. This is the
+    # cross-market guard: it runs BEFORE the Kalshi call, so a non-soccer
+    # order_id can never be cancelled through this app.
+    ours = await session.scalar(
+        select(Bet.id).where(Bet.kalshi_order_id == order_id).limit(1)
+    )
+    if ours is None:
+        log.warning("cancel_order_unknown_order_id", order_id=order_id)
+        raise HTTPException(status_code=404, detail="no such order in this ledger")
+
     async with KalshiRestClient() as client:
         try:
             resp = await client.cancel_order(order_id)
         except KalshiError as e:
             log.warning("cancel_order_kalshi_error", order_id=order_id, error=str(e))
             raise HTTPException(status_code=502, detail=f"kalshi: {e}") from e
-
-    ticker = resp.order.ticker
-    if not is_soccer_ticker(ticker):
-        log.error(
-            "cancel_order_returned_non_soccer_ticker",
-            order_id=order_id, ticker=ticker,
-        )
-        raise HTTPException(status_code=400, detail="cross-market isolation violation")
 
     await mark_bet_terminal_by_order_id(
         session,

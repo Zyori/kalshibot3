@@ -118,10 +118,15 @@ def _apply_filters(
     if timing:
         stmt = stmt.where(Bet.timing.in_(timing))
     if market_ticker:
-        # Join via market_id — Bet doesn't store ticker directly.
-        stmt = stmt.join(Market, Market.id == Bet.market_id).where(
-            Market.kalshi_ticker == market_ticker
+        # Filter by a scalar subquery on market_id, NOT a second JOIN. list_bets
+        # already LEFT-joins Market for its select columns; a second JOIN here
+        # produced an ambiguous `market.kalshi_ticker` that 500'd every ?market=
+        # request. The subquery resolves the ticker→id independently of whether
+        # the outer query joined Market.
+        market_subq = (
+            select(Market.id).where(Market.kalshi_ticker == market_ticker).scalar_subquery()
         )
+        stmt = stmt.where(Bet.market_id == market_subq)
     if since:
         stmt = stmt.where(Bet.placed_at >= since)
     if until:

@@ -83,6 +83,16 @@ class TestTokenBucket:
         # rate=20 -> 50ms per token. Allow generous bounds for scheduler jitter.
         assert 0.03 < elapsed < 0.2
 
+    def test_clients_share_one_process_wide_bucket(self) -> None:
+        """KalshiRestClient is constructed per-call at many sites. A per-instance
+        bucket would start full every time and never actually limit, so the
+        limiter must be a shared singleton."""
+        from src.kalshi.rest import KalshiRestClient, _RATE_LIMITER
+
+        a = KalshiRestClient()
+        b = KalshiRestClient()
+        assert a.rate_limiter is b.rate_limiter is _RATE_LIMITER
+
 
 def test_new_client_order_id_is_unique_uuid() -> None:
     a = new_client_order_id()

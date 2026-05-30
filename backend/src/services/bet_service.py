@@ -195,7 +195,12 @@ async def record_placed_order(
         return existing
 
     market_id = await _get_or_create_market(session, ticker=order.ticker)
-    entry_price = order.yes_price or requested_price_cents
+    # Record the entry price for the SIDE we actually bought. Kalshi's order
+    # response populates BOTH yes_price and no_price (complementary: a NO buy at
+    # 35¢ comes back yes_price=65, no_price=35), so always taking yes_price
+    # stored the complement on every NO bet and corrupted its P&L.
+    side_price = order.no_price if order.side == "no" else order.yes_price
+    entry_price = side_price or requested_price_cents
 
     bet = Bet(
         sport=_ticker_to_sport(order.ticker),

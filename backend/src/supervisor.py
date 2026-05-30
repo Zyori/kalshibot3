@@ -108,6 +108,15 @@ class Supervisor:
         # the cached balance after a fill changes the account state.
         self.app_state: Any = None
 
+        # Serializes the DB-mutating WS handlers (fill, settlement, cancel).
+        # ws.py dispatches each as a detached create_task, so without this two
+        # fills on the same bet — or a fill racing a settlement — would run
+        # concurrent read-modify-write on the same bet_fill/Bet rows in separate
+        # sessions, and the later commit would clobber the earlier. All three
+        # handlers re-derive bet aggregates from rows visible in their own
+        # transaction, which is only correct under serialized writes.
+        self._ledger_write_lock = asyncio.Lock()
+
         self._tasks: list[asyncio.Task] = []
 
     async def _on_fill(self, fill: Fill) -> None:
@@ -115,9 +124,10 @@ class Supervisor:
         record_fill — non-soccer fills are logged and dropped."""
         factory = get_session_factory()
         try:
-            async with factory() as session:
-                await record_fill(session, fill)
-                await session.commit()
+            async with self._ledger_write_lock:
+                async with factory() as session:
+                    await record_fill(session, fill)
+                    await session.commit()
         except Exception:  # noqa: BLE001
             log.exception("fill_persist_failed", trade_id=fill.msg.trade_id)
         # Trigger a position sync — a fill almost certainly changed our position.
@@ -159,13 +169,14 @@ class Supervisor:
             return
         factory = get_session_factory()
         try:
-            async with factory() as session:
-                await settle_bets_for_market(
-                    session,
-                    ticker=msg.msg.market_ticker,
-                    settlement_value_cents=msg.msg.settlement_value,
-                )
-                await session.commit()
+            async with self._ledger_write_lock:
+                async with factory() as session:
+                    await settle_bets_for_market(
+                        session,
+                        ticker=msg.msg.market_ticker,
+                        settlement_value_cents=msg.msg.settlement_value,
+                    )
+                    await session.commit()
         except Exception:  # noqa: BLE001
             log.exception("settle_failed", ticker=msg.msg.market_ticker)
         # A settlement changes the balance (payout credited). Invalidate
@@ -191,13 +202,14 @@ class Supervisor:
             return
         factory = get_session_factory()
         try:
-            async with factory() as session:
-                await mark_bet_terminal_by_order_id(
-                    session,
-                    order_id=msg.msg.order_id,
-                    status=BetStatus.CANCELLED,
-                )
-                await session.commit()
+            async with self._ledger_write_lock:
+                async with factory() as session:
+                    await mark_bet_terminal_by_order_id(
+                        session,
+                        order_id=msg.msg.order_id,
+                        status=BetStatus.CANCELLED,
+                    )
+                    await session.commit()
         except Exception:  # noqa: BLE001
             log.exception("user_order_cancel_persist_failed", order_id=msg.msg.order_id)
 

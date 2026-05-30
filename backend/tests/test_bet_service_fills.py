@@ -335,6 +335,70 @@ async def test_record_placed_order_sell_does_not_create_bet(
 
 
 @pytest.mark.asyncio
+async def test_no_side_buy_records_no_price_not_yes_complement(
+    session: AsyncSession,
+) -> None:
+    """A NO buy must record the NO price as entry, not 100 - price. Kalshi's
+    order response populates BOTH yes_price and no_price (complementary), so
+    always taking yes_price stored the complement and corrupted NO-bet P&L."""
+    from src.kalshi.schemas import Order
+
+    # NO buy at 35¢ — Kalshi returns yes_price=65, no_price=35.
+    no_order = Order(
+        order_id="ord-no",
+        client_order_id="cli-no",
+        ticker=SOCCER_TICKER,
+        side="no",
+        action="buy",
+        type="limit",
+        status="resting",
+        yes_price=65,
+        no_price=35,
+        count=10,
+        remaining_count=10,
+    )
+    bet = await record_placed_order(
+        session,
+        order=no_order,
+        client_order_id="cli-no",
+        requested_count=10,
+        requested_price_cents=35,
+        action="buy",
+    )
+    assert bet is not None
+    assert bet.entry_price_cents == 35  # NO price, not the 65 complement
+
+
+@pytest.mark.asyncio
+async def test_yes_side_buy_records_yes_price(session: AsyncSession) -> None:
+    from src.kalshi.schemas import Order
+
+    yes_order = Order(
+        order_id="ord-yes",
+        client_order_id="cli-yes",
+        ticker=SOCCER_TICKER,
+        side="yes",
+        action="buy",
+        type="limit",
+        status="resting",
+        yes_price=42,
+        no_price=58,
+        count=5,
+        remaining_count=5,
+    )
+    bet = await record_placed_order(
+        session,
+        order=yes_order,
+        client_order_id="cli-yes",
+        requested_count=5,
+        requested_price_cents=42,
+        action="buy",
+    )
+    assert bet is not None
+    assert bet.entry_price_cents == 42
+
+
+@pytest.mark.asyncio
 async def test_cross_opener_sell_pro_rates_kalshi_fee(session: AsyncSession) -> None:
     """When a WS sell spans two openers, fills_sync's pro-rata split must
     distribute the single Kalshi fee_cost across the synthetic bet_fill

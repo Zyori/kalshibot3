@@ -64,8 +64,8 @@ class TokenBucket:
         self._lock = asyncio.Lock()
 
     async def acquire(self) -> None:
-        async with self._lock:
-            while True:
+        while True:
+            async with self._lock:
                 now = time.monotonic()
                 self.tokens = min(
                     self.capacity, self.tokens + (now - self.last_refill) * self.rate
@@ -75,7 +75,18 @@ class TokenBucket:
                     self.tokens -= 1.0
                     return
                 wait = (1.0 - self.tokens) / self.rate
-                await asyncio.sleep(wait)
+            # Sleep OUTSIDE the lock so concurrent callers each recompute their
+            # wait against the shared token count instead of queuing behind one
+            # sleeper holding the lock.
+            await asyncio.sleep(wait)
+
+
+# Process-wide rate limiter. KalshiRestClient is constructed per-call at many
+# sites (routes, sync loops); a per-instance bucket would start full every time
+# and never actually limit. One shared bucket enforces the real account-wide
+# rate: 8 req/s sustained, burst capacity 10 — under Kalshi's 10 read/10 write
+# standard tier, with headroom for the WS connection and unrelated callers.
+_RATE_LIMITER = TokenBucket(rate=8.0, capacity=10)
 
 
 def _classify_kalshi_error(status: int, body: str) -> KalshiError:
@@ -105,8 +116,10 @@ def new_client_order_id() -> str:
 class KalshiRestClient:
     """Async HTTP client for Kalshi's REST API.
 
-    Construct one per process. The httpx.AsyncClient is shared across all
-    methods. Call `await client.aclose()` on shutdown.
+    Cheap to construct per-call: the rate limiter is the process-wide
+    `_RATE_LIMITER` singleton shared across every instance, so the account-wide
+    rate ceiling holds no matter how many clients exist. Each instance owns its
+    own httpx.AsyncClient connection. Call `await client.aclose()` on shutdown.
     """
 
     def __init__(self) -> None:
@@ -119,9 +132,7 @@ class KalshiRestClient:
             timeout=15.0,
             headers={"Accept": "application/json", "Content-Type": "application/json"},
         )
-        # 8 req/s sustained with bursts up to 10 — slightly under Kalshi's
-        # documented limits to leave headroom for WS and unrelated callers.
-        self.rate_limiter = TokenBucket(rate=8.0, capacity=10)
+        self.rate_limiter = _RATE_LIMITER
 
     async def aclose(self) -> None:
         await self.client.aclose()

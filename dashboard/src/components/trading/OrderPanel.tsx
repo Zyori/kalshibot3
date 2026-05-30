@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import type { MarketBook } from '../../contexts/WebSocketProvider'
@@ -54,8 +54,14 @@ export default function OrderPanel({
   const [count, setCount] = useState<number>(1)
   const [price, setPrice] = useState<number>(50)
   const [postOnly, setPostOnly] = useState(false)
-  const [loudReasons, setLoudReasons] = useState<{ reasons: string[]; action: Action } | null>(null)
+  const [loudReasons, setLoudReasons] = useState<
+    { reasons: string[]; action: Action; price: number } | null
+  >(null)
   const [placedNote, setPlacedNote] = useState<string | null>(null)
+  // Synchronous double-submit guard. `place.isPending` only disables the button
+  // after a re-render; a sub-frame double-click fires twice before that. This
+  // ref flips synchronously inside the click handler and resets in onSettled.
+  const submittingRef = useRef(false)
 
   // Snap the typed price to the current ask whenever the user picks a
   // side (or when the book first arrives). After the user manually edits
@@ -74,9 +80,22 @@ export default function OrderPanel({
   const previewBuy = useOrderPreview(ticker, side, 'buy', count, price, postOnly)
   const previewSell = useOrderPreview(ticker, side, 'sell', count, price, postOnly)
 
-  const place = useMutation<PlaceResponse, Error, { action: Action; acknowledged_loud?: boolean }>({
-    mutationFn: async ({ action, acknowledged_loud = false }) => {
-      const body = { ticker, side, action, count, price_cents: price, post_only: postOnly, acknowledged_loud }
+  const place = useMutation<
+    PlaceResponse,
+    Error,
+    { action: Action; acknowledged_loud?: boolean; price_override?: number }
+  >({
+    mutationFn: async ({ action, acknowledged_loud = false, price_override }) => {
+      // price_override carries the exact price the clicked button computed
+      // (quick buy/sell = ask+1 / bid-1). Relying on `price` state here was a
+      // bug: setPrice() before mutate() doesn't flush before this closure runs,
+      // so the quick buttons posted the previously-typed price. The override is
+      // the price the user actually saw and clicked.
+      const effectivePrice = price_override ?? price
+      const body = {
+        ticker, side, action, count,
+        price_cents: effectivePrice, post_only: postOnly, acknowledged_loud,
+      }
       const res = await fetch('/api/orders/place', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -87,6 +106,7 @@ export default function OrderPanel({
         setLoudReasons({
           reasons: errBody.detail?.reasons ?? ['Order requires confirmation.'],
           action,
+          price: effectivePrice,
         })
         throw new Error('loud_confirm')
       }
@@ -95,6 +115,9 @@ export default function OrderPanel({
         throw new Error(text || `place: ${res.status}`)
       }
       return res.json()
+    },
+    onSettled: () => {
+      submittingRef.current = false
     },
     onSuccess: (resp) => {
       setLoudReasons(null)
@@ -109,6 +132,15 @@ export default function OrderPanel({
       queryClient.invalidateQueries({ queryKey: ['bankroll_deployed'] })
     },
   })
+
+  // Single guarded entry point for every order submission. The ref check is
+  // synchronous, so a fast double-click can't fire two mutations before the
+  // first re-render disables the buttons.
+  const submit = (vars: { action: Action; acknowledged_loud?: boolean; price_override?: number }) => {
+    if (submittingRef.current) return
+    submittingRef.current = true
+    place.mutate(vars)
+  }
 
   const quickBuy = quickPrice(book, side, 'buy')
   const quickSell = quickPrice(book, side, 'sell')
@@ -155,7 +187,7 @@ export default function OrderPanel({
             if (quickBuy === null) return
             setPrice(quickBuy)
             setPriceTouched(true)
-            place.mutate({ action: 'buy' })
+            submit({ action: 'buy', price_override: quickBuy })
           }}
         />
         <QuickButton
@@ -169,7 +201,7 @@ export default function OrderPanel({
             if (quickSell === null || !canSell) return
             setPrice(quickSell)
             setPriceTouched(true)
-            place.mutate({ action: 'sell' })
+            submit({ action: 'sell', price_override: quickSell })
           }}
         />
       </div>
@@ -218,7 +250,7 @@ export default function OrderPanel({
           price={price}
           disabled={place.isPending || previewBuy.data?.verdict === 'hard_refuse'}
           tone="buy"
-          onClick={() => place.mutate({ action: 'buy' })}
+          onClick={() => submit({ action: 'buy' })}
         />
         <PlaceButton
           label="Place Sell"
@@ -228,7 +260,7 @@ export default function OrderPanel({
           }
           title={sellDisabledReason}
           tone="sell"
-          onClick={() => place.mutate({ action: 'sell' })}
+          onClick={() => submit({ action: 'sell' })}
         />
       </div>
 
@@ -248,7 +280,13 @@ export default function OrderPanel({
           reasons={loudReasons.reasons}
           onCancel={() => setLoudReasons(null)}
           onConfirm={() => {
-            place.mutate({ action: loudReasons.action, acknowledged_loud: true })
+            // Re-submit at the price the warning described, not whatever the
+            // book/state is now — the user confirmed *that* order.
+            submit({
+              action: loudReasons.action,
+              acknowledged_loud: true,
+              price_override: loudReasons.price,
+            })
           }}
         />
       )}
