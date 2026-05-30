@@ -174,7 +174,8 @@ class KalshiRestClient:
             )
             raise _classify_kalshi_error(resp.status_code, resp.text)
 
-        return resp.json()
+        data: dict[str, Any] = resp.json()
+        return data
 
     # === Portfolio / health ===
 
