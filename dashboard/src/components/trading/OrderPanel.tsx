@@ -109,17 +109,19 @@ export default function OrderPanel({
   const place = useMutation<
     PlaceResponse,
     Error,
-    { action: Action; acknowledged_loud?: boolean; price_override?: number }
+    { action: Action; acknowledged_loud?: boolean; price_override?: number; count_override?: number }
   >({
-    mutationFn: async ({ action, acknowledged_loud = false, price_override }) => {
-      // price_override carries the exact price the clicked button computed
-      // (quick buy/sell = ask+1 / bid-1). Relying on `price` state here was a
-      // bug: setPrice() before mutate() doesn't flush before this closure runs,
-      // so the quick buttons posted the previously-typed price. The override is
-      // the price the user actually saw and clicked.
+    mutationFn: async ({ action, acknowledged_loud = false, price_override, count_override }) => {
+      // price_override / count_override carry the exact price + size the
+      // clicked button computed (quick buy/sell = ask+1 / bid-1 at ½ unit).
+      // Relying on `price`/`count` state here was a bug: setState before
+      // mutate() doesn't flush before this closure runs, so the quick buttons
+      // posted the previously-typed values. The overrides are what the user
+      // actually saw and clicked.
       const effectivePrice = price_override ?? price
+      const effectiveCount = count_override ?? count
       const body = {
-        ticker, side, action, count,
+        ticker, side, action, count: effectiveCount,
         price_cents: effectivePrice, post_only: postOnly, acknowledged_loud,
       }
       const res = await fetch('/api/orders/place', {
@@ -162,7 +164,7 @@ export default function OrderPanel({
   // Single guarded entry point for every order submission. The ref check is
   // synchronous, so a fast double-click can't fire two mutations before the
   // first re-render disables the buttons.
-  const submit = (vars: { action: Action; acknowledged_loud?: boolean; price_override?: number }) => {
+  const submit = (vars: { action: Action; acknowledged_loud?: boolean; price_override?: number; count_override?: number }) => {
     if (submittingRef.current) return
     submittingRef.current = true
     place.mutate(vars)
@@ -195,6 +197,14 @@ export default function OrderPanel({
       : `You only hold ${heldOnThisSide} ${side.toUpperCase()} — can't sell ${count}.`
     : undefined
 
+  // Quick buttons default to ½ unit (sized at the cross-now price). Sell is
+  // capped at what we actually hold — never try to sell more than the position.
+  const quickBuyCount = contractsForUnits(0.5, quickBuy)
+  const quickSellCount =
+    quickSell === null
+      ? null
+      : Math.min(heldOnThisSide, contractsForUnits(0.5, quickSell) ?? 0) || null
+
   return (
     <div className="rounded-lg border border-border bg-bg-card p-4">
       <h3 className="mb-3 text-sm font-semibold text-text">Place order</h3>
@@ -207,27 +217,43 @@ export default function OrderPanel({
       <div className="mb-3 grid grid-cols-2 gap-2">
         <QuickButton
           label={`Buy ${side.toUpperCase()} now`}
-          subLabel={quickBuy !== null ? `@ ${quickBuy}¢` : 'no ask'}
+          subLabel={
+            quickBuy === null
+              ? 'no ask'
+              : quickBuyCount === null
+              ? `@ ${quickBuy}¢`
+              : `½u · ${quickBuyCount} @ ${quickBuy}¢`
+          }
           disabled={quickBuy === null || place.isPending}
+          resetKey={`${side}:${quickBuy}:${quickBuyCount}`}
           onConfirm={() => {
-            if (quickBuy === null) return
+            if (quickBuy === null || quickBuyCount === null) return
             setPrice(quickBuy)
+            setCount(quickBuyCount)
             holdPrice()
-            submit({ action: 'buy', price_override: quickBuy })
+            submit({ action: 'buy', price_override: quickBuy, count_override: quickBuyCount })
           }}
         />
         <QuickButton
           label={`Sell ${side.toUpperCase()} now`}
           subLabel={
-            !canSell ? 'no position' : quickSell !== null ? `@ ${quickSell}¢` : 'no bid'
+            !canSell
+              ? 'no position'
+              : quickSell === null
+              ? 'no bid'
+              : quickSellCount === null
+              ? `@ ${quickSell}¢`
+              : `½u · ${quickSellCount} @ ${quickSell}¢`
           }
-          disabled={quickSell === null || place.isPending || !canSell}
+          disabled={quickSell === null || quickSellCount === null || place.isPending || !canSell}
           title={sellDisabledReason}
+          resetKey={`${side}:${quickSell}:${quickSellCount}`}
           onConfirm={() => {
-            if (quickSell === null || !canSell) return
+            if (quickSell === null || quickSellCount === null || !canSell) return
             setPrice(quickSell)
+            setCount(quickSellCount)
             holdPrice()
-            submit({ action: 'sell', price_override: quickSell })
+            submit({ action: 'sell', price_override: quickSell, count_override: quickSellCount })
           }}
         />
       </div>
@@ -278,6 +304,7 @@ export default function OrderPanel({
           price={price}
           disabled={place.isPending || previewBuy.data?.verdict === 'hard_refuse'}
           tone="buy"
+          resetKey={`${side}:${count}:${price}`}
           onConfirm={() => submit({ action: 'buy' })}
         />
         <PlaceButton
@@ -288,6 +315,7 @@ export default function OrderPanel({
           }
           title={sellDisabledReason}
           tone="sell"
+          resetKey={`${side}:${count}:${price}`}
           onConfirm={() => submit({ action: 'sell' })}
         />
       </div>
@@ -417,7 +445,7 @@ function NumberField({
 // not arming first, does nothing. `disabled` resets everything.
 const HOLD_MS = 2000
 
-function useHoldToConfirm(onConfirm: () => void, disabled: boolean) {
+function useHoldToConfirm(onConfirm: () => void, disabled: boolean, resetKey: string) {
   const [armed, setArmed] = useState(false)
   const [progress, setProgress] = useState(0) // 0..1 fill while holding
   const rafRef = useRef<number | null>(null)
@@ -436,6 +464,14 @@ function useHoldToConfirm(onConfirm: () => void, disabled: boolean) {
       setArmed(false)
     }
   }, [disabled])
+
+  // Reset whenever what's about to be submitted changes (count, price, side).
+  // An armed confirm must not carry over onto a different order than the user
+  // saw when they armed it.
+  useEffect(() => {
+    cancelHold()
+    setArmed(false)
+  }, [resetKey])
 
   // Clean up any in-flight rAF on unmount.
   useEffect(() => cancelHold, [])
@@ -470,15 +506,16 @@ function useHoldToConfirm(onConfirm: () => void, disabled: boolean) {
 }
 
 function QuickButton({
-  label, subLabel, onConfirm, disabled, title,
+  label, subLabel, onConfirm, disabled, title, resetKey,
 }: {
   label: string
   subLabel: string
   onConfirm: () => void
   disabled: boolean
   title?: string
+  resetKey: string
 }) {
-  const { armed, progress, pressStart, pressEnd } = useHoldToConfirm(onConfirm, disabled)
+  const { armed, progress, pressStart, pressEnd } = useHoldToConfirm(onConfirm, disabled, resetKey)
   return (
     <button
       type="button"
@@ -504,7 +541,7 @@ function QuickButton({
 }
 
 function PlaceButton({
-  label, price, onConfirm, disabled, tone, title,
+  label, price, onConfirm, disabled, tone, title, resetKey,
 }: {
   label: string
   price: number
@@ -512,8 +549,9 @@ function PlaceButton({
   disabled: boolean
   tone: 'buy' | 'sell'
   title?: string
+  resetKey: string
 }) {
-  const { armed, progress, pressStart, pressEnd } = useHoldToConfirm(onConfirm, disabled)
+  const { armed, progress, pressStart, pressEnd } = useHoldToConfirm(onConfirm, disabled, resetKey)
   // Use the dashboard's semantic palette: green for buy (gain side),
   // red for sell (loss side) — matches the rest of the app.
   const cls = tone === 'buy'
