@@ -37,7 +37,18 @@ export default function MatchHeader({
     <header className="space-y-3 rounded-lg border border-border bg-bg-card p-4">
       {detail.league && (
         <div className="text-xs font-semibold uppercase tracking-wide text-action">
-          {detail.league}
+          {detail.league_url ? (
+            <a
+              href={detail.league_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:underline"
+            >
+              {detail.league} ↗
+            </a>
+          ) : (
+            detail.league
+          )}
         </div>
       )}
 

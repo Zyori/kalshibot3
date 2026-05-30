@@ -135,6 +135,7 @@ export type EventDetail = {
   event_title: string | null
   series: string
   league: string | null
+  league_url: string | null
   open_time: string | null
   close_time: string | null
   bucket: 'live' | 'upcoming' | 'recent'

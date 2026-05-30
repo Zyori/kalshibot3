@@ -2,41 +2,259 @@ import { Link, useParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 
 import InlineError from '../components/InlineError'
-import { formatET, formatSignedDollars } from '../lib/format'
+import {
+  formatET,
+  formatMatchClock,
+  formatPriceCents,
+  formatSignedDollars,
+} from '../lib/format'
 import type { Bet, LedgerStats } from '../lib/types'
+
+// The app is soccer-only today (slug is always "soccer"); the feed is
+// already all-soccer, so the Live Games tile shows the whole live block.
+type FeedMarket = {
+  ticker: string
+  event_ticker: string
+  event_title: string
+  yes_sub_title: string | null
+  league: string | null
+  open_time: string | null
+  yes_bid_cents: number | null
+  yes_ask_cents: number | null
+  espn_state: 'pre' | 'in' | 'post' | null
+  espn_period: number | null
+  espn_clock: string | null
+  espn_status_detail: string | null
+  home_name: string | null
+  away_name: string | null
+  home_score: number | null
+  away_score: number | null
+}
+
+type FeedResponse = { live: FeedMarket[] }
+
+type Position = {
+  ticker: string
+  side: 'yes' | 'no'
+  quantity: number
+  avg_entry_price_cents: number | null
+  avg_entry_price: number | null
+  current_price_cents: number | null
+  unrealized_pnl_cents: number | null
+  realized_pnl_cents: number | null
+}
+
+type PositionsResponse = { positions: Position[] }
 
 export default function SportPortal() {
   const { slug } = useParams<{ slug: string }>()
+  const sport = slug ?? 'soccer'
 
   return (
     <div className="space-y-6">
       <header>
-        <h2 className="text-lg font-semibold text-text capitalize">{slug ?? 'sport'}</h2>
+        <h2 className="text-lg font-semibold text-text capitalize">{sport}</h2>
         <p className="mt-1 text-sm text-text-muted">
-          Sport-specific portal. Other sections (suggestions, live games, news) land
-          with Phase 4. History below is wired now.
+          Live games and your open positions. Suggestions, markets, and news land later.
         </p>
       </header>
 
-      <PlaceholderGrid />
+      <div className="grid gap-4 md:grid-cols-2">
+        <LiveGamesTile />
+        <OpenPositionsTile />
+        <PlaceholderTile title="Markets" note="Browse the full feed →" to="/" />
+        <PlaceholderTile title="Suggested Bets" note="Coming soon." />
+        <PlaceholderTile title="News" note="Coming soon." />
+      </div>
 
-      <HistorySection sport={slug ?? 'soccer'} />
+      <HistorySection sport={sport} />
     </div>
   )
 }
 
-function PlaceholderGrid() {
-  const sections = ['Suggested Bets', 'Live Games', 'Markets', 'Open Positions', 'News']
+function Tile({
+  title,
+  count,
+  children,
+}: {
+  title: string
+  count?: number
+  children: React.ReactNode
+}) {
   return (
-    <div className="grid gap-4 md:grid-cols-2">
-      {sections.map((title) => (
-        <div key={title} className="rounded-lg border border-border bg-bg-card p-4">
-          <h3 className="text-sm font-semibold text-text">{title}</h3>
-          <p className="mt-2 text-xs text-text-muted">Coming soon.</p>
-        </div>
-      ))}
+    <div className="rounded-lg border border-border bg-bg-card p-4">
+      <div className="mb-2 flex items-baseline justify-between">
+        <h3 className="text-sm font-semibold text-text">{title}</h3>
+        {count !== undefined && (
+          <span className="text-xs text-text-muted">{count}</span>
+        )}
+      </div>
+      {children}
     </div>
   )
+}
+
+function PlaceholderTile({
+  title,
+  note,
+  to,
+}: {
+  title: string
+  note: string
+  to?: string
+}) {
+  return (
+    <Tile title={title}>
+      {to ? (
+        <Link to={to} className="text-xs text-action hover:underline">
+          {note}
+        </Link>
+      ) : (
+        <p className="text-xs text-text-muted">{note}</p>
+      )}
+    </Tile>
+  )
+}
+
+function LiveGamesTile() {
+  const { data, isPending, isError } = useQuery<FeedResponse>({
+    queryKey: ['markets-feed'],
+    queryFn: async () => {
+      const res = await fetch('/api/markets/feed')
+      if (!res.ok) throw new Error(`feed: ${res.status}`)
+      return res.json()
+    },
+    refetchInterval: 30_000,
+  })
+
+  // One row per event (the feed is per-market — 3 rows for a 3-way moneyline).
+  const events = groupLiveByEvent(data?.live ?? [])
+
+  return (
+    <Tile title="Live Games" count={isPending ? undefined : events.length}>
+      {isError ? (
+        <InlineError message="Couldn't load live games." />
+      ) : isPending ? (
+        <p className="text-xs text-text-muted">Loading…</p>
+      ) : events.length === 0 ? (
+        <p className="text-xs text-text-muted">No matches currently in play.</p>
+      ) : (
+        <ul className="space-y-1">
+          {events.map((e) => (
+            <li key={e.event_ticker}>
+              <Link
+                to={`/event/${encodeURIComponent(e.event_ticker)}`}
+                className="flex items-baseline justify-between gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-bg-hover"
+              >
+                <span className="min-w-0 truncate text-text">{e.event_title}</span>
+                <span className="flex shrink-0 items-baseline gap-2 tabular-nums">
+                  {e.home_score !== null && e.away_score !== null && (
+                    <span className="font-mono font-semibold text-text">
+                      {e.home_score}–{e.away_score}
+                    </span>
+                  )}
+                  <span className="font-semibold text-action">{e.clock}</span>
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Tile>
+  )
+}
+
+type LiveEvent = {
+  event_ticker: string
+  event_title: string
+  home_score: number | null
+  away_score: number | null
+  clock: string
+}
+
+function groupLiveByEvent(rows: FeedMarket[]): LiveEvent[] {
+  const seen = new Map<string, LiveEvent>()
+  for (const m of rows) {
+    if (seen.has(m.event_ticker)) continue
+    const clock =
+      formatMatchClock(
+        m.espn_state,
+        m.espn_period,
+        m.espn_clock,
+        m.espn_status_detail,
+        m.open_time,
+      ) ?? formatET(m.open_time)
+    seen.set(m.event_ticker, {
+      event_ticker: m.event_ticker,
+      event_title: m.event_title,
+      home_score: m.home_score,
+      away_score: m.away_score,
+      clock,
+    })
+  }
+  return Array.from(seen.values())
+}
+
+function OpenPositionsTile() {
+  const { data, isPending, isError } = useQuery<PositionsResponse>({
+    queryKey: ['positions'],
+    queryFn: async () => {
+      const res = await fetch('/api/positions')
+      if (!res.ok) throw new Error(`/api/positions: ${res.status}`)
+      return res.json()
+    },
+    refetchInterval: 10_000,
+  })
+
+  const positions = data?.positions ?? []
+
+  return (
+    <Tile title="Open Positions" count={isPending ? undefined : positions.length}>
+      {isError ? (
+        <InlineError message="Couldn't load positions." />
+      ) : isPending ? (
+        <p className="text-xs text-text-muted">Loading…</p>
+      ) : positions.length === 0 ? (
+        <p className="text-xs text-text-muted">No open positions.</p>
+      ) : (
+        <ul className="space-y-1">
+          {positions.map((p) => {
+            const pnl = p.unrealized_pnl_cents
+            const tone =
+              pnl === null ? 'text-text-muted' : pnl >= 0 ? 'text-gain' : 'text-loss'
+            return (
+              <li key={`${p.ticker}:${p.side}`}>
+                <Link
+                  to={`/event/${encodeURIComponent(eventTickerOf(p.ticker))}?market=${encodeURIComponent(p.ticker)}`}
+                  className="flex items-baseline justify-between gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-bg-hover"
+                >
+                  <span className="min-w-0 truncate font-mono text-text-muted">
+                    {p.ticker}
+                  </span>
+                  <span className="flex shrink-0 items-baseline gap-2 tabular-nums">
+                    <span className="font-mono text-text">
+                      {p.side.toUpperCase()} {p.quantity} @{' '}
+                      {formatPriceCents(p.avg_entry_price ?? p.avg_entry_price_cents)}
+                    </span>
+                    <span className={`font-mono ${tone}`}>
+                      {pnl === null ? '—' : formatSignedDollars(pnl)}
+                    </span>
+                  </span>
+                </Link>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </Tile>
+  )
+}
+
+// A market ticker is "{EVENT}-{OUTCOME}"; the event ticker is everything
+// before the last hyphen segment. Used to deep-link a position to its event.
+function eventTickerOf(marketTicker: string): string {
+  const i = marketTicker.lastIndexOf('-')
+  return i === -1 ? marketTicker : marketTicker.slice(0, i)
 }
 
 function HistorySection({ sport }: { sport: string }) {
@@ -80,10 +298,7 @@ function HistorySection({ sport }: { sport: string }) {
 
       {s && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Stat
-            label="Bets"
-            value={String(s.total_bets)}
-          />
+          <Stat label="Bets" value={String(s.total_bets)} />
           <Stat
             label="Net P&L"
             value={formatSignedDollars(s.total_net_pnl_cents)}
@@ -129,7 +344,8 @@ function HistorySection({ sport }: { sport: string }) {
                 <div className="text-[10px] text-text-muted">{formatET(b.placed_at)}</div>
               </div>
               <div className="font-mono tabular-nums text-text">
-                {b.side.toUpperCase()} {b.quantity} @ {b.entry_price_cents}¢
+                {b.side.toUpperCase()} {b.quantity} @{' '}
+                {formatPriceCents(b.entry_price ?? b.entry_price_cents)}
               </div>
               <div
                 className={`font-mono tabular-nums ${

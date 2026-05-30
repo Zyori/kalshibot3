@@ -168,10 +168,19 @@ export function outcomeLabel(yes_sub_title: string | null | undefined): string {
  */
 export function formatET(
   iso: string | null | undefined,
-  opts: { dateOnly?: boolean } = {},
+  opts: { dateOnly?: boolean; timeOnly?: boolean } = {},
 ): string {
   if (!iso) return ''
   const d = new Date(iso)
+  if (opts.timeOnly) {
+    // For intra-match axes where every point is the same day — show the
+    // clock (e.g. "2:45 PM") instead of repeating "May 30" on every tick.
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: ET_TZ,
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(d)
+  }
   if (opts.dateOnly) {
     return new Intl.DateTimeFormat('en-US', {
       timeZone: ET_TZ,

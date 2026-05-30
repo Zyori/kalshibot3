@@ -27,7 +27,7 @@ from src.core.logging import get_logger
 from src.core.types import utc_iso
 from src.ingestion.espn_scoreboard import EspnEvent, MatchEvent, TeamStats
 from src.models import Market, Position
-from src.sports.soccer import is_soccer_ticker, league_display_name
+from src.sports.soccer import is_soccer_ticker, kalshi_category_url, league_display_name
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -174,6 +174,7 @@ async def get_event(
         "event_title": head.event_title,
         "series": head.series,
         "league": league_display_name(head.series),
+        "league_url": kalshi_category_url(head.series),
         "open_time": utc_iso(head.open_time),
         "close_time": utc_iso(head.close_time),
         "bucket": head.bucket,

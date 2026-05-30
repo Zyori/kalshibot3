@@ -157,11 +157,37 @@ SOCCER_ESPN_SLUGS: dict[str, str | None] = {
 }
 
 
+# Kalshi series prefix → path under kalshi.com/category/sports/soccer/ for
+# the league's category page. The path is NOT derivable from the prefix or
+# display name — Kalshi's slugs are inconsistent (some have a /game or /games
+# suffix, some don't, World Cup nests two segments), so each is hand-verified
+# from the live site. Populate as confirmed; an absent entry renders the
+# league name as plain text (no link) rather than risk a broken URL.
+KALSHI_CATEGORY_PATH: dict[str, str] = {
+    "KXNWSLGAME": "nwsl/game",
+    "KXUSLGAME": "usl-championship",
+    "KXLALIGA2GAME": "la-liga-2",
+    "KXINTLFRIENDLYGAME": "intl-friendlies",
+    "KXWCGAME": "fifa-world-cup/world-cup/games",
+}
+
+_KALSHI_CATEGORY_BASE = "https://kalshi.com/category/sports/soccer"
+
+
 def league_display_name(series: str | None) -> str | None:
     """Map a Kalshi series prefix to its display name. Unknown → None."""
     if series is None:
         return None
     return SOCCER_GAME_SERIES_NAMES.get(series)
+
+
+def kalshi_category_url(series: str | None) -> str | None:
+    """Full URL to the league's Kalshi category page, or None when we don't
+    have a hand-verified path for this series (caller renders plain text)."""
+    if series is None:
+        return None
+    path = KALSHI_CATEGORY_PATH.get(series)
+    return f"{_KALSHI_CATEGORY_BASE}/{path}" if path else None
 
 
 def espn_slug_for(series: str | None) -> str | None:
