@@ -11,6 +11,11 @@ type PositionsResponse = {
 type Side = 'yes' | 'no'
 type Action = 'buy' | 'sell'
 
+// How long a user-entered price is protected from market auto-follow. Long
+// enough to type + click without the box moving under you; short enough that
+// a forgotten stale price resumes tracking the market.
+const PRICE_HOLD_MS = 60_000
+
 type PreviewResponse = {
   verdict: 'ok' | 'soft_warn' | 'loud_confirm' | 'hard_refuse'
   reasons: string[]
@@ -63,16 +68,36 @@ export default function OrderPanel({
   // ref flips synchronously inside the click handler and resets in onSettled.
   const submittingRef = useRef(false)
 
-  // Snap the typed price to the current ask whenever the user picks a
-  // side (or when the book first arrives). After the user manually edits
-  // the price field, we stop fighting them — typing a custom price marks
-  // it "touched" and we leave it alone until they click YES/NO again, which
-  // resets the touched flag and re-snaps to the new side's ask.
-  const [priceTouched, setPriceTouched] = useState(false)
+  // The manual Price box auto-follows the live market — but only while the
+  // user isn't actively setting it. Once they type (or a quick button fills
+  // it), that value is theirs and we freeze auto-follow for PRICE_HOLD_MS so
+  // a market tick can't stomp a deliberately-entered price mid-edit. After
+  // the hold expires, auto-follow resumes so a stale hand-typed number
+  // doesn't sit there all game. Switching YES/NO clears the hold (null) to
+  // re-snap immediately to the new side.
+  //
+  // We follow the MIDPOINT, not the ask: this row is direction-neutral (one
+  // price, then Buy or Sell), so snapping to the ask made both Place buttons
+  // look ask-priced. The quick buttons above own the cross-now prices.
+  const [priceHeldAt, setPriceHeldAt] = useState<number | null>(null)
+  const holdPrice = () => setPriceHeldAt(Date.now())
+  const sideBid = bestBid(book, side)
   const sideAsk = bestAsk(book, side)
+  const sideMid =
+    sideBid !== null && sideAsk !== null
+      ? Math.round((sideBid + sideAsk) / 2)
+      : sideAsk ?? sideBid
   useEffect(() => {
-    if (!priceTouched && sideAsk !== null) setPrice(sideAsk)
-  }, [sideAsk, priceTouched])
+    const held = priceHeldAt !== null && Date.now() - priceHeldAt < PRICE_HOLD_MS
+    if (!held && sideMid !== null) setPrice(sideMid)
+    // Re-arm once the hold window lapses, even on a quiet book that isn't
+    // ticking sideMid. Without this, a hand-typed price during a still book
+    // would never resume auto-follow.
+    if (held) {
+      const t = setTimeout(() => setPriceHeldAt(null), PRICE_HOLD_MS - (Date.now() - priceHeldAt!))
+      return () => clearTimeout(t)
+    }
+  }, [sideMid, priceHeldAt])
 
   // Preview is keyed by action too. We run a preview per direction so each
   // submit button can show its own warning state without an extra round-trip
@@ -174,7 +199,7 @@ export default function OrderPanel({
       <h3 className="mb-3 text-sm font-semibold text-text">Place order</h3>
 
       <div className="mb-3">
-        <Toggle value={side} onChange={(v) => { setSide(v); setPriceTouched(false) }}
+        <Toggle value={side} onChange={(v) => { setSide(v); setPriceHeldAt(null) }}
           options={[{ label: 'YES', value: 'yes' }, { label: 'NO', value: 'no' }]} />
       </div>
 
@@ -186,7 +211,7 @@ export default function OrderPanel({
           onClick={() => {
             if (quickBuy === null) return
             setPrice(quickBuy)
-            setPriceTouched(true)
+            holdPrice()
             submit({ action: 'buy', price_override: quickBuy })
           }}
         />
@@ -200,7 +225,7 @@ export default function OrderPanel({
           onClick={() => {
             if (quickSell === null || !canSell) return
             setPrice(quickSell)
-            setPriceTouched(true)
+            holdPrice()
             submit({ action: 'sell', price_override: quickSell })
           }}
         />
@@ -215,7 +240,7 @@ export default function OrderPanel({
         <NumberField
           label="Price (¢)"
           value={price}
-          onChange={(v) => { setPrice(v); setPriceTouched(true) }}
+          onChange={(v) => { setPrice(v); holdPrice() }}
           min={1}
           max={99}
         />
