@@ -46,7 +46,7 @@ export default function CombinedPriceChart({ markets }: { markets: ChildMarket[]
     queries: markets.map((m) => ({
       queryKey: ['trades', m.ticker],
       queryFn: async (): Promise<TradesResponse> => {
-        const res = await fetch(`/api/markets/${encodeURIComponent(m.ticker)}/trades?limit=500`)
+        const res = await fetch(`/api/markets/${encodeURIComponent(m.ticker)}/trades`)
         if (!res.ok) throw new Error(`trades: ${res.status}`)
         return res.json()
       },

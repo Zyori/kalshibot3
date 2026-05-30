@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Request
 from src.core.logging import get_logger
 from src.core.types import dollars_str_to_cents as _dollar_str_to_cents, utc_iso
 from src.kalshi.rest import KalshiRestClient
+from src.kalshi.trade_history import downsample, fetch_all_trades
 from src.sports.soccer import is_soccer_ticker, league_display_name
 
 
@@ -189,41 +190,89 @@ def _find_in_feed(feed: Any, ticker: str) -> Any:
     return None
 
 
-@router.get("/markets/{ticker}/trades")
-async def get_trades(ticker: str, limit: int = 500) -> dict[str, Any]:
-    """Recent trades for the price-history chart.
+# Target render points per line after downsampling. ~300 keeps Recharts
+# smooth on a 3-way event (~900 points total) while preserving swings via
+# the extrema-keeping downsampler. See kalshi/trade_history.py.
+_CHART_POINTS = 300
 
-    We hit Kalshi REST directly (not LiveState — we don't mirror trade
-    history) and normalize the wire format here: dollar strings → cents,
-    timestamps → ISO. Limit is capped at 1000 so the chart load stays fast.
+# Show the chart from a touch before kickoff so the left edge carries the
+# pre-match price, not a line that starts mid-first-half. 30 min catches the
+# pre-game drift without dragging in stale overnight trades.
+_PREKICK_PAD_S = 30 * 60
+
+
+@router.get("/markets/{ticker}/trades")
+async def get_trades(ticker: str, request: Request) -> dict[str, Any]:
+    """Whole-match trade history for the price-history chart.
+
+    Pages Kalshi's cursor for the full trade history, normalizes the wire
+    format here (dollar strings → cents), trims to kickoff, then downsamples
+    to a bounded render budget. Scoping to kickoff rather than a trailing
+    trade count is what keeps a long game's early history from disappearing
+    off the left of the chart — every line spans the same range.
+
+    Kickoff comes from the discovery feed's `open_time`. When it's unknown
+    (ticker not in the feed) we keep the full fetched history rather than
+    guess a cutoff.
     """
     if not is_soccer_ticker(ticker):
         raise HTTPException(status_code=400, detail=f"{ticker} is not a soccer market")
 
-    limit = max(1, min(limit, 1000))
-    trades: list[dict[str, Any]] = []
+    cutoff_ts = _kickoff_cutoff_ts(request, ticker)
+
     async with KalshiRestClient() as client:
         try:
-            data = await client.get_trades(ticker, limit=limit)
+            raw = await fetch_all_trades(client, ticker)
         except Exception as e:  # noqa: BLE001
             log.warning("get_trades_failed", ticker=ticker, error=str(e)[:200])
             raise HTTPException(status_code=502, detail=f"kalshi trades fetch failed: {e}") from e
 
-    for t in data.get("trades", []):
+    trades: list[dict[str, Any]] = []
+    for t in raw:
         yes_raw = t.get("yes_price_dollars") or t.get("yes_price")
         if yes_raw is None:
+            continue
+        ts = t.get("created_time")
+        # Trim to kickoff client-side: Kalshi's documented min_ts filter on
+        # /markets/trades is silently ignored by the live API (verified
+        # 2026-05-30), so the lower bound has to be applied here.
+        if cutoff_ts is not None and ts is not None and _iso_to_epoch(ts) < cutoff_ts:
             continue
         yes_cents = _dollar_str_to_cents(yes_raw) if isinstance(yes_raw, str) else int(yes_raw)
         count_raw = t.get("count_fp") or t.get("count") or 0
         count = int(float(count_raw))
         trades.append({
             "trade_id": t.get("trade_id"),
-            "ts": t.get("created_time"),
+            "ts": ts,
             "yes_price": yes_cents,
             "count": count,
             "taker_side": t.get("taker_side"),
         })
 
-    # Kalshi returns newest first; chart wants oldest first.
+    # Kalshi returns newest first; chart wants oldest first. Downsample after
+    # ordering so the extrema-keeping logic sees a chronological series.
     trades.reverse()
+    trades = downsample(trades, _CHART_POINTS)
     return {"ticker": ticker, "trades": trades}
+
+
+def _kickoff_cutoff_ts(request: Request, ticker: str) -> int | None:
+    """Epoch-seconds lower bound for the chart: kickoff minus a pad.
+
+    None when the supervisor isn't up or the ticker isn't in the discovery
+    feed — the caller then keeps the full fetched history."""
+    supervisor = getattr(request.app.state, "supervisor", None)
+    if supervisor is None:
+        return None
+    meta = _find_in_feed(supervisor.market_discovery.get_feed(), ticker)
+    if meta is None or meta.open_time is None:
+        return None
+    kickoff = meta.open_time
+    if kickoff.tzinfo is None:
+        kickoff = kickoff.replace(tzinfo=timezone.utc)
+    return int(kickoff.timestamp()) - _PREKICK_PAD_S
+
+
+def _iso_to_epoch(ts: str) -> float:
+    """Parse a Kalshi 'Z'-suffixed ISO timestamp to epoch seconds."""
+    return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()

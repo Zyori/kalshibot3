@@ -281,9 +281,12 @@ class KalshiRestClient:
         *,
         limit: int = 200,
         cursor: str | None = None,
-        min_ts: int | None = None,
     ) -> dict[str, Any]:
         """Recent trades for one market. Used to render the price history chart.
+
+        No `min_ts`: the param is documented on /markets/trades but the live
+        API silently ignores it (verified 2026-05-30), so the price-history
+        route trims to kickoff client-side instead. Paginate with `cursor`.
 
         Kalshi returns prices as dollar strings; conversion to cents happens
         at the route boundary (not here) so this raw helper stays small.
@@ -291,8 +294,6 @@ class KalshiRestClient:
         params: dict[str, Any] = {"ticker": ticker, "limit": limit}
         if cursor:
             params["cursor"] = cursor
-        if min_ts is not None:
-            params["min_ts"] = min_ts
         return await self._request("GET", "/markets/trades", params=params)
 
     async def get_events(

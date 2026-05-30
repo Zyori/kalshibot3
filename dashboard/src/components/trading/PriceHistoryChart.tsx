@@ -25,20 +25,20 @@ type TradesResponse = {
 }
 
 /**
- * Recent trade history for one market. Y-axis is YES price in cents (always
- * 1–99 range for Kalshi binary contracts); X-axis is trade index since the
- * trade timestamps are irregular and a time-based axis would compress
- * recent activity awkwardly.
+ * Whole-match trade history for one market. Y-axis is YES price in cents
+ * (always 1–99 range for Kalshi binary contracts); X-axis is point index
+ * since the trade timestamps are irregular and a time-based axis would
+ * compress recent activity awkwardly.
  *
- * Trades reload every 30s from REST. Real-time fill data on this same
- * market would flow through the WS (chunk 12 connects them) but for now
- * the polled snapshot is fine for the chart.
+ * The endpoint scopes to kickoff→now and downsamples server-side, so the
+ * series is bounded regardless of how long the game runs. Reloads every 30s
+ * from REST.
  */
 export default function PriceHistoryChart({ ticker }: { ticker: string }) {
   const { data, isPending, isError } = useQuery<TradesResponse>({
     queryKey: ['trades', ticker],
     queryFn: async () => {
-      const res = await fetch(`/api/markets/${encodeURIComponent(ticker)}/trades?limit=500`)
+      const res = await fetch(`/api/markets/${encodeURIComponent(ticker)}/trades`)
       if (!res.ok) throw new Error(`trades: ${res.status}`)
       return res.json()
     },
