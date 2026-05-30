@@ -23,13 +23,10 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from src.core.types import dollars_str_to_cents as _dollars_str_to_cents
+
 
 # === Helpers ===
-
-def _dollars_str_to_cents(s: str) -> int:
-    """Kalshi WS sends "0.42" — convert to 42 (cents). Banker's rounding."""
-    return int(round(float(s) * 100))
-
 
 def _parse_optional_price_cents(raw: Any) -> int | None:
     """Accept either a Kalshi dollar-string ("0.42"), an int already in

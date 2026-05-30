@@ -5,7 +5,8 @@ backend/src/ingestion/kalshi_ws.py) and adds V1's personal channels (fill,
 user_orders).
 
 Architecture:
-  - One long-lived async task: kalshi_ws_consumer()
+  - Driven by one long-lived async task (Supervisor._ws_consumer_loop), which
+    owns the connect/listen/backoff-reconnect loop around this client.
   - On connect: subscribe to orderbook_delta (per ticker list), fill (no
     market list — account-wide), user_orders (account-wide)
   - Each message → parse → update LiveState → put on an asyncio.Queue for
@@ -58,7 +59,7 @@ SUBSCRIBE_BATCH_SIZE = 100
 class KalshiWsClient:
     """One connection, owns the subscription set, applies messages to LiveState.
 
-    Reconnect / backoff logic lives in `kalshi_ws_consumer()` below — this
+    Reconnect / backoff logic lives in Supervisor._ws_consumer_loop — this
     class is just the connection lifecycle and message dispatch.
     """
 
@@ -355,41 +356,3 @@ class KalshiWsClient:
         if self._ws is not None:
             await self._ws.close()
             self._ws = None
-
-
-async def kalshi_ws_consumer(
-    live_state: LiveState,
-    broadcast_queue: asyncio.Queue[KalshiWsMessage] | None = None,
-    initial_tickers: Iterable[str] = (),
-) -> None:
-    """Long-running task. Connects, listens, reconnects with exponential backoff.
-
-    The orchestrator (supervisor.py) starts one of these and never cancels it
-    except on shutdown. State persists in the client instance across the loop.
-    """
-    client = KalshiWsClient(live_state, broadcast_queue=broadcast_queue)
-    if initial_tickers:
-        client._market_tickers = set(initial_tickers)
-
-    attempt = 0
-    while True:
-        try:
-            await client.connect()
-            attempt = 0  # reset on a successful connect
-            await client.listen()
-        except websockets.ConnectionClosed as e:
-            log.warning("kalshi_ws_closed", code=e.code, reason=str(e.reason))
-        except asyncio.CancelledError:
-            # Shutdown — propagate.
-            log.info("kalshi_ws_cancelled")
-            await client.close()
-            raise
-        except Exception:  # noqa: BLE001
-            log.exception("kalshi_ws_error")
-        finally:
-            live_state.connected = False
-
-        delay = min(BACKOFF_BASE_S * (2 ** attempt), BACKOFF_MAX_S)
-        attempt += 1
-        log.info("kalshi_ws_reconnecting", attempt=attempt, delay_s=round(delay, 1))
-        await asyncio.sleep(delay)

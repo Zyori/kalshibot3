@@ -92,7 +92,6 @@ class MarketRefresher:
         """ticker -> seconds-to-kickoff at last classification. Used to pick
         the next interval from `far_poll_interval`."""
         self._stopped = False
-        self._task: asyncio.Task | None = None
         self._tick_event = asyncio.Event()
         """Set by `refresh_now` to wake the tick loop early."""
         self._last_resync_at: dict[str, float] = {}

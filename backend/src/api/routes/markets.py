@@ -19,14 +19,10 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 
 from src.core.logging import get_logger
-from src.core.types import utc_iso
+from src.core.types import dollars_str_to_cents as _dollar_str_to_cents, utc_iso
 from src.kalshi.rest import KalshiRestClient
 from src.sports.soccer import is_soccer_ticker, league_display_name
 
-
-def _dollar_str_to_cents(s: str) -> int:
-    """Kalshi sends "0.84" — convert to 84."""
-    return int(round(float(s) * 100))
 
 router = APIRouter()
 log = get_logger(__name__)

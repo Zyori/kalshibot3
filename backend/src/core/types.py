@@ -49,6 +49,15 @@ Cents = NewType("Cents", int)
 Contracts = NewType("Contracts", int)
 """Count of Kalshi contracts. Always a non-negative integer."""
 
+
+def dollars_str_to_cents(s: str) -> int:
+    """Kalshi wire dollar string ('0.6600', '0.42') → integer cents (66, 42).
+
+    The single dollar→cents converter for every Kalshi wire boundary
+    (schemas.py REST, ws_wire.py WS, the markets route). Money is integer
+    cents everywhere past this point — this is the one place dollars exist."""
+    return int(round(float(s) * 100))
+
 BasisPoints = NewType("BasisPoints", int)
 """Hundredths of a percent. 10000 = 100%, 25 = 0.25%."""
 

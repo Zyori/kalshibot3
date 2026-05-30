@@ -22,6 +22,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.core.types import dollars_str_to_cents as _dollar_str_to_cents
+
 
 # === Conversion helpers — single source of truth ===
 
@@ -136,9 +138,6 @@ class Orderbook(WireModelLoose):
     no: list[OrderbookLevel] = Field(default_factory=list)
 
 
-def _dollar_str_to_cents(s: str) -> int:
-    """'0.6600' → 66. 'orderbook_fp' uses 4-decimal dollar strings."""
-    return int(round(float(s) * 100))
 
 
 def _level_count_from_notional(price_cents: int, notional_dollars_str: str) -> int:

@@ -10,7 +10,7 @@ See `docs/plans/2026-05-25-001-feat-kalshi-betting-assistant-dashboard-plan.md` 
 
 ## Hard rules
 
-1. **Money is integer cents, everywhere.** Never floats, never `Decimal`. Dollar-to-cents conversion happens at the Kalshi wire boundary in `backend/src/kalshi/schemas.py` and nowhere else. The rest of the codebase trusts that prices in the DB and in app memory are cents (1–99 for Kalshi contracts).
+1. **Money is integer cents, everywhere.** Never floats, never `Decimal`. The single dollar-to-cents converter is `dollars_str_to_cents` in `backend/src/core/types.py`; every Kalshi wire boundary (REST `schemas.py`, WS `ws_wire.py`, the markets route) imports it — no other module redefines the conversion. The rest of the codebase trusts that prices in the DB and in app memory are cents (1–99 for Kalshi contracts). (Orderbook *quantities* are contract counts, not money — they may be fractional in transit on the WS delta stream; see `ws_wire.OrderbookDeltaPayload.delta`.)
 2. **Single source of truth.** Each piece of data has exactly one canonical home. Kalshi is the source of truth for positions and fills — our DB mirrors it. The DB is the source of truth for our ledger metadata (reasoning, tags). The frontend reads, never invents.
 3. **No dead code, no duplicate functions, no commented-out blocks.** If a thing was useful, it's in git history. Delete don't comment.
 4. **Bind to 127.0.0.1 only.** Localhost is the authentication mechanism. Never `0.0.0.0`. CORS is whitelisted to `http://localhost:5173`, not `*`.
