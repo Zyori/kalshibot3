@@ -132,7 +132,7 @@ class Bet(Base):
     game_clock: Mapped[str | None] = mapped_column(String(16))
 
     # === Flexible tags + audit fields ===
-    tags: Mapped[dict | None] = mapped_column(JSON)
+    tags: Mapped[list[str] | None] = mapped_column(JSON)
     metadata_edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     """Set when reflective fields (strategy/source/timing/confidence/tags/
     human_reasoning) are edited after placement. NULL means never edited."""

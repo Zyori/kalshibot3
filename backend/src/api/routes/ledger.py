@@ -466,10 +466,8 @@ async def list_tags(
     for row in rows:
         if not row:
             continue
-        # tags is typed as dict | None on the column but we store list[str].
-        # Be defensive: accept either shape, ignore anything else.
-        items = row if isinstance(row, list) else []
-        for t in items:
-            if isinstance(t, str) and t.strip():
+        # row is the JSON column value — a list[str], or None when unset.
+        for t in row:
+            if t and t.strip():
                 seen.add(t.strip())
     return {"tags": sorted(seen)}
