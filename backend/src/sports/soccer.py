@@ -34,11 +34,8 @@ SOCCER_GAME_SERIES_NAMES: dict[str, str] = {
     "KXSCOTTISHPREMGAME": "Scottish Premiership",
     "KXSWISSLEAGUEGAME": "Swiss Super League",
     "KXSUPERLIGGAME": "Süper Lig",
-    "KXCZEFLGAME": "Czech First League",
-    "KXEKSTRAKLASAGAME": "Ekstraklasa",
     "KXDENSUPERLIGAGAME": "Danish Superliga",
     "KXSLGREECEGAME": "Greek Super League",
-    "KXHNLGAME": "Croatia HNL",
     "KXEWSLGAME": "Women's Super League",
     # English domestic cups & second tier
     "KXEFLCHAMPIONSHIPGAME": "EFL Championship",
@@ -52,7 +49,6 @@ SOCCER_GAME_SERIES_NAMES: dict[str, str] = {
     "KXMLSGAME": "MLS",
     "KXNWSLGAME": "NWSL",
     "KXUSLGAME": "USL Championship",
-    "KXCANPLGAME": "Canadian Premier League",
     "KXUSOPENCUPGAME": "US Open Cup",
     "KXLIGAMXGAME": "Liga MX",
     "KXARGPREMDIVGAME": "Argentina Primera División",
@@ -69,25 +65,19 @@ SOCCER_GAME_SERIES_NAMES: dict[str, str] = {
     "KXAPFDDHGAME": "Paraguay División de Honor",
     # Asia / Oceania / MENA
     "KXJLEAGUEGAME": "J League",
-    "KXKLEAGUEGAME": "K League",
     "KXCHNSLGAME": "Chinese Super League",
     "KXALEAGUEGAME": "A-League",
     "KXSAUDIPLGAME": "Saudi Pro League",
-    "KXUAEPLGAME": "UAE Pro League",
     # UEFA competitions
     "KXUCLGAME": "Champions League",
     "KXUELGAME": "Europa League",
     "KXUECLGAME": "Conference League",
-    "KXUCLWGAME": "Champions League (Women)",
-    "KXUEFAGAME": "UEFA",
     # FIFA / international
     "KXWCGAME": "World Cup",
     "KXCLUBWCGAME": "Club World Cup",
     "KXFIFAGAME": "FIFA Friendly",
     "KXFIFAUSPULLGAME": "FIFA US Pull Game",
     "KXINTLFRIENDLYGAME": "International Friendly",
-    # Other / niche
-    "KXBALLERLEAGUEGAME": "Baller League",
 }
 
 # Tuple form for code that just needs to iterate the prefixes
@@ -120,11 +110,8 @@ SOCCER_ESPN_SLUGS: dict[str, str | None] = {
     "KXSCOTTISHPREMGAME": "sco.1",
     "KXSWISSLEAGUEGAME": "sui.1",
     "KXSUPERLIGGAME": "tur.1",
-    "KXCZEFLGAME": None,         # ESPN 400 on cze.1
-    "KXEKSTRAKLASAGAME": None,   # ESPN 400 on pol.1
     "KXDENSUPERLIGAGAME": "den.1",
     "KXSLGREECEGAME": "gre.1",
-    "KXHNLGAME": None,           # ESPN 400 on cro.1
     "KXEWSLGAME": "eng.w.1",
     # English domestic cups & second tier
     "KXEFLCHAMPIONSHIPGAME": "eng.2",
@@ -138,7 +125,6 @@ SOCCER_ESPN_SLUGS: dict[str, str | None] = {
     "KXMLSGAME": "usa.1",
     "KXNWSLGAME": "usa.nwsl",
     "KXUSLGAME": "usa.usl.1",
-    "KXCANPLGAME": None,         # ESPN 400 on can.1
     "KXUSOPENCUPGAME": "usa.open",
     "KXLIGAMXGAME": "mex.1",
     "KXARGPREMDIVGAME": "arg.1",
@@ -155,25 +141,19 @@ SOCCER_ESPN_SLUGS: dict[str, str | None] = {
     "KXAPFDDHGAME": "par.1",
     # Asia / Oceania / MENA
     "KXJLEAGUEGAME": "jpn.1",
-    "KXKLEAGUEGAME": None,       # ESPN 400 on kor.1
     "KXCHNSLGAME": "chn.1",
     "KXALEAGUEGAME": "aus.1",
     "KXSAUDIPLGAME": "ksa.1",
-    "KXUAEPLGAME": None,         # ESPN 400 on uae.1
     # UEFA competitions
     "KXUCLGAME": "uefa.champions",
     "KXUELGAME": "uefa.europa",
     "KXUECLGAME": "uefa.europa.conf",
-    "KXUCLWGAME": None,          # ESPN 400 on uefa.champions_women
-    "KXUEFAGAME": None,          # generic UEFA — no single ESPN slug
     # FIFA / international
     "KXWCGAME": "fifa.world",
     "KXCLUBWCGAME": "fifa.cwc",
     "KXFIFAGAME": "fifa.friendly",
     "KXFIFAUSPULLGAME": None,
     "KXINTLFRIENDLYGAME": "fifa.friendly",
-    # Other / niche
-    "KXBALLERLEAGUEGAME": None,
 }
 
 
