@@ -503,34 +503,6 @@ function QuickButton({
   )
 }
 
-function PlaceButton({
-  label, price, onClick, disabled, tone, title,
-}: {
-  label: string
-  price: number
-  onClick: () => void
-  disabled: boolean
-  tone: 'buy' | 'sell'
-  title?: string
-}) {
-  // Use the dashboard's semantic palette: green for buy (gain side),
-  // red for sell (loss side) — matches the rest of the app.
-  const cls = tone === 'buy'
-    ? 'border-gain bg-gain text-bg'
-    : 'border-loss bg-loss text-bg'
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className={`rounded-md border px-3 py-2 text-sm font-semibold hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 ${cls}`}
-    >
-      {label} @ {price}¢
-    </button>
-  )
-}
-
 function PreviewReasons({
   direction, preview,
 }: {
