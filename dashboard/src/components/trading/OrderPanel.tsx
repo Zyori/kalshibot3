@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import type { MarketBook } from '../../contexts/WebSocketProvider'
 import { bestAsk, bestBid } from '../../lib/book'
+import { contractsForUnits } from '../../lib/units'
 
 type PositionsResponse = {
   positions: Array<{ ticker: string; side: 'yes' | 'no'; quantity: number }>
@@ -208,7 +209,7 @@ export default function OrderPanel({
           label={`Buy ${side.toUpperCase()} now`}
           subLabel={quickBuy !== null ? `@ ${quickBuy}¢` : 'no ask'}
           disabled={quickBuy === null || place.isPending}
-          onClick={() => {
+          onConfirm={() => {
             if (quickBuy === null) return
             setPrice(quickBuy)
             holdPrice()
@@ -222,7 +223,7 @@ export default function OrderPanel({
           }
           disabled={quickSell === null || place.isPending || !canSell}
           title={sellDisabledReason}
-          onClick={() => {
+          onConfirm={() => {
             if (quickSell === null || !canSell) return
             setPrice(quickSell)
             holdPrice()
@@ -235,7 +236,7 @@ export default function OrderPanel({
         Or place a limit at your own price:
       </div>
 
-      <div className="mb-3 grid grid-cols-2 gap-3">
+      <div className="mb-2 grid grid-cols-2 gap-3">
         <NumberField label="Count" value={count} onChange={setCount} min={1} />
         <NumberField
           label="Price (¢)"
@@ -245,6 +246,8 @@ export default function OrderPanel({
           max={99}
         />
       </div>
+
+      <UnitButtons priceBasis={price > 0 ? price : sideAsk} onPick={setCount} />
 
       <label className="mb-3 flex items-center gap-2 text-xs text-text-muted">
         <input
@@ -275,7 +278,7 @@ export default function OrderPanel({
           price={price}
           disabled={place.isPending || previewBuy.data?.verdict === 'hard_refuse'}
           tone="buy"
-          onClick={() => submit({ action: 'buy' })}
+          onConfirm={() => submit({ action: 'buy' })}
         />
         <PlaceButton
           label="Place Sell"
@@ -285,7 +288,7 @@ export default function OrderPanel({
           }
           title={sellDisabledReason}
           tone="sell"
-          onClick={() => submit({ action: 'sell' })}
+          onConfirm={() => submit({ action: 'sell' })}
         />
       </div>
 
@@ -408,25 +411,94 @@ function NumberField({
   )
 }
 
+// Two-step confirm for order buttons: first click arms; then press-and-hold
+// HOLD_MS to fire. Defeats both accidental single clicks and double-clicks —
+// nothing submits without a deliberate sustained press. Releasing early, or
+// not arming first, does nothing. `disabled` resets everything.
+const HOLD_MS = 2000
+
+function useHoldToConfirm(onConfirm: () => void, disabled: boolean) {
+  const [armed, setArmed] = useState(false)
+  const [progress, setProgress] = useState(0) // 0..1 fill while holding
+  const rafRef = useRef<number | null>(null)
+  const startRef = useRef<number>(0)
+
+  const cancelHold = () => {
+    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
+    rafRef.current = null
+    setProgress(0)
+  }
+
+  // Reset arm + hold whenever the button goes disabled (e.g. after submit).
+  useEffect(() => {
+    if (disabled) {
+      cancelHold()
+      setArmed(false)
+    }
+  }, [disabled])
+
+  // Clean up any in-flight rAF on unmount.
+  useEffect(() => cancelHold, [])
+
+  const pressStart = () => {
+    if (disabled) return
+    if (!armed) {
+      setArmed(true)
+      return
+    }
+    startRef.current = performance.now()
+    const tick = () => {
+      const elapsed = performance.now() - startRef.current
+      const p = Math.min(1, elapsed / HOLD_MS)
+      setProgress(p)
+      if (p >= 1) {
+        cancelHold()
+        setArmed(false)
+        onConfirm()
+      } else {
+        rafRef.current = requestAnimationFrame(tick)
+      }
+    }
+    rafRef.current = requestAnimationFrame(tick)
+  }
+
+  // Released before the hold completed — abort, stay armed so a re-press
+  // continues without re-arming (feels responsive, still can't fire on a tap).
+  const pressEnd = () => cancelHold()
+
+  return { armed, progress, pressStart, pressEnd }
+}
+
 function QuickButton({
-  label, subLabel, onClick, disabled, title,
+  label, subLabel, onConfirm, disabled, title,
 }: {
   label: string
   subLabel: string
-  onClick: () => void
+  onConfirm: () => void
   disabled: boolean
   title?: string
 }) {
+  const { armed, progress, pressStart, pressEnd } = useHoldToConfirm(onConfirm, disabled)
   return (
     <button
       type="button"
-      onClick={onClick}
+      onPointerDown={pressStart}
+      onPointerUp={pressEnd}
+      onPointerLeave={pressEnd}
       disabled={disabled}
       title={title}
-      className="flex flex-col items-center rounded-md border border-action bg-bg px-3 py-2 text-action hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+      className="relative flex select-none flex-col items-center overflow-hidden rounded-md border border-action bg-bg px-3 py-2 text-action hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
     >
-      <span className="text-sm font-semibold">{label}</span>
-      <span className="text-xs font-mono tabular-nums text-text-muted">{subLabel}</span>
+      {armed && (
+        <span
+          className="absolute inset-y-0 left-0 bg-action/20"
+          style={{ width: `${progress * 100}%` }}
+        />
+      )}
+      <span className="relative text-sm font-semibold">
+        {armed ? 'Hold to confirm' : label}
+      </span>
+      <span className="relative text-xs font-mono tabular-nums text-text-muted">{subLabel}</span>
     </button>
   )
 }
