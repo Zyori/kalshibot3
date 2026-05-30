@@ -17,7 +17,7 @@ import OrderPanel from '../trading/OrderPanel'
 import TopOfBook from '../trading/TopOfBook'
 import type { MarketBook } from '../../contexts/WebSocketProvider'
 import { bestAsk, bestBid } from '../../lib/book'
-import { outcomeLabel } from '../../lib/format'
+import { formatPriceCents, outcomeLabel } from '../../lib/format'
 import type { ChildMarket } from '../../lib/types'
 
 // Match CombinedPriceChart.COLORS — green / red / blue / amber / purple / cyan.
@@ -71,7 +71,7 @@ function PositionPill({ market }: { market: ChildMarket }) {
   return (
     <span className="flex items-center gap-2 rounded-full bg-action/10 px-2 py-0.5 text-[11px] text-action">
       <span className="font-mono tabular-nums">
-        {p.side.toUpperCase()} {p.quantity} @ {p.avg_entry_price_cents ?? '—'}¢
+        {p.side.toUpperCase()} {p.quantity} @ {formatPriceCents(p.avg_entry_price ?? p.avg_entry_price_cents)}
       </span>
       {pnl !== null && (
         <span className={`font-mono tabular-nums ${tone}`}>

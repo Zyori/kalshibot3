@@ -38,6 +38,21 @@ export function formatFee(cents: number): string {
   return `-$${(cents / 100).toFixed(2)}`
 }
 
+/**
+ * Contract price → "57¢" or "57.71¢". Accepts either a whole-cent integer or
+ * a fractional value (the exact avg from cost/qty). Trailing .00 is dropped so
+ * a clean fill still reads "57¢", not "57.00¢".
+ *   formatPriceCents(57)        -> "57¢"
+ *   formatPriceCents(57.71)     -> "57.71¢"
+ *   formatPriceCents(null)      -> "—"
+ */
+export function formatPriceCents(price: number | null | undefined): string {
+  if (price === null || price === undefined) return '—'
+  const rounded = Math.round(price * 100) / 100
+  const text = Number.isInteger(rounded) ? `${rounded}` : rounded.toFixed(2)
+  return `${text}¢`
+}
+
 const ET_TZ = 'America/New_York'
 
 /**

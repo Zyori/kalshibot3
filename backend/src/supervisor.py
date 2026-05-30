@@ -36,6 +36,7 @@ from src.kalshi.ws import (
 from src.core.types import BetStatus
 from src.kalshi.ws_wire import Fill, KalshiWsMessage, MarketLifecycle, UserOrder
 from src.services.bet_service import (
+    backfill_open_bets_precision,
     mark_bet_terminal_by_order_id,
     record_fill,
     settle_bets_for_market,
@@ -323,6 +324,19 @@ class Supervisor:
         """Spawn every background task. Idempotent — calling twice is a no-op."""
         if self._tasks:
             return
+
+        # One-shot: re-derive non-terminal bets from their fills so any
+        # recorded under the old floored-VWAP math pick up the exact
+        # entry/stake/realized figures. Safe + idempotent (pure recompute from
+        # bet_fill rows); runs before the loops so the first API read is fresh.
+        try:
+            factory = get_session_factory()
+            async with factory() as session:
+                n = await backfill_open_bets_precision(session)
+                await session.commit()
+            log.info("bet_precision_backfill", recomputed=n)
+        except Exception:  # noqa: BLE001 — never block startup on the backfill
+            log.exception("bet_precision_backfill_failed")
 
         await self.broadcast.start()
 

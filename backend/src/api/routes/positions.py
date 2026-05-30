@@ -34,8 +34,21 @@ async def list_positions(session: AsyncSession = Depends(get_session)) -> dict[s
                 "side": p.side,
                 "quantity": p.quantity,
                 "avg_entry_price_cents": p.avg_entry_price_cents,
+                # Exact fractional avg entry matching kalshi.com (e.g. 57.71):
+                # (cost_basis + fees) / quantity. Kalshi's position avg-price
+                # is fee-inclusive — cost alone reads ~0.17¢ low per contract.
+                # Falls back to the clamped whole-cent value until the next
+                # sync backfills cost_basis_cents.
+                "avg_entry_price": (
+                    round((p.cost_basis_cents + (p.fees_paid_cents or 0)) / p.quantity, 2)
+                    if p.cost_basis_cents is not None and p.quantity > 0
+                    else p.avg_entry_price_cents
+                ),
+                "cost_basis_cents": p.cost_basis_cents,
                 "current_price_cents": p.current_price_cents,
                 "unrealized_pnl_cents": p.unrealized_pnl_cents,
+                "realized_pnl_cents": p.realized_pnl_cents,
+                "fees_paid_cents": p.fees_paid_cents,
                 "last_synced": utc_iso(p.last_synced),
             }
             for p in rows

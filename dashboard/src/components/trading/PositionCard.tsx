@@ -1,14 +1,19 @@
 import { useQuery } from '@tanstack/react-query'
 
 import InlineError from '../InlineError'
+import { formatPriceCents } from '../../lib/format'
 
 type Position = {
   ticker: string
   side: 'yes' | 'no'
   quantity: number
   avg_entry_price_cents: number | null
+  avg_entry_price: number | null
+  cost_basis_cents: number | null
   current_price_cents: number | null
   unrealized_pnl_cents: number | null
+  realized_pnl_cents: number | null
+  fees_paid_cents: number | null
 }
 
 type PositionsResponse = { positions: Position[] }
@@ -60,10 +65,10 @@ export default function PositionCard({ ticker }: { ticker: string }) {
               <div>
                 <div className="font-mono text-text">
                   {p.side.toUpperCase()} {p.quantity} @ avg{' '}
-                  {p.avg_entry_price_cents ?? '—'}¢
+                  {formatPriceCents(p.avg_entry_price ?? p.avg_entry_price_cents)}
                 </div>
                 <div className="text-[10px] text-text-muted">
-                  Mark {p.current_price_cents ?? '—'}¢
+                  Mark {formatPriceCents(p.current_price_cents)}
                 </div>
               </div>
               <div className={`text-right font-mono tabular-nums text-sm ${pnlTone}`}>

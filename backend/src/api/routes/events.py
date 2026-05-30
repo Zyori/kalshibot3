@@ -147,8 +147,19 @@ async def get_event(
                     "side": held.side,
                     "quantity": held.quantity,
                     "avg_entry_price_cents": held.avg_entry_price_cents,
+                    # Fee-inclusive exact avg entry matching kalshi.com (e.g.
+                    # 57.71): (cost_basis + fees) / quantity. Falls back to the
+                    # floored whole-cent value pre-backfill.
+                    "avg_entry_price": (
+                        round((held.cost_basis_cents + (held.fees_paid_cents or 0)) / held.quantity, 2)
+                        if held.cost_basis_cents is not None and held.quantity > 0
+                        else held.avg_entry_price_cents
+                    ),
+                    "cost_basis_cents": held.cost_basis_cents,
                     "current_price_cents": held.current_price_cents,
                     "unrealized_pnl_cents": held.unrealized_pnl_cents,
+                    "realized_pnl_cents": held.realized_pnl_cents,
+                    "fees_paid_cents": held.fees_paid_cents,
                 }
             ),
         }

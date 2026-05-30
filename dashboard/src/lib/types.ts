@@ -11,6 +11,7 @@ export type Bet = {
   kalshi_order_id: string | null
   side: 'yes' | 'no'
   entry_price_cents: number
+  entry_price: number | null
   exit_price_cents: number | null
   quantity: number
   remaining_quantity: number
@@ -109,8 +110,12 @@ export type ChildPosition = {
   side: 'yes' | 'no'
   quantity: number
   avg_entry_price_cents: number | null
+  avg_entry_price: number | null
+  cost_basis_cents: number | null
   current_price_cents: number | null
   unrealized_pnl_cents: number | null
+  realized_pnl_cents: number | null
+  fees_paid_cents: number | null
 }
 
 export type ChildMarket = {

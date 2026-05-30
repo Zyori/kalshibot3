@@ -21,7 +21,7 @@ import asyncio
 import time
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from collections.abc import Awaitable, Callable
@@ -76,8 +76,12 @@ async def _upsert_position(
     p: PortfolioPosition,
     avg_entry_price_cents: int,
 ) -> None:
-    """UPSERT one POSITION row. avg_entry_price_cents comes from market
-    exposure / quantity rounded to cents.
+    """UPSERT one POSITION row.
+
+    avg_entry_price_cents is the clamped whole-cent value (CHECK constraint);
+    cost_basis_cents/realized_pnl_cents/fees_paid_cents mirror Kalshi's exact
+    authoritative numbers so display can derive the true fractional price and
+    show fee-inclusive PnL without our own lossy reconstruction.
 
     Side-flip cleanup: a market can't hold both YES and NO exposure
     simultaneously (Kalshi nets them — buying YES against a NO position
@@ -116,6 +120,7 @@ async def _upsert_position(
             await session.delete(existing)
         return
 
+    cost_basis = abs(p.market_exposure)
     if existing is None:
         new_row = Position(
             sport=Sport.SOCCER,
@@ -124,14 +129,20 @@ async def _upsert_position(
             side=side,
             quantity=qty,
             avg_entry_price_cents=avg_entry_price_cents,
+            cost_basis_cents=cost_basis,
             current_price_cents=None,
             unrealized_pnl_cents=None,
+            realized_pnl_cents=p.realized_pnl,
+            fees_paid_cents=p.fees_paid,
             last_synced=datetime.now(timezone.utc),
         )
         session.add(new_row)
     else:
         existing.quantity = qty
         existing.avg_entry_price_cents = avg_entry_price_cents
+        existing.cost_basis_cents = cost_basis
+        existing.realized_pnl_cents = p.realized_pnl
+        existing.fees_paid_cents = p.fees_paid
         existing.last_synced = datetime.now(timezone.utc)
 
 
@@ -142,6 +153,40 @@ def _estimate_avg_entry(p: PortfolioPosition) -> int:
         return 50
     raw = abs(p.market_exposure) // abs(p.position)
     return max(1, min(99, raw))
+
+
+# Above this gap (cents) between Kalshi's realized PnL and our reconstructed
+# ledger PnL, we log a warning. A persistent gap means our fill handling has
+# drifted from reality — the observability we kept instead of mirroring
+# Kalshi's PnL into the ledger wholesale (see the precision-fix decision).
+_PNL_DIVERGENCE_THRESHOLD_CENTS = 1
+
+
+async def _log_pnl_divergence(session: AsyncSession, *, p: PortfolioPosition) -> None:
+    """Compare Kalshi's authoritative realized PnL for this position against
+    the sum of our ledger bets' realized_pnl_cents on the same market. Logs
+    a warning past the threshold. Read-only — never writes."""
+    kalshi_realized = p.realized_pnl
+    if kalshi_realized == 0:
+        return  # nothing realized yet; no meaningful comparison
+    market = await session.scalar(
+        select(Market).where(Market.kalshi_ticker == p.ticker)
+    )
+    if market is None:
+        return
+    ours = await session.scalar(
+        select(func.coalesce(func.sum(Bet.realized_pnl_cents), 0))
+        .where(Bet.market_id == market.id)
+    )
+    ours_int = int(ours or 0)
+    if abs(ours_int - kalshi_realized) > _PNL_DIVERGENCE_THRESHOLD_CENTS:
+        log.warning(
+            "pnl_divergence",
+            ticker=p.ticker,
+            kalshi_realized_cents=kalshi_realized,
+            our_realized_cents=ours_int,
+            delta_cents=ours_int - kalshi_realized,
+        )
 
 
 async def sync_positions_once() -> dict[str, object]:
@@ -185,6 +230,7 @@ async def sync_positions_once() -> dict[str, object]:
                 avg_entry_price_cents=_estimate_avg_entry(p),
             )
             seen_tickers.add(p.ticker)
+            await _log_pnl_divergence(session, p=p)
 
         # Any soccer position we had that Kalshi didn't return — closed.
         for ticker in existing_tickers - seen_tickers:

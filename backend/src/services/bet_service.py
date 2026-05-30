@@ -117,19 +117,27 @@ async def recompute_bet_from_fills(session: AsyncSession, *, bet: Bet) -> None:
     sells = [f for f in fills if f.action == "sell"]
 
     buy_centi = sum(f.quantity_centi for f in buys)
+    buy_weighted = sum(f.price_cents * f.quantity_centi for f in buys)
     if buy_centi > 0:
-        weighted = sum(f.price_cents * f.quantity_centi for f in buys)
-        bet.entry_price_cents = max(1, min(99, weighted // buy_centi))
-        bet.stake_cents = (bet.entry_price_cents * buy_centi) // 100
+        # entry_price_cents: clamped whole-cent for the column / legacy callers.
+        bet.entry_price_cents = max(1, min(99, buy_weighted // buy_centi))
+        # stake_cents: EXACT cost (price·centi is cents·centi; /100 → cents).
+        # Derived from the weighted sum, NOT from the floored price, so a
+        # 57.71¢ VWAP keeps its true cost instead of collapsing to 57·qty.
+        bet.stake_cents = buy_weighted // 100
 
     sell_centi = sum(f.quantity_centi for f in sells)
     if sell_centi > 0:
-        weighted = sum(f.price_cents * f.quantity_centi for f in sells)
-        bet.exit_price_cents = max(1, min(99, weighted // sell_centi))
-        bet.realized_pnl_cents = (
-            sum((f.price_cents - bet.entry_price_cents) * f.quantity_centi for f in sells)
-            // 100
-        )
+        sell_weighted = sum(f.price_cents * f.quantity_centi for f in sells)
+        bet.exit_price_cents = max(1, min(99, sell_weighted // sell_centi))
+        # PnL against the EXACT entry VWAP, not the floored entry_price_cents.
+        # (Σ sell_price·centi − entry_vwap·Σ sell_centi) / 100, where
+        # entry_vwap = buy_weighted/buy_centi kept as a ratio to avoid the
+        # sub-cent rounding that drifted realized PnL off Kalshi's figure.
+        if buy_centi > 0:
+            bet.realized_pnl_cents = (
+                sell_weighted - (buy_weighted * sell_centi) // buy_centi
+            ) // 100
 
     ordered_centi = bet.quantity * 100
     bet.remaining_quantity_centi = max(0, ordered_centi - sell_centi)
@@ -146,6 +154,25 @@ async def recompute_bet_from_fills(session: AsyncSession, *, bet: Bet) -> None:
         bet.settled_at = datetime.now(timezone.utc)
         bet.pnl_cents = bet.realized_pnl_cents
     bet.version += 1
+
+
+async def backfill_open_bets_precision(session: AsyncSession) -> int:
+    """One-shot: re-derive every non-terminal bet from its bet_fill rows.
+
+    Run once at startup after the precision fix landed: bets recorded under
+    the old floored-VWAP math keep stale entry/stake/realized values until a
+    fill touches them. The underlying bet_fill rows are unchanged, so
+    recompute_bet_from_fills reconstructs the exact figures with no data loss.
+
+    Scoped to non-terminal bets — settled history stays as recorded. Returns
+    the count recomputed (for the startup log). Caller commits.
+    """
+    open_bets = (await session.execute(
+        select(Bet).where(Bet.status == BetStatus.OPEN)
+    )).scalars().all()
+    for bet in open_bets:
+        await recompute_bet_from_fills(session, bet=bet)
+    return len(open_bets)
 
 
 async def record_placed_order(
@@ -333,7 +360,9 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
         if total_centi > 0:
             weighted_centi = sum(f.price_cents * f.quantity_centi for f in buy_fills)
             bet.entry_price_cents = max(1, min(99, weighted_centi // total_centi))
-            bet.stake_cents = (bet.entry_price_cents * total_centi) // 100
+            # Exact cost from the weighted sum, not the floored price — keeps
+            # a fractional-VWAP entry's true stake (see recompute_bet_from_fills).
+            bet.stake_cents = weighted_centi // 100
         await _recompute_bet_fees(session, bet=bet)
         bet.version += 1
         await session.flush()
@@ -448,12 +477,21 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
         opener.remaining_quantity_centi = max(0, ordered_centi - sell_centi)
         opener.remaining_quantity = opener.remaining_quantity_centi // 100
 
-        # realized_pnl: for each sell fill, (sell_price - entry) * centi / 100
-        realized_centi_x100 = sum(
-            (f.price_cents - opener.entry_price_cents) * f.quantity_centi
+        # realized_pnl against the EXACT entry VWAP, not the floored
+        # entry_price_cents — flooring the entry drifted realized PnL off
+        # Kalshi's figure by up to ~1¢/contract (the -5.75 vs -5.84 bug).
+        # entry_vwap = Σ(buy_price·centi)/Σ(buy_centi), kept as a ratio.
+        buy_fills = [f for f in opener_fills if f.action == "buy"]
+        buy_centi = sum(f.quantity_centi for f in buy_fills)
+        buy_weighted = sum(f.price_cents * f.quantity_centi for f in buy_fills)
+        sell_weighted_all = sum(
+            f.price_cents * f.quantity_centi
             for f in opener_fills if f.action == "sell"
         )
-        opener.realized_pnl_cents = realized_centi_x100 // 100
+        if buy_centi > 0:
+            opener.realized_pnl_cents = (
+                sell_weighted_all - (buy_weighted * sell_centi) // buy_centi
+            ) // 100
 
         # exit_price_cents = centi-weighted avg of sell prices
         if sell_centi > 0:
@@ -636,7 +674,24 @@ async def settle_bets_for_market(
         # remaining_quantity_centi is 0 (already fully sold but somehow
         # still OPEN), held_centi is 0 — no double-count.
         held_centi = bet.remaining_quantity_centi
-        settle_pnl = ((side_settle - bet.entry_price_cents) * held_centi) // 100
+        # Settle against the EXACT entry VWAP, not the floored entry_price_cents,
+        # so settlement PnL matches Kalshi (same sub-cent fix as the sell path).
+        # entry_vwap = Σ(buy_price·centi)/Σ(buy_centi), kept as a ratio.
+        buy_fills = (await session.execute(
+            select(BetFill)
+            .where(BetFill.bet_id == bet.id)
+            .where(BetFill.action == "buy")
+        )).scalars().all()
+        buy_centi = sum(f.quantity_centi for f in buy_fills)
+        buy_weighted = sum(f.price_cents * f.quantity_centi for f in buy_fills)
+        if buy_centi > 0:
+            settle_pnl = (
+                side_settle * held_centi - (buy_weighted * held_centi) // buy_centi
+            ) // 100
+        else:
+            # No buy fills recorded (shouldn't happen for a real position) —
+            # fall back to the clamped entry price rather than divide by zero.
+            settle_pnl = ((side_settle - bet.entry_price_cents) * held_centi) // 100
         bet.realized_pnl_cents = (bet.realized_pnl_cents or 0) + settle_pnl
         bet.remaining_quantity = 0
         bet.remaining_quantity_centi = 0

@@ -6,7 +6,7 @@ import PnLChart from '../components/charts/PnLChart'
 import StrategyBreakdown from '../components/charts/StrategyBreakdown'
 import BetMetadataForm from '../components/ledger/BetMetadataForm'
 import { SportBadge, KNOWN_SPORTS } from '../components/ledger/SportBadge'
-import { formatET, formatDollars, formatFee, formatSignedDollars } from '../lib/format'
+import { formatET, formatDollars, formatFee, formatPriceCents, formatSignedDollars } from '../lib/format'
 import type { Bet, BetFillsResponse, LedgerStats as Stats } from '../lib/types'
 
 type LedgerResponse = { bets: Bet[]; next_cursor: number | null }
@@ -392,11 +392,11 @@ function BetRow({
               <span className="text-text-muted">{bet.quantity} → </span>
               <span className="text-action">{bet.remaining_quantity}</span>
               <span className="text-text-muted"> left</span>
-              <span className="ml-1 text-text-muted">@{bet.entry_price_cents}¢</span>
+              <span className="ml-1 text-text-muted">@{formatPriceCents(bet.entry_price ?? bet.entry_price_cents)}</span>
             </span>
           ) : (
             <>
-              {bet.quantity} × {bet.entry_price_cents}¢
+              {bet.quantity} × {formatPriceCents(bet.entry_price ?? bet.entry_price_cents)}
             </>
           )}
         </td>
@@ -501,7 +501,7 @@ function BetDetail({
               <Pair label="Exit type" value={bet.exit_type ?? '—'} />
               <Pair
                 label="Avg exit price"
-                value={bet.exit_price_cents !== null ? `${bet.exit_price_cents}¢` : '—'}
+                value={formatPriceCents(bet.exit_price_cents)}
               />
               <Pair label="Settled" value={formatET(bet.settled_at) || '—'} />
               <Pair label="Stake" value={formatDollars(bet.stake_cents)} />

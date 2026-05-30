@@ -69,6 +69,14 @@ def _bet_to_dict(
         "kalshi_order_id": b.kalshi_order_id,
         "side": b.side,
         "entry_price_cents": b.entry_price_cents,
+        # Exact fractional avg entry (e.g. 57.71) derived from the exact
+        # stake_cents — entry_price_cents is the floored whole-cent value and
+        # loses sub-cent precision. realized PnL is computed against the exact
+        # VWAP server-side, so this is purely a more honest display figure.
+        "entry_price": (
+            round(b.stake_cents / b.quantity, 2)
+            if b.quantity > 0 else b.entry_price_cents
+        ),
         "exit_price_cents": b.exit_price_cents,
         "quantity": b.quantity,
         "remaining_quantity": b.remaining_quantity,
