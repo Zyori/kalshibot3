@@ -152,6 +152,11 @@ export default function CombinedPriceChart({ markets }: { markets: ChildMarket[]
                 labelFormatter={(ts) =>
                   typeof ts === 'string' ? formatET(ts) : ''
                 }
+                // Order the outcomes highest-to-lowest price so the favorite
+                // is always on top of the tooltip. Negate for descending.
+                itemSorter={(item) =>
+                  typeof item.value === 'number' ? -item.value : 0
+                }
                 formatter={(value, name) => {
                   if (value === null || value === undefined) return ['—', String(name)]
                   return [`${value}¢`, String(name)]
