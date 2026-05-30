@@ -503,6 +503,80 @@ function QuickButton({
   )
 }
 
+function PlaceButton({
+  label, price, onConfirm, disabled, tone, title,
+}: {
+  label: string
+  price: number
+  onConfirm: () => void
+  disabled: boolean
+  tone: 'buy' | 'sell'
+  title?: string
+}) {
+  const { armed, progress, pressStart, pressEnd } = useHoldToConfirm(onConfirm, disabled)
+  // Use the dashboard's semantic palette: green for buy (gain side),
+  // red for sell (loss side) — matches the rest of the app.
+  const cls = tone === 'buy'
+    ? 'border-gain bg-gain text-bg'
+    : 'border-loss bg-loss text-bg'
+  return (
+    <button
+      type="button"
+      onPointerDown={pressStart}
+      onPointerUp={pressEnd}
+      onPointerLeave={pressEnd}
+      disabled={disabled}
+      title={title}
+      className={`relative select-none overflow-hidden rounded-md border px-3 py-2 text-sm font-semibold hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 ${cls}`}
+    >
+      {armed && (
+        <span
+          className="absolute inset-y-0 left-0 bg-bg/30"
+          style={{ width: `${progress * 100}%` }}
+        />
+      )}
+      <span className="relative">
+        {armed ? 'Hold to confirm' : `${label} @ ${price}¢`}
+      </span>
+    </button>
+  )
+}
+
+function UnitButtons({
+  priceBasis,
+  onPick,
+}: {
+  priceBasis: number | null
+  onPick: (count: number) => void
+}) {
+  // .5 / 1 / 2 units → contract count at the current price basis (typed price,
+  // or best ask when the box is empty). Disabled when we have no usable price.
+  const options: Array<{ label: string; units: number }> = [
+    { label: '½ unit', units: 0.5 },
+    { label: '1 unit', units: 1 },
+    { label: '2 units', units: 2 },
+  ]
+  return (
+    <div className="mb-3 grid grid-cols-3 gap-2">
+      {options.map((o) => {
+        const n = contractsForUnits(o.units, priceBasis)
+        return (
+          <button
+            key={o.label}
+            type="button"
+            disabled={n === null}
+            onClick={() => n !== null && onPick(n)}
+            className="rounded-md border border-border bg-bg px-2 py-1 text-xs text-text-muted hover:border-action hover:text-action disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <span className="font-semibold">{o.label}</span>
+            {n !== null && <span className="ml-1 font-mono tabular-nums">{n}</span>}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function PreviewReasons({
   direction, preview,
 }: {
