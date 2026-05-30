@@ -7,6 +7,7 @@ because we query them for live-game UI sorting and strategy triggers.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -43,10 +44,10 @@ class Game(Base):
     minute: Mapped[int | None] = mapped_column(Integer)
     period: Mapped[str | None] = mapped_column(String(8))
 
-    live_state: Mapped[dict | None] = mapped_column(JSON)
+    live_state: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     """Full event list and other volatile data from the provider. Frozen on FT."""
 
-    meta: Mapped[dict | None] = mapped_column("metadata", JSON)
+    meta: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSON)
     """Venue, weather, lineups — context that doesn't change mid-match."""
 
     created_at: Mapped[datetime] = mapped_column(

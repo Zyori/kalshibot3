@@ -8,6 +8,7 @@ message mentions — used by the frontend to render entity chips.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -25,7 +26,7 @@ class ChatMessage(Base):
     role: Mapped[ChatRole] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
 
-    referenced_ids: Mapped[dict | None] = mapped_column(JSON)
+    referenced_ids: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     """{"suggestion_ids": [...], "bet_ids": [...], "market_ids": [...]}"""
 
     agent_initiated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

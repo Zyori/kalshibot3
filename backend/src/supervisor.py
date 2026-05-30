@@ -117,7 +117,7 @@ class Supervisor:
         # transaction, which is only correct under serialized writes.
         self._ledger_write_lock = asyncio.Lock()
 
-        self._tasks: list[asyncio.Task] = []
+        self._tasks: list[asyncio.Task[None]] = []
 
     async def _on_fill(self, fill: Fill) -> None:
         """Persist a fill to the DB. Cross-market isolation lives inside

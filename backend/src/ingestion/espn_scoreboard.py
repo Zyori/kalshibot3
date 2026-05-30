@@ -24,7 +24,7 @@ import asyncio
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -326,7 +326,7 @@ class EspnScoreboard:
         self._slugs: tuple[str, ...] = tuple(sorted(set(slugs)))
         self.snapshot = EspnSnapshot()
         self._stopped = False
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
 
     async def run(self) -> None:
         """Long-running poller. Initial fetch on start, then adaptive cadence:
@@ -364,8 +364,8 @@ class EspnScoreboard:
         # De-dupe by espn_id (same event can appear under "today" and "tomorrow"
         # at the date boundary depending on ESPN's timezone interpretation).
         deduped: dict[str, EspnEvent] = {}
-        for e in events:
-            deduped[e.espn_id] = e
+        for ev in events:
+            deduped[ev.espn_id] = ev
         self.snapshot = EspnSnapshot(
             events=list(deduped.values()),
             refreshed_at=now,
@@ -391,7 +391,5 @@ class EspnScoreboard:
         return out
 
 
-def _day_offset(d: int):
-    """Avoid importing timedelta at module top for a one-line helper."""
-    from datetime import timedelta
+def _day_offset(d: int) -> timedelta:
     return timedelta(days=d)

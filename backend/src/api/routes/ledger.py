@@ -31,7 +31,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
@@ -96,7 +96,7 @@ def _bet_to_dict(
 
 
 def _apply_filters(
-    stmt,
+    stmt: Select[Any],
     *,
     sport: list[str] | None,
     status: list[str] | None,
@@ -106,7 +106,7 @@ def _apply_filters(
     market_ticker: str | None,
     since: datetime | None,
     until: datetime | None,
-):
+) -> Select[Any]:
     if sport:
         stmt = stmt.where(Bet.sport.in_(sport))
     if status:
@@ -205,7 +205,7 @@ async def ledger_stats(
     # a cartesian product between `bet` and the subquery because the
     # aggregate referenced Bet.status directly, which SQLAlchemy resolved
     # against the `bet` table, not the subquery. Inflated total_bets by 3x.
-    def _filtered(stmt):
+    def _filtered(stmt: Select[Any]) -> Select[Any]:
         return _apply_filters(
             stmt,
             sport=sport or None,

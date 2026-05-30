@@ -75,7 +75,7 @@ class KalshiWsClient:
         self.broadcast_queue = broadcast_queue
         # Optional callback fired on every Fill — lets the supervisor wire
         # bet_service.record_fill without dragging DB imports into ws.py.
-        self.on_fill: "asyncio.Future | None" = None  # set externally
+        self.on_fill: "asyncio.Future[None] | None" = None  # set externally
         self._fill_handler: "Any | None" = None
         self._lifecycle_handler: "Any | None" = None
         self._user_order_handler: "Any | None" = None
@@ -321,7 +321,7 @@ class KalshiWsClient:
             # checking that our local _market_tickers matches the server.
             log.info("kalshi_ws_update_ack", sid=msg.sid, server_tickers=len(msg.msg.market_tickers))
 
-    def set_fill_handler(self, handler) -> None:  # noqa: ANN001 — callable contract
+    def set_fill_handler(self, handler: Any) -> None:
         """Register an async callback fired on every Fill message.
 
         Signature: `async def handler(fill: Fill) -> None`. Exceptions inside
@@ -330,7 +330,7 @@ class KalshiWsClient:
         """
         self._fill_handler = handler
 
-    def set_lifecycle_handler(self, handler) -> None:  # noqa: ANN001 — callable contract
+    def set_lifecycle_handler(self, handler: Any) -> None:
         """Register an async callback fired on every MarketLifecycle event.
 
         Signature: `async def handler(msg: MarketLifecycle) -> None`. Used by
@@ -340,7 +340,7 @@ class KalshiWsClient:
         """
         self._lifecycle_handler = handler
 
-    def set_user_order_handler(self, handler) -> None:  # noqa: ANN001
+    def set_user_order_handler(self, handler: Any) -> None:
         """Register an async callback fired on every UserOrder event.
 
         Signature: `async def handler(msg: UserOrder) -> None`. Supervisor

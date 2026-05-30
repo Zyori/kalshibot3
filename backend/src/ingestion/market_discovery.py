@@ -240,9 +240,9 @@ class MarketDiscovery:
         self._espn = espn
         self._feed = MarketFeed()
         self._lock = asyncio.Lock()
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self._stopped = False
-        self._on_refresh: list = []
+        self._on_refresh: list[Any] = []
         """Callbacks invoked with the new set of LIVE tickers after each refresh.
         Supervisor uses this to keep the WS subscriptions in sync."""
         self._espn_match_count = 0
@@ -253,7 +253,7 @@ class MarketDiscovery:
     def get_feed(self) -> MarketFeed:
         return self._feed
 
-    def register_refresh_callback(self, cb) -> None:
+    def register_refresh_callback(self, cb: Any) -> None:
         """Subscribers receive the set of live tickers after every refresh."""
         self._on_refresh.append(cb)
 

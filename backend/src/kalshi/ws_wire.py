@@ -212,7 +212,7 @@ KNOWN_TYPES: frozenset[str] = frozenset(
 
 # === Raw → typed parsing with dollar→cents conversion ===
 
-def parse_book_level(raw: list) -> BookLevel:
+def parse_book_level(raw: list[Any]) -> BookLevel:
     """Kalshi sends [price, quantity] for each book level.
 
     Observed wire-format quirks in production (2026-05-26):
@@ -231,7 +231,7 @@ def parse_book_level(raw: list) -> BookLevel:
     return BookLevel(price_cents=price_cents, quantity=qty)
 
 
-def parse_kalshi_ws_message(raw: dict) -> KalshiWsMessage | None:
+def parse_kalshi_ws_message(raw: dict[str, Any]) -> KalshiWsMessage | None:
     """Parse one raw WS payload. Returns None for unknown types.
 
     Conversion responsibilities:

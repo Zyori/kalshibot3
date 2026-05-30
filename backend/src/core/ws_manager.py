@@ -131,7 +131,7 @@ class BroadcastManager:
         # position_synced signals only wakes the browser once.
         self._pending_app: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
-        self._flush_task: asyncio.Task | None = None
+        self._flush_task: asyncio.Task[None] | None = None
         self._stopped = False
 
     # === Client lifecycle ===

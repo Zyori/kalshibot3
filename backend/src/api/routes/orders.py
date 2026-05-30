@@ -89,7 +89,7 @@ def _book_snapshot(request: Request, ticker: str) -> dict[str, int | None]:
     }
 
 
-def _make_sanity_input(body: OrderRequestBody, snapshot: dict) -> SanityInput:
+def _make_sanity_input(body: OrderRequestBody, snapshot: dict[str, Any]) -> SanityInput:
     return SanityInput(
         side=body.side,
         action=body.action,
