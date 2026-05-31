@@ -89,7 +89,7 @@ class Supervisor:
             self.live_state, broadcast_queue=self.kalshi_to_browser,
             is_ws_authoritative=self.kalshi_ws.is_subscribed,
         )
-        self.position_syncer = PositionSyncer()
+        self.position_syncer = PositionSyncer(live_state=self.live_state)
         self.fills_syncer = FillsSyncer()
         self.settlement_sweeper = SettlementSweeper()
         # position_syncer fires this when a Kalshi position drops to zero

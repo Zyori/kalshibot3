@@ -29,6 +29,7 @@ from collections.abc import Awaitable, Callable
 from src.core.db import get_session_factory
 from src.core.logging import get_logger
 from src.core.types import BetSide, BetStatus, MarketStatus, Sport
+from src.kalshi.live_state import LiveState, MarketBook
 from src.kalshi.rest import KalshiRestClient
 from src.kalshi.schemas import PortfolioPosition
 from src.models import Bet, Market, Position
@@ -70,11 +71,33 @@ def _signed_position_to_side_and_qty(signed: int) -> tuple[BetSide, int]:
     return BetSide.NO, abs(signed)
 
 
+def _mark_price_cents(book: MarketBook | None, side: BetSide) -> int | None:
+    """Midpoint mark for `side` from the live book: (best_bid + best_ask)/2.
+
+    Per-side bid/ask come straight from MarketBook's accessors (the ask on one
+    side is derived from the opposite side's best bid — Kalshi stores only bids
+    per side). Returns None when either leg is missing so the caller leaves the
+    mark null instead of inventing a price.
+    """
+    if book is None:
+        return None
+    if side is BetSide.YES:
+        bid, ask = book.yes_best_bid, book.yes_best_ask
+    else:
+        bid, ask = book.no_best_bid, book.no_best_ask
+    if bid is None or ask is None:
+        return None
+    mid: int = round((bid + ask) / 2)
+    return mid
+
+
 async def _upsert_position(
     session: AsyncSession,
     *,
     p: PortfolioPosition,
     avg_entry_price_cents: int,
+    current_price_cents: int | None,
+    unrealized_pnl_cents: int | None,
 ) -> None:
     """UPSERT one POSITION row.
 
@@ -130,8 +153,8 @@ async def _upsert_position(
             quantity=qty,
             avg_entry_price_cents=avg_entry_price_cents,
             cost_basis_cents=cost_basis,
-            current_price_cents=None,
-            unrealized_pnl_cents=None,
+            current_price_cents=current_price_cents,
+            unrealized_pnl_cents=unrealized_pnl_cents,
             realized_pnl_cents=p.realized_pnl,
             fees_paid_cents=p.fees_paid,
             last_synced=datetime.now(timezone.utc),
@@ -141,6 +164,8 @@ async def _upsert_position(
         existing.quantity = qty
         existing.avg_entry_price_cents = avg_entry_price_cents
         existing.cost_basis_cents = cost_basis
+        existing.current_price_cents = current_price_cents
+        existing.unrealized_pnl_cents = unrealized_pnl_cents
         existing.realized_pnl_cents = p.realized_pnl
         existing.fees_paid_cents = p.fees_paid
         existing.last_synced = datetime.now(timezone.utc)
@@ -189,10 +214,14 @@ async def _log_pnl_divergence(session: AsyncSession, *, p: PortfolioPosition) ->
         )
 
 
-async def sync_positions_once() -> dict[str, object]:
+async def sync_positions_once(live_state: LiveState | None = None) -> dict[str, object]:
     """One full reconciliation pass. Returns counts and the set of tickers
     that transitioned from held to closed this pass — used to trigger
     settlement sweeps on the markets where Kalshi just paid us out.
+
+    `live_state` (when supplied) is used to mark each position to the live
+    book midpoint and derive unrealized PnL. None during tests / cold start —
+    positions still sync, just without a live mark.
     """
     soccer_positions: list[PortfolioPosition] = []
     other_count = 0
@@ -224,10 +253,22 @@ async def sync_positions_once() -> dict[str, object]:
 
         seen_tickers: set[str] = set()
         for p in soccer_positions:
+            side, qty = _signed_position_to_side_and_qty(p.position)
+            # Mark to the live book midpoint; unrealized = (mark - entry)·qty.
+            # entry comes from Kalshi's exact cost basis, not the floored
+            # avg, so the % the UI derives matches the dollar figure.
+            book = live_state.books.get(p.ticker) if live_state is not None else None
+            mark = _mark_price_cents(book, side)
+            unrealized: int | None = None
+            if mark is not None and qty > 0:
+                entry_exact = abs(p.market_exposure) / qty  # cents/contract, fractional
+                unrealized = round((mark - entry_exact) * qty)
             await _upsert_position(
                 session,
                 p=p,
                 avg_entry_price_cents=_estimate_avg_entry(p),
+                current_price_cents=mark,
+                unrealized_pnl_cents=unrealized,
             )
             seen_tickers.add(p.ticker)
             await _log_pnl_divergence(session, p=p)
@@ -268,9 +309,10 @@ async def sync_positions_once() -> dict[str, object]:
 class PositionSyncer:
     """Long-running poller. Lives on the supervisor."""
 
-    def __init__(self) -> None:
+    def __init__(self, live_state: LiveState | None = None) -> None:
         self._stopped = False
         self._last_run_at: float | None = None
+        self._live_state = live_state
         self._on_position_closed: Callable[[], Awaitable[None]] | None = None
         self._on_synced: Callable[[], Awaitable[None]] | None = None
 
@@ -304,7 +346,7 @@ class PositionSyncer:
 
     async def _tick(self) -> None:
         try:
-            result = await sync_positions_once()
+            result = await sync_positions_once(self._live_state)
             self._last_run_at = time.monotonic()
         except Exception:  # noqa: BLE001
             log.exception("position_sync_failed")
