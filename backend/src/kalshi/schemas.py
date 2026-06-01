@@ -74,9 +74,17 @@ class Market(WireModelLoose):
     ticker: str
     event_ticker: str | None = None
     title: str
-    status: Literal["initialized", "active", "closed", "settled", "determined", "finalized"]
-    """`finalized` appears on real production markets — observed 2026-05-26
-    on KXMLSGAME, KXCANPLGAME, and other settled domestic-league games."""
+    status: str
+    """Kalshi market status. Known values: initialized, active, closed,
+    settled, determined, finalized, inactive. Deliberately `str`, not a
+    Literal: Kalshi adds status values over time and this payload validates a
+    whole series at once, so one market with an unmodeled status would fail
+    validation for the *entire* series and drop every event from the feed.
+    Observed the hard way — `finalized` (2026-05-26, settled domestic leagues)
+    and `inactive` (2026-06-01, not-yet-open KXINTLFRIENDLYGAME markets) each
+    surfaced this way. market_discovery._classify treats anything that isn't
+    `active` or a terminal status as non-tradeable (dropped from the feed), so
+    an unknown value degrades safely rather than going live."""
     yes_sub_title: str | None = None
     no_sub_title: str | None = None
 
