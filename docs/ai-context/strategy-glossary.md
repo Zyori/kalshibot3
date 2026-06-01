@@ -11,7 +11,8 @@ short, fill in the blanks. Update as your thinking sharpens.
 - **lock_parlay** — Chain of high-confidence picks expected to all hit; modest combined return.
 - **moon_parlay** — Chain of longshots, high-confidence underdogs, or one underdog paired with locks for added value.
 - **underdog** — Single underdog you think is mispriced — value the market isn't seeing.
-- **draw_value** — Riding draw odds skewed long by recreational money piling on favorites.
+- **predictive** — Pre-event entry on an open line that looks undervalued vs. your read, before the game starts.
+- **time_decay** — Holding a position (often a draw) that gains value purely from the clock running down with the game state unchanged.
 - **scalp** — Opportunistic quick trade for a smaller, faster return — often news-driven (red card, injury, momentum swing). In and out, not held to resolution.
 - **hedge** — Closing risk on an open position by taking the other side; common when one leg of a parlay is left and the locked value beats the variance.
 - **manual** — Catch-all when none of the above fits; describe the real shape in the memo.

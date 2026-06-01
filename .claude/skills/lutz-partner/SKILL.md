@@ -115,7 +115,7 @@ Field notes:
   don't hold (a bug guard), and the site/order path refuse it again at confirm.
 - `suggested_price_cents` is 1-99. `suggested_size_cents` is the stake.
 - `strategy` and `confidence` must be exact glossary values (`mean_reversion`,
-  `mean_confirmation`, `draw_value`, `scalp`, `hedge`, `underdog`, … /
+  `mean_confirmation`, `time_decay`, `predictive`, `scalp`, `hedge`, `underdog`, … /
   `high`/`medium`/`low`).
 - `justification` is the one-paragraph WHY the card shows. Make it the real
   read — the user pairs it with their gut.

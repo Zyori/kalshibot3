@@ -112,10 +112,12 @@ class BetSource(StrEnum):
 class Strategy(StrEnum):
     """Strategic intent behind the bet.
 
-    LIVE_EVENT is kept for backwards-compat with any historical rows but is
-    no longer offered as a choice in the UI — superseded by SCALP (quick
-    opportunistic trade) plus the TIMING.LIVE flag. New bets should pick
-    one of the others.
+    Retired values (kept for backwards-compat with historical rows, no longer
+    offered in the UI or glossary — old bets must still validate):
+      - LIVE_EVENT: superseded by SCALP + the TIMING.LIVE flag.
+      - DRAW_VALUE: superseded by TIME_DECAY (the clock-driven-value framing
+        that subsumes it). 5 historical bets carry it as of 2026-06-01.
+    New bets should pick one of the active values below.
     """
 
     MEAN_REVERSION = "mean_reversion"
@@ -123,10 +125,13 @@ class Strategy(StrEnum):
     LOCK_PARLAY = "lock_parlay"
     UNDERDOG = "underdog"
     MOON_PARLAY = "moon_parlay"
-    DRAW_VALUE = "draw_value"
+    TIME_DECAY = "time_decay"
+    PREDICTIVE = "predictive"
     SCALP = "scalp"
     HEDGE = "hedge"
     MANUAL = "manual"
+    # Retired — kept so historical rows still validate. Not a UI/glossary choice.
+    DRAW_VALUE = "draw_value"
     LIVE_EVENT = "live_event"
 
 
