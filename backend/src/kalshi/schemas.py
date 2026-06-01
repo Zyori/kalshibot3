@@ -436,6 +436,32 @@ class PlaceOrderResponse(WireModelLoose):
     order: Order
 
 
+class AmendOrderRequest(WireModel):
+    """`POST /portfolio/orders/{order_id}/amend` body. Changes a resting order's
+    price and/or count. Kalshi retires the old order and issues a NEW order_id
+    (returned as `order`), re-queued at the (possibly new) price level. Side and
+    action are unchanged — those would be a different order, not an amend.
+
+    `updated_client_order_id` is the idempotency key for the amend, same role as
+    client_order_id on a place (CLAUDE.md rule 6). All prices integer cents.
+    """
+
+    ticker: str
+    side: Literal["yes", "no"]
+    action: Literal["buy", "sell"]
+    yes_price: int | None = Field(default=None, ge=1, le=99)
+    no_price: int | None = Field(default=None, ge=1, le=99)
+    count: int = Field(ge=1)
+    updated_client_order_id: str
+
+
+class AmendOrderResponse(WireModelLoose):
+    """Amend returns both the retired order and the new one. `order` carries the
+    NEW order_id the caller must now track; `old_order` is the superseded one."""
+    order: Order
+    old_order: Order | None = None
+
+
 class CancelOrderResponse(WireModelLoose):
     order: Order
     reduced_by: int | None = None

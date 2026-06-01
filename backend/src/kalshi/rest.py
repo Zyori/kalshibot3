@@ -30,6 +30,8 @@ from src.core.exceptions import (
 )
 from src.core.logging import get_logger
 from src.kalshi.schemas import (
+    AmendOrderRequest,
+    AmendOrderResponse,
     BalanceResponse,
     CancelOrderResponse,
     EventsResponse,
@@ -342,3 +344,22 @@ class KalshiRestClient:
         log.info("cancel_order", order_id=order_id)
         data = await self._request("DELETE", f"/portfolio/orders/{order_id}")
         return CancelOrderResponse.model_validate(data)
+
+    async def amend_order(self, order_id: str, req: AmendOrderRequest) -> AmendOrderResponse:
+        """Amend a resting order's price/count. Kalshi retires `order_id` and
+        returns a NEW order in the response — the caller must re-track that id.
+        Port: V1 amendOrder, POST /portfolio/orders/{id}/amend."""
+        log.info(
+            "amend_order",
+            order_id=order_id,
+            ticker=req.ticker,
+            count=req.count,
+            yes_price=req.yes_price,
+            no_price=req.no_price,
+        )
+        data = await self._request(
+            "POST",
+            f"/portfolio/orders/{order_id}/amend",
+            json=req.model_dump(exclude_none=True),
+        )
+        return AmendOrderResponse.model_validate(data)

@@ -566,6 +566,43 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
     await session.flush()
 
 
+async def reprice_bet_for_amend(
+    session: AsyncSession,
+    *,
+    old_order_id: str,
+    new_order_id: str,
+    new_price_cents: int,
+    new_count: int,
+) -> Bet | None:
+    """Re-point a BET row after an amend: swap its kalshi_order_id old → new and
+    update the order's price/count to the amended values.
+
+    Amend issues a NEW order_id; without this swap the BET would track a retired
+    order and a later cancel/fill couldn't match it. No-op (returns None) for an
+    order with no local BET row — same policy as the rest of this module
+    (feedback_no_external_fill_reconciliation): a kalshi.com-placed order the
+    user amends through us has nothing to update here, and the next position
+    sync reconciles reality regardless.
+
+    Only OPEN bets are repriced. A bet that already went terminal (filled,
+    settled) isn't a resting order and must not be rewritten. The fill path is
+    the source of truth for realized quantity; this only updates the order's
+    *requested* shape while it's still resting.
+    """
+    bet = await session.scalar(
+        select(Bet).where(Bet.kalshi_order_id == old_order_id)
+    )
+    if bet is None or bet.status != BetStatus.OPEN:
+        return None
+    bet.kalshi_order_id = new_order_id
+    bet.entry_price_cents = new_price_cents
+    bet.quantity = new_count
+    bet.remaining_quantity = new_count
+    bet.remaining_quantity_centi = new_count * 100
+    bet.stake_cents = new_count * new_price_cents
+    return bet
+
+
 async def mark_bet_terminal_by_order_id(
     session: AsyncSession,
     *,

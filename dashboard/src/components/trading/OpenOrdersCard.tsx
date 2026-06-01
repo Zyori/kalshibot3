@@ -1,52 +1,21 @@
+import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
+import type { OpenOrder } from '../../contexts/WebSocketProvider'
 import { useOpenOrders } from '../../hooks/useOpenOrders'
 import InlineError from '../InlineError'
 
 /**
- * Lists currently-resting orders for one ticker. Cancel button on each.
- * Driven entirely by the WS user_order stream — no REST polling.
+ * Lists currently-resting orders for one ticker. Each row can be cancelled or
+ * edited in place (amend: change resting price + count). Driven by the WS
+ * user_order stream + REST bootstrap.
  */
 export default function OpenOrdersCard({ ticker }: { ticker: string }) {
   const { orders, isError, error } = useOpenOrders(ticker)
-  const queryClient = useQueryClient()
-
-  const cancel = useMutation({
-    mutationFn: async (orderId: string) => {
-      const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
-        method: 'DELETE',
-      })
-      if (!res.ok) {
-        // Surface the backend reason. FastAPI puts it in {detail}; fall back to
-        // raw text. Without this the mutation threw into the void and Cancel
-        // looked like it silently did nothing.
-        let msg = `Cancel failed (${res.status})`
-        try {
-          const body = await res.json()
-          msg = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
-        } catch {
-          msg = (await res.text()) || msg
-        }
-        throw new Error(msg)
-      }
-      return res.json()
-    },
-    onSuccess: () => {
-      // WS will deliver user_order(status=canceled); invalidate as backstop.
-      queryClient.invalidateQueries({ queryKey: ['open_orders'] })
-      queryClient.invalidateQueries({ queryKey: ['open_orders_rest'] })
-      queryClient.invalidateQueries({ queryKey: ['positions'] })
-      queryClient.invalidateQueries({ queryKey: ['bankroll_deployed'] })
-    },
-    // onError: no-op handler so a rejected cancel doesn't become an unhandled
-    // promise rejection; the error is rendered from cancel.error below.
-    onError: () => {},
-  })
 
   if (isError) {
     return <InlineError message="Couldn't load open orders." detail={error} />
   }
-
   if (orders.length === 0) {
     return (
       <div className="rounded-lg border border-border bg-bg-card p-4 text-xs text-text-muted">
@@ -58,38 +27,157 @@ export default function OpenOrdersCard({ ticker }: { ticker: string }) {
   return (
     <div className="rounded-lg border border-border bg-bg-card p-4">
       <h3 className="mb-3 text-sm font-semibold text-text">Resting orders</h3>
-      {cancel.isError && (
-        <div className="mb-3">
-          <InlineError message="Couldn't cancel that order." detail={cancel.error} />
-        </div>
-      )}
       <ul className="space-y-2">
         {orders.map((o) => (
-          <li
-            key={o.order_id}
-            className="grid items-center gap-2 rounded-md border border-border bg-bg p-2 text-xs"
-            style={{ gridTemplateColumns: '1fr auto auto' }}
-          >
-            <div>
-              <div className="font-mono text-text">
-                {o.side.toUpperCase()} {o.remaining_count} @ {o.yes_price ?? '—'}¢
-              </div>
-              <div className="text-[10px] text-text-muted">{o.status}</div>
-            </div>
-            <span className="font-mono text-[10px] text-text-muted">
-              {o.order_id.slice(0, 8)}
-            </span>
-            <button
-              type="button"
-              onClick={() => cancel.mutate(o.order_id)}
-              disabled={cancel.isPending}
-              className="rounded-md border border-border bg-bg-hover px-2 py-1 text-[11px] text-text hover:border-loss hover:text-loss"
-            >
-              Cancel
-            </button>
-          </li>
+          <OrderRow key={o.order_id} order={o} />
         ))}
       </ul>
     </div>
+  )
+}
+
+/** The resting price on THIS order's own side. The cache stores yes_price; a
+ *  NO order's own-side price is its complement. The amend body's `price_cents`
+ *  is the side's price (backend maps it to yes_price/no_price). */
+function ownSidePrice(o: OpenOrder): number | null {
+  if (o.yes_price === null) return null
+  return o.side === 'yes' ? o.yes_price : 100 - o.yes_price
+}
+
+function OrderRow({ order: o }: { order: OpenOrder }) {
+  const queryClient = useQueryClient()
+  const [editing, setEditing] = useState(false)
+  const [price, setPrice] = useState<number>(ownSidePrice(o) ?? 1)
+  const [count, setCount] = useState<number>(o.remaining_count)
+
+  const invalidateAll = () => {
+    queryClient.invalidateQueries({ queryKey: ['open_orders'] })
+    queryClient.invalidateQueries({ queryKey: ['open_orders_rest'] })
+    queryClient.invalidateQueries({ queryKey: ['positions'] })
+    queryClient.invalidateQueries({ queryKey: ['bankroll_deployed'] })
+  }
+
+  // Pull the backend reason out of {detail} (string or {reasons:[...]}), else text.
+  const reasonFrom = async (res: Response, fallback: string): Promise<string> => {
+    const raw = await res.text()
+    try {
+      const body = JSON.parse(raw)
+      const reasons = body?.detail?.reasons
+      if (Array.isArray(reasons)) return reasons.join(' ')
+      if (typeof body?.detail === 'string') return body.detail
+    } catch {
+      /* not JSON */
+    }
+    return raw || fallback
+  }
+
+  const cancel = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/orders/${encodeURIComponent(o.order_id)}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error(await reasonFrom(res, `Cancel failed (${res.status})`))
+      return res.json()
+    },
+    onSuccess: invalidateAll,
+    onError: () => {},
+  })
+
+  const amend = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/orders/${encodeURIComponent(o.order_id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ price_cents: price, count }),
+      })
+      if (!res.ok) throw new Error(await reasonFrom(res, `Edit failed (${res.status})`))
+      return res.json()
+    },
+    onSuccess: () => {
+      setEditing(false)
+      invalidateAll()
+    },
+    onError: () => {},
+  })
+
+  const displayPrice = ownSidePrice(o)
+
+  return (
+    <li className="rounded-md border border-border bg-bg p-2 text-xs">
+      <div className="grid items-center gap-2" style={{ gridTemplateColumns: '1fr auto auto auto' }}>
+        <div>
+          <div className="font-mono text-text">
+            {o.side.toUpperCase()} {o.remaining_count} @ {displayPrice ?? '—'}¢
+          </div>
+          <div className="text-[10px] text-text-muted">{o.status}</div>
+        </div>
+        <span className="font-mono text-[10px] text-text-muted">{o.order_id.slice(0, 8)}</span>
+        <button
+          type="button"
+          onClick={() => {
+            // Reset inputs to the live values whenever opening the editor.
+            if (!editing) {
+              setPrice(ownSidePrice(o) ?? 1)
+              setCount(o.remaining_count)
+            }
+            setEditing((v) => !v)
+          }}
+          className="rounded-md border border-border bg-bg-hover px-2 py-1 text-[11px] text-text hover:border-action hover:text-action"
+        >
+          {editing ? 'Close' : 'Edit'}
+        </button>
+        <button
+          type="button"
+          onClick={() => cancel.mutate()}
+          disabled={cancel.isPending}
+          className="rounded-md border border-border bg-bg-hover px-2 py-1 text-[11px] text-text hover:border-loss hover:text-loss"
+        >
+          Cancel
+        </button>
+      </div>
+
+      {editing && (
+        <div className="mt-2 flex items-end gap-2 border-t border-border pt-2">
+          <label className="flex flex-col gap-1 text-[10px] text-text-muted">
+            Price (¢)
+            <input
+              type="number"
+              min={1}
+              max={99}
+              value={price}
+              onChange={(e) => setPrice(Number(e.target.value))}
+              className="w-16 rounded-md border border-border bg-bg-card px-2 py-1 font-mono text-xs text-text"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-[10px] text-text-muted">
+            Count
+            <input
+              type="number"
+              min={1}
+              value={count}
+              onChange={(e) => setCount(Number(e.target.value))}
+              className="w-16 rounded-md border border-border bg-bg-card px-2 py-1 font-mono text-xs text-text"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => amend.mutate()}
+            disabled={amend.isPending || price < 1 || price > 99 || count < 1}
+            className="rounded-md border border-action bg-bg px-3 py-1 text-[11px] font-semibold text-action hover:bg-bg-hover disabled:opacity-40"
+          >
+            {amend.isPending ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      )}
+
+      {cancel.isError && (
+        <div className="mt-2">
+          <InlineError message="Couldn't cancel that order." detail={cancel.error} />
+        </div>
+      )}
+      {amend.isError && (
+        <div className="mt-2">
+          <InlineError message="Couldn't edit that order." detail={amend.error} />
+        </div>
+      )}
+    </li>
   )
 }

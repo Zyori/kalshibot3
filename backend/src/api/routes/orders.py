@@ -28,10 +28,14 @@ from src.core.db import get_session
 from src.core.exceptions import KalshiError, PostOnlyRejected
 from src.core.logging import get_logger
 from src.kalshi.rest import KalshiRestClient, new_client_order_id
-from src.kalshi.schemas import PlaceOrderRequest
+from src.kalshi.schemas import AmendOrderRequest, PlaceOrderRequest
 from src.core.types import BetStatus, ExitType
 from src.models import Bet, Market, Position
-from src.services.bet_service import mark_bet_terminal_by_order_id, record_placed_order
+from src.services.bet_service import (
+    mark_bet_terminal_by_order_id,
+    record_placed_order,
+    reprice_bet_for_amend,
+)
 from src.services.order_sanity import SanityInput, Verdict, check_order
 from src.sports.soccer import is_soccer_ticker
 
@@ -364,4 +368,118 @@ async def cancel_order(
         "ticker": resp.order.ticker,
         "status": resp.order.status,
         "reduced_by": resp.reduced_by,
+    }
+
+
+class AmendBody(BaseModel):
+    """New price + count for a resting order. Side/action are not editable —
+    those would be a different order, not an amend."""
+    price_cents: int = Field(ge=1, le=99)
+    count: int = Field(ge=1)
+
+
+async def _resting_order_from_kalshi(
+    client: KalshiRestClient, order_id: str
+) -> dict[str, Any] | None:
+    """The authoritative ticker/side/action for a resting order, from Kalshi's
+    own /portfolio/orders. We don't trust the client to tell us what an order
+    is on the money path — and the WS cache doesn't carry `action` (buy/sell)
+    at all, only side (yes/no). One extra REST call on a deliberate, infrequent
+    amend; not a hot path. Returns None if the order isn't (or is no longer)
+    resting."""
+    raw = await client.get_orders(status="resting", limit=200)
+    for o in raw.get("orders", []) or []:
+        if o.get("order_id") == order_id:
+            return dict(o)
+    return None
+
+
+@router.put("/orders/{order_id}")
+async def amend_order(
+    order_id: str,
+    body: AmendBody,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Amend a resting order's price and/or count in place.
+
+    Kalshi retires the old order and issues a NEW order_id (re-queued at the
+    new price level) — so after a successful amend we re-point the BET row's
+    kalshi_order_id from old → new and update its price/count.
+
+    The order's ticker/side/action are read from Kalshi's /portfolio/orders
+    (server-authoritative — the WS cache lacks action, and a money mutation
+    shouldn't trust client-asserted order shape). Soccer-only on that ticker
+    (cross-market isolation). Sanity is HARD-REFUSE only — a deliberate edit
+    shouldn't nag (no soft-warn / loud-confirm), but a bug-level fat-finger
+    (price/count out of range) is still blocked.
+    """
+    async with KalshiRestClient() as client:
+        order = await _resting_order_from_kalshi(client, order_id)
+        if order is None:
+            raise HTTPException(
+                status_code=404,
+                detail="no such resting order — it may have already filled or been cancelled",
+            )
+        ticker = order.get("ticker") or order.get("market_ticker") or ""
+        order_side = order.get("side")
+        order_action = order.get("action")
+        if not is_soccer_ticker(ticker):
+            log.warning("amend_order_non_soccer", order_id=order_id, ticker=ticker)
+            raise HTTPException(status_code=400, detail=f"{ticker} is not a soccer market")
+        if order_side not in ("yes", "no") or order_action not in ("buy", "sell"):
+            raise HTTPException(
+                status_code=502,
+                detail=f"kalshi order {order_id} missing side/action — can't amend safely",
+            )
+
+        # HARD-REFUSE tier only: block bug-level inputs, never nag on a real edit.
+        snapshot = _book_snapshot(request, ticker)
+        sanity = check_order(SanityInput(
+            side=order_side, action=order_action,
+            price_cents=body.price_cents, count=body.count, **snapshot,
+        ))
+        if sanity.verdict == Verdict.HARD_REFUSE:
+            raise HTTPException(status_code=400, detail={"reasons": sanity.reasons})
+
+        updated_client_order_id = new_client_order_id()
+        req = AmendOrderRequest(
+            ticker=ticker,
+            side=order_side,
+            action=order_action,
+            yes_price=body.price_cents if order_side == "yes" else None,
+            no_price=body.price_cents if order_side == "no" else None,
+            count=body.count,
+            updated_client_order_id=updated_client_order_id,
+        )
+
+        try:
+            resp = await client.amend_order(order_id, req)
+        except PostOnlyRejected as e:  # amend of a resting order shouldn't cross, but be safe
+            log.info("amend_order_post_only_rejected", order_id=order_id)
+            raise HTTPException(status_code=422, detail={"reasons": [str(e)]})
+        except KalshiError as e:
+            log.warning("amend_order_kalshi_error", order_id=order_id, error=str(e))
+            raise HTTPException(status_code=502, detail=f"kalshi: {e}") from e
+
+    # Re-point the BET row to the new order_id and update its price/count.
+    # Amend issues a new order_id; without this swap the BET row would track a
+    # retired order and a later cancel/fill couldn't match it.
+    await reprice_bet_for_amend(
+        session,
+        old_order_id=order_id,
+        new_order_id=resp.order.order_id,
+        new_price_cents=body.price_cents,
+        new_count=body.count,
+    )
+    await session.commit()
+
+    return {
+        "kalshi_order_id": resp.order.order_id,
+        "old_order_id": order_id,
+        "ticker": ticker,
+        "side": order_side,
+        "price_cents": body.price_cents,
+        "count": body.count,
+        "status": resp.order.status,
     }
