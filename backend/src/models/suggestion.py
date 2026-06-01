@@ -24,7 +24,15 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
 from src.core.db import Base
-from src.core.types import BetSide, Confidence, Sport, Strategy, SuggestionStatus, Urgency
+from src.core.types import (
+    BetSide,
+    Confidence,
+    Sport,
+    Strategy,
+    SuggestionKind,
+    SuggestionStatus,
+    Urgency,
+)
 
 
 class Suggestion(Base):
@@ -35,6 +43,10 @@ class Suggestion(Base):
     market_id: Mapped[int] = mapped_column(
         ForeignKey("market.id", ondelete="CASCADE"), nullable=False
     )
+
+    kind: Mapped[SuggestionKind] = mapped_column(String(8), nullable=False)
+    """entry = open a position; exit = close a held one. The frontend renders
+    entry cards in the feed and exit cards on the held market."""
 
     suggestion_group_id: Mapped[int | None] = mapped_column(Integer)
     """Multi-leg parlays share a group_id. Single-leg suggestions leave this null."""
@@ -64,6 +76,7 @@ class Suggestion(Base):
 
     __table_args__ = (
         CheckConstraint("sport IN ('soccer', 'nfl')", name="ck_suggestion_sport"),
+        CheckConstraint("kind IN ('entry', 'exit')", name="ck_suggestion_kind"),
         CheckConstraint(
             "suggested_price_cents >= 1 AND suggested_price_cents <= 99",
             name="ck_suggestion_price_range",

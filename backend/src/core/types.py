@@ -185,6 +185,15 @@ class SuggestionStatus(StrEnum):
     EXPIRED = "expired"
 
 
+class SuggestionKind(StrEnum):
+    """What action a suggestion proposes. Orthogonal to `strategy` (which says
+    *why*): an exit suggestion still carries a strategy like `hedge`. `kind`
+    says *what* — open a new position or close a held one."""
+
+    ENTRY = "entry"
+    EXIT = "exit"
+
+
 class Urgency(StrEnum):
     HIGH = "high"
     MEDIUM = "medium"
