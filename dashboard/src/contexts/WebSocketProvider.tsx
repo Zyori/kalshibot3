@@ -84,6 +84,16 @@ type SuggestionEvent = {
   dismissed?: boolean
 }
 
+// A passive threshold nudge ("worth a look — ask the partner?"). Push-only and
+// ephemeral — there's no GET to invalidate, so unlike `suggestion` this one
+// appends into a client-held cache via setQueryData.
+type NudgeEvent = {
+  type: 'nudge'
+  subject: string
+  trigger: 'profit_50' | 'clock_75' | 'red_card'
+  label: string
+}
+
 type WsEvent =
   | OrderbookSnapshotEvent
   | OrderbookDeltaEvent
@@ -92,6 +102,7 @@ type WsEvent =
   | MarketLifecycleEvent
   | PositionSyncedEvent
   | SuggestionEvent
+  | NudgeEvent
 
 type WsPayload = { events: WsEvent[] }
 
@@ -119,9 +130,17 @@ export type OpenOrder = {
   remaining_count: number
 }
 
+export type ActiveNudge = {
+  subject: string
+  trigger: 'profit_50' | 'clock_75' | 'red_card'
+  label: string
+}
+
 export type WsStatus = 'connecting' | 'open' | 'closed'
 
 const queryKeyForBook = (ticker: string) => ['book', ticker] as const
+
+const queryKeyForNudges = ['nudges'] as const
 
 const queryKeyForOpenOrders = ['open_orders'] as const
 
@@ -300,6 +319,20 @@ function applyEvent(qc: ReturnType<typeof useQueryClient>, event: WsEvent) {
       // invalidate the cold-load query so the cards refetch (same pattern as
       // position_synced). Never setQueryData here; this isn't hot book data.
       qc.invalidateQueries({ queryKey: ['suggestions'] })
+      return
+    }
+    case 'nudge': {
+      // Push-only ephemeral chip — no GET to invalidate, so append into the
+      // client cache (de-duped by subject+trigger; a re-fire replaces). This is
+      // the one discrete event that legitimately uses setQueryData: there's no
+      // server list to refetch.
+      qc.setQueryData<ActiveNudge[]>(queryKeyForNudges, (prev) => {
+        const next = (prev ?? []).filter(
+          (n) => !(n.subject === event.subject && n.trigger === event.trigger),
+        )
+        next.push({ subject: event.subject, trigger: event.trigger, label: event.label })
+        return next
+      })
       return
     }
   }

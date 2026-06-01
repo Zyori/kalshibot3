@@ -2,6 +2,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 
 import InlineError from '../components/InlineError'
+import NudgeChips from '../components/trading/NudgeChip'
 import SuggestionCard from '../components/trading/SuggestionCard'
 import { useSuggestions } from '../hooks/useSuggestions'
 import {
@@ -60,6 +61,8 @@ export default function SportPortal() {
           Live games and your open positions. Suggestions, markets, and news land later.
         </p>
       </header>
+
+      <NudgeChips />
 
       <div className="grid gap-4 md:grid-cols-2">
         <LiveGamesTile />

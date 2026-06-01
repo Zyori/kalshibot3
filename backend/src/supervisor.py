@@ -44,8 +44,11 @@ from src.services.bet_service import (
 from src.services.fills_sync import FillsSyncer
 from src.services.market_refresher import MarketRefresher
 from src.services.market_tier import MarketTier, classify
+from src.services.nudge_evaluator import Nudge, NudgeEvaluator
 from src.services.position_sync import PositionSyncer
 from src.services.settlement_sweeper import SettlementSweeper
+from src.models import Market, Position
+from sqlalchemy import select
 
 log = get_logger(__name__)
 
@@ -96,10 +99,17 @@ class Supervisor:
         # while we still have an OPEN bet on that market — strong signal
         # that the position was paid out and we missed the WS lifecycle event.
         self.position_syncer.set_on_position_closed(self.settlement_sweeper.trigger)
-        # After every sync commit, nudge browsers to refetch positions. Fired
-        # post-commit so the refetch reads the row this sync just wrote — kills
-        # the gap between a fill and the position showing up in the UI.
-        self.position_syncer.set_on_synced(self._broadcast_position_synced)
+        # After every sync commit: tell browsers to refetch positions AND run
+        # the +50% profit nudge off the freshly-committed rows. Fired post-commit
+        # so both read the row this sync just wrote.
+        self.position_syncer.set_on_synced(self._on_position_synced)
+
+        # Edge-triggered nudge state. In-memory by design (a nudge is a
+        # reminder, not money — see nudge_evaluator). The +50% trigger rides the
+        # position-sync hook above; clock-75'/red-card ride the ESPN observer
+        # task started in start().
+        self.nudge_evaluator = NudgeEvaluator()
+        self._nudge_observer_interval_s = 20.0
 
         # Track each ticker's last-known tier so we can detect transitions
         # (FAR→SOON, LIVE→DONE, etc.) and run the right hand-off logic.
@@ -149,10 +159,76 @@ class Supervisor:
         if self.app_state is not None:
             self.app_state._balance_refreshed_at_mono = 0.0
 
-    async def _broadcast_position_synced(self) -> None:
-        """Tell browsers a position reconciliation just committed. They
-        refetch the event/positions/ledger queries off this signal."""
+    async def _on_position_synced(self) -> None:
+        """Post-commit hook after a position reconciliation: tell browsers to
+        refetch, then run the +50% profit nudge off the just-written rows."""
         await self.broadcast.broadcast_app_event({"type": "position_synced"})
+        try:
+            await self._evaluate_profit_nudges()
+        except Exception:  # noqa: BLE001 — a nudge failure must never break sync
+            log.exception("profit_nudge_eval_failed")
+
+    async def _broadcast_nudges(self, nudges: list[Nudge]) -> None:
+        """Fan each nudge out as its own app event. Discrete + low-frequency →
+        the browser invalidates ['nudges'] and re-reads. Keyed by subject+trigger
+        so two nudges in one flush window don't collapse."""
+        for n in nudges:
+            await self.broadcast.broadcast_app_event(
+                {
+                    "type": "nudge",
+                    "subject": n.subject,
+                    "trigger": n.trigger,
+                    "label": n.label,
+                }
+            )
+
+    async def _evaluate_profit_nudges(self) -> None:
+        """Read open positions + their unrealized return %, fire +50% nudges.
+        Same %-of-cost-basis math the dashboard derives (unrealized / cost)."""
+        factory = get_session_factory()
+        async with factory() as session:
+            rows = (await session.execute(select(Position))).scalars().all()
+        pos_pct: list[tuple[str, float | None]] = []
+        for p in rows:
+            entry = p.cost_basis_cents
+            pnl = p.unrealized_pnl_cents
+            pct: float | None = None
+            if entry and entry > 0 and pnl is not None:
+                pct = (pnl / entry) * 100.0
+            pos_pct.append((p.kalshi_ticker, pct))
+        nudges = self.nudge_evaluator.evaluate_profit(pos_pct)
+        if nudges:
+            await self._broadcast_nudges(nudges)
+
+    async def _nudge_observer_loop(self) -> None:
+        """Watch the discovery feed for clock-75' and red-card crossings on live
+        games. Reads the same ESPN-derived FeedMarket state the event API shows;
+        no new external poll (ESPN already polls). Edge-triggered via the
+        evaluator. Swallows per-cycle errors so a bad read never kills the loop."""
+        while True:
+            try:
+                await asyncio.sleep(self._nudge_observer_interval_s)
+                feed = self.market_discovery.get_feed()
+                # One row per event is enough for clock/red-card — dedupe by
+                # event_ticker (the two sides of a match share ESPN state).
+                seen: dict[str, tuple[str, str | None, int]] = {}
+                for m in feed.live:
+                    if m.event_ticker in seen:
+                        continue
+                    reds = 0
+                    if m.espn_event is not None:
+                        reds = (
+                            m.espn_event.home_stats.red_cards
+                            + m.espn_event.away_stats.red_cards
+                        )
+                    seen[m.event_ticker] = (m.event_ticker, m.espn_clock, reds)
+                nudges = self.nudge_evaluator.evaluate_live_games(list(seen.values()))
+                if nudges:
+                    await self._broadcast_nudges(nudges)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                log.exception("nudge_observer_cycle_failed")
 
     async def _on_market_lifecycle(self, msg: MarketLifecycle) -> None:
         """Settle BETs when Kalshi reports a terminal market status.
@@ -370,6 +446,9 @@ class Supervisor:
         ))
         self._tasks.append(asyncio.create_task(
             self.settlement_sweeper.run(), name="settlement_sweep",
+        ))
+        self._tasks.append(asyncio.create_task(
+            self._nudge_observer_loop(), name="nudge_observer",
         ))
         log.info("supervisor_started", tasks=len(self._tasks))
 
