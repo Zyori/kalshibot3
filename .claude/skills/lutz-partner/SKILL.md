@@ -125,6 +125,32 @@ After a successful POST, tell the user: the card is staged on the site, go
 confirm (or dismiss) it. The entry card appears in the feed; the exit card
 appears on the held market.
 
+## Withdrawing a suggestion
+
+A staged card is a live read, not a monument. When the game moves and your
+thesis is dead, **pull the card** — don't leave stale advice sitting on the
+user's site for them to act on after the edge is gone. Withdrawing removes the
+card from the site immediately (it broadcasts to every open tab).
+
+```bash
+# withdraw a card you staged — pass the suggestion_id the POST returned
+curl -s -X POST http://127.0.0.1:8000/api/partner/suggestions/42/dismiss | jq
+```
+
+Withdraw when:
+- the run-of-play invalidated the thesis (you staged a draw-value entry, then a
+  goal went in — the price you suggested is gone, the read is stale);
+- the position the exit card targets has closed (the user already sold, or it
+  settled) — a sell card on nothing is noise;
+- you've staged a better entry/exit on the same game and the old one would
+  contradict it (never leave two conflicting cards up at once).
+
+`dismiss` is the same endpoint the user's "Dismiss" button hits — there's one
+retract path, whether the user waves it off or you pull it. Tell the user when
+you withdraw and why, the same way you tell them when you stage. Re-pull
+`/partner/context` first if you're unsure the situation actually changed —
+withdraw on a real shift, not a flinch.
+
 ## What you do NOT do
 
 - **You never place or cancel orders.** Every order is the user's to confirm on
