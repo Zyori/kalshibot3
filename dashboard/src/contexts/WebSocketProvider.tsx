@@ -73,6 +73,17 @@ type PositionSyncedEvent = {
   type: 'position_synced'
 }
 
+// The AI partner staged (or dismissed) a suggestion. Discrete event — we
+// invalidate the suggestions query, matching the position_synced pattern,
+// rather than threading the row through the hot-data cache.
+type SuggestionEvent = {
+  type: 'suggestion'
+  suggestion_id: number
+  kind?: 'entry' | 'exit'
+  ticker?: string
+  dismissed?: boolean
+}
+
 type WsEvent =
   | OrderbookSnapshotEvent
   | OrderbookDeltaEvent
@@ -80,6 +91,7 @@ type WsEvent =
   | UserOrderEvent
   | MarketLifecycleEvent
   | PositionSyncedEvent
+  | SuggestionEvent
 
 type WsPayload = { events: WsEvent[] }
 
@@ -281,6 +293,13 @@ function applyEvent(qc: ReturnType<typeof useQueryClient>, event: WsEvent) {
       // Surface status changes by invalidating the market-detail query.
       // Cheap, fires rarely.
       qc.invalidateQueries({ queryKey: ['market', event.ticker] })
+      return
+    }
+    case 'suggestion': {
+      // A suggestion was staged or dismissed. Discrete, low-frequency —
+      // invalidate the cold-load query so the cards refetch (same pattern as
+      // position_synced). Never setQueryData here; this isn't hot book data.
+      qc.invalidateQueries({ queryKey: ['suggestions'] })
       return
     }
   }

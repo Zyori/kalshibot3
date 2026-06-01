@@ -130,6 +130,27 @@ export type ChildMarket = {
   position: ChildPosition | null
 }
 
+// A staged entry/exit suggestion from the AI partner (LUTZ). Surfaces as an
+// amber card; the user confirms it into an order via the OrderPanel.
+export type Suggestion = {
+  id: number
+  kind: 'entry' | 'exit'
+  ticker: string | null
+  side: 'yes' | 'no'
+  suggested_price_cents: number
+  suggested_size_cents: number
+  strategy: string
+  justification: string
+  confidence: 'high' | 'medium' | 'low'
+  urgency: 'high' | 'medium' | 'low'
+  status: 'pending' | 'accepted' | 'rejected' | 'expired'
+  ai_probability_pct: number | null
+  market_probability_pct: number | null
+  estimated_edge_bps: number | null
+  created_at: string | null
+  expires_at: string | null
+}
+
 export type EventDetail = {
   event_ticker: string
   event_title: string | null

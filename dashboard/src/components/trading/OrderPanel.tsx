@@ -48,12 +48,27 @@ type PlaceResponse = {
  *   Sell now → limit at (best_bid - 1) — symmetric
  * Neither requires a confirm; only LOUD_CONFIRM verdicts prompt a dialog.
  */
+/**
+ * A staged pre-fill pushed in from a suggestion card. `nonce` changes on every
+ * "Stage" click so re-staging the same values still re-applies (a plain value
+ * compare wouldn't fire). `count` is optional — exit cards may leave it to the
+ * panel's default.
+ */
+export type OrderPrefill = {
+  side: Side
+  price: number
+  count?: number
+  nonce: number
+}
+
 export default function OrderPanel({
   ticker,
   book,
+  prefill,
 }: {
   ticker: string
   book: MarketBook | undefined
+  prefill?: OrderPrefill | null
 }) {
   const queryClient = useQueryClient()
   const [side, setSide] = useState<Side>('yes')
@@ -99,6 +114,23 @@ export default function OrderPanel({
       return () => clearTimeout(t)
     }
   }, [sideMid, priceHeldAt])
+
+  // Apply a staged pre-fill from a suggestion card. Keyed on nonce so a repeat
+  // "Stage" re-applies. holdPrice() freezes auto-follow for PRICE_HOLD_MS so the
+  // suggested price isn't immediately stomped by the next market tick — the user
+  // sees exactly what LUTZ proposed, then confirms or adjusts. Syncing an
+  // external trigger (a Stage click) into local form state is exactly what an
+  // effect is for here — same pattern as the auto-follow effect above. nonce is
+  // the trigger; the rest are read at apply time, so the deps array is intentional.
+  /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+  useEffect(() => {
+    if (!prefill) return
+    setSide(prefill.side)
+    setPrice(prefill.price)
+    if (prefill.count !== undefined) setCount(prefill.count)
+    holdPrice()
+  }, [prefill?.nonce])
+  /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
   // Preview is keyed by action too. We run a preview per direction so each
   // submit button can show its own warning state without an extra round-trip

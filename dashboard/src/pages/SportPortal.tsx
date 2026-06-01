@@ -1,14 +1,16 @@
-import { Link, useParams } from 'react-router'
+import { Link, useNavigate, useParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 
 import InlineError from '../components/InlineError'
+import SuggestionCard from '../components/trading/SuggestionCard'
+import { useSuggestions } from '../hooks/useSuggestions'
 import {
   formatET,
   formatMatchClock,
   formatPriceCents,
   formatSignedDollars,
 } from '../lib/format'
-import type { Bet, LedgerStats } from '../lib/types'
+import type { Bet, LedgerStats, Suggestion } from '../lib/types'
 
 // The app is soccer-only today (slug is always "soccer"); the feed is
 // already all-soccer, so the Live Games tile shows the whole live block.
@@ -63,7 +65,7 @@ export default function SportPortal() {
         <LiveGamesTile />
         <OpenPositionsTile />
         <PlaceholderTile title="Markets" note="Browse the full feed →" to="/" />
-        <PlaceholderTile title="Suggested Bets" note="Coming soon." />
+        <SuggestedBetsTile />
         <PlaceholderTile title="News" note="Coming soon." />
       </div>
 
@@ -269,6 +271,47 @@ function OpenPositionsTile() {
 function eventTickerOf(marketTicker: string): string {
   const i = marketTicker.lastIndexOf('-')
   return i === -1 ? marketTicker : marketTicker.slice(0, i)
+}
+
+function SuggestedBetsTile() {
+  const navigate = useNavigate()
+  const { suggestions, isError } = useSuggestions()
+  // Entry suggestions surface here; exit suggestions render on their market's
+  // card inside the event page.
+  const entries = suggestions.filter((s) => s.kind === 'entry')
+
+  // Staging an entry from the feed deep-links to the event with the market
+  // pre-selected, where the OrderPanel pre-fill completes the hand-off. We
+  // carry the suggestion's price/side in the URL so the event card can apply
+  // it. (The market card reads ?stage params on open.)
+  const stage = (s: Suggestion) => {
+    if (!s.ticker) return
+    const ev = eventTickerOf(s.ticker)
+    const params = new URLSearchParams({
+      market: s.ticker,
+      stage_side: s.side,
+      stage_price: String(s.suggested_price_cents),
+    })
+    navigate(`/event/${encodeURIComponent(ev)}?${params.toString()}`)
+  }
+
+  return (
+    <Tile title="Suggested Bets" count={entries.length || undefined}>
+      {isError ? (
+        <InlineError message="Couldn't load suggestions." />
+      ) : entries.length === 0 ? (
+        <p className="text-xs text-text-muted">
+          No suggestions. Ask the partner in a terminal session.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {entries.map((s) => (
+            <SuggestionCard key={s.id} suggestion={s} onStage={stage} />
+          ))}
+        </div>
+      )}
+    </Tile>
+  )
 }
 
 function HistorySection({ sport }: { sport: string }) {

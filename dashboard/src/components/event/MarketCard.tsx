@@ -8,17 +8,21 @@
  * `expanded` + `onToggle`; defaults are wired in EventView (favorite
  * auto-opens, the user's held market auto-opens).
  */
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import DepthLadder from '../trading/DepthLadder'
 import OpenOrdersCard from '../trading/OpenOrdersCard'
 import OrderPanel from '../trading/OrderPanel'
+import type { OrderPrefill } from '../trading/OrderPanel'
+import SuggestionCard from '../trading/SuggestionCard'
 import TopOfBook from '../trading/TopOfBook'
 import type { MarketBook } from '../../contexts/WebSocketProvider'
+import { useSuggestions } from '../../hooks/useSuggestions'
 import { bestAsk, bestBid } from '../../lib/book'
 import { formatPriceCents, outcomeLabel } from '../../lib/format'
-import type { ChildMarket } from '../../lib/types'
+import type { ChildMarket, Suggestion } from '../../lib/types'
 
 // Match CombinedPriceChart.COLORS — green / red / blue / amber / purple / cyan.
 const COLOR_DOTS = ['bg-gain', 'bg-loss', 'bg-blue-500', 'bg-action', 'bg-purple-500', 'bg-cyan-500']
@@ -112,6 +116,49 @@ function ExpandedBody({ ticker }: { ticker: string }) {
   // when empty, then let WS deltas keep it fresh. Seeding is guarded below so
   // a re-expand can't clobber a live WS book.
   const queryClient = useQueryClient()
+
+  // Exit suggestions targeting this market. The Stage button pre-fills the
+  // OrderPanel below via `prefill` (nonce bumps each click so a repeat re-
+  // applies). Backstop A for the exit race: if the position closes, the
+  // suggestion's still here but /orders/place refuses the sell at confirm.
+  const { suggestions } = useSuggestions()
+  const exitCards = suggestions.filter(
+    (s) => s.kind === 'exit' && s.ticker === ticker,
+  )
+  const [prefill, setPrefill] = useState<OrderPrefill | null>(null)
+  const stage = (s: Suggestion) => {
+    setPrefill({
+      side: s.side,
+      price: s.suggested_price_cents,
+      // size is a stake in cents; leave count to the panel default for now —
+      // the user sizes the sell.
+      nonce: Date.now(),
+    })
+  }
+
+  // Entry hand-off from the SportPortal feed: it deep-links here with
+  // ?market=<this>&stage_side=&stage_price=. Apply that as a one-shot pre-fill
+  // when this card is the targeted market, then clear the params so a refresh
+  // or toggle doesn't re-stage.
+  const [searchParams, setSearchParams] = useSearchParams()
+  // Syncing the URL hand-off into local pre-fill state is effect territory
+  // (external trigger → local state), same accepted pattern as the OrderPanel
+  // effects. One-shot: clears the params so a toggle/refresh can't re-stage.
+  /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+  useEffect(() => {
+    if (searchParams.get('market') !== ticker) return
+    const side = searchParams.get('stage_side')
+    const price = searchParams.get('stage_price')
+    if (side !== 'yes' && side !== 'no') return
+    if (price === null) return
+    setPrefill({ side, price: Number(price), nonce: Date.now() })
+    const next = new URLSearchParams(searchParams)
+    next.delete('stage_side')
+    next.delete('stage_price')
+    setSearchParams(next, { replace: true })  // setSearchParams is stable (React Router)
+  }, [searchParams, ticker])
+  /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+
   const { data: liveBook } = useQuery<MarketBook | undefined>({
     queryKey: ['book', ticker],
     queryFn: () => undefined,
@@ -145,13 +192,20 @@ function ExpandedBody({ ticker }: { ticker: string }) {
 
   return (
     <div className="space-y-4 border-t border-border bg-bg p-4">
+      {exitCards.length > 0 && (
+        <div className="space-y-2">
+          {exitCards.map((s) => (
+            <SuggestionCard key={s.id} suggestion={s} onStage={stage} />
+          ))}
+        </div>
+      )}
       <TopOfBook book={liveBook} />
       <div className="grid gap-4 md:grid-cols-2">
         <DepthLadder title="YES depth" side={liveBook?.yes ?? {}} />
         <DepthLadder title="NO depth" side={liveBook?.no ?? {}} />
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
-        <OrderPanel ticker={ticker} book={liveBook} />
+        <OrderPanel ticker={ticker} book={liveBook} prefill={prefill} />
         <OpenOrdersCard ticker={ticker} />
       </div>
     </div>
