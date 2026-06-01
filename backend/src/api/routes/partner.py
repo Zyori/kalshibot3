@@ -6,32 +6,49 @@ reaches the app only through these localhost HTTP endpoints.
 
 This module is the partner's data plane:
   GET  /partner/context[?event=]   one-call read of everything it reasons on
-  POST /partner/suggestions         write an entry/exit suggestion (U4)
+  POST /partner/suggestions        write an entry/exit suggestion → amber card
 
-The context endpoint deliberately composes from the *same* route handlers
-the dashboard uses (events.get_event, positions.list_positions,
-ledger.list_bets) rather than re-querying — so the partner sees byte-for-byte
-the numbers the site shows. Single source of truth: if /positions says a
+The context endpoint deliberately composes from the *same* serializers the
+dashboard uses (events.get_event, positions.list_positions,
+ledger._bet_to_dict) rather than re-deriving — so the partner sees byte-for-
+byte the numbers the site shows. Single source of truth: if /positions says a
 position is +52%, /partner/context says +52%, because it's the same code.
 
-Cross-market isolation is inherited: every composed handler is already
-soccer-only.
+The write endpoint creates SUGGESTION rows (kind entry|exit) and broadcasts a
+`suggestion` app event so the browser surfaces an amber card. It is the only
+thing the partner can do beyond reading — and even then it cannot place an
+order: a suggestion is a staged card the human still confirms.
+
+Cross-market isolation is enforced/inherited on every path: soccer tickers
+only, never non-soccer positions or markets.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
 from src.core.logging import get_logger
+from src.core.types import (
+    BetSide,
+    Confidence,
+    Sport,
+    Strategy,
+    SuggestionKind,
+    SuggestionStatus,
+    Urgency,
+)
 from src.api.routes.events import get_event
 from src.api.routes.ledger import _bet_to_dict
 from src.api.routes.positions import list_positions
-from src.models import Bet, Market
+from src.models import Bet, Market, Position, Suggestion
+from src.sports.soccer import is_soccer_ticker
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -100,3 +117,126 @@ async def partner_context(
         out["event"] = await get_event(event, request, session)
 
     return out
+
+
+# === Write: suggestions ===================================================
+
+
+class SuggestionBody(BaseModel):
+    """What the terminal partner POSTs to stage an amber card. Validated hard:
+    the partner is trusted code, but a typo'd price or side is a real-money
+    foot-gun and a 422 is cheaper than a bad card."""
+
+    kind: SuggestionKind
+    ticker: str
+    side: BetSide
+    suggested_price_cents: int = Field(ge=1, le=99)
+    suggested_size_cents: int = Field(ge=0)
+    strategy: Strategy
+    justification: str = Field(min_length=1)
+    confidence: Confidence
+    urgency: Urgency = Urgency.MEDIUM
+    kelly_fraction_bps: int | None = None
+    estimated_edge_bps: int | None = None
+    ai_probability_pct: int | None = Field(default=None, ge=0, le=100)
+    market_probability_pct: int | None = Field(default=None, ge=0, le=100)
+    expires_at: datetime | None = None
+
+
+@router.post("/partner/suggestions")
+async def create_suggestion(
+    body: SuggestionBody,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Create a pending entry|exit suggestion and broadcast it to the browser.
+
+    Guards, in order:
+      - soccer-only ticker (cross-market isolation)
+      - ticker resolves to a known market (a suggestion on a phantom market is
+        a bug; we do NOT auto-create markets here)
+      - kind=exit must reference a held (ticker, side) position. This is a
+        bug-guard, not a risk gate (mirrors the order route's ghost-share
+        philosophy): the partner shouldn't propose selling something you don't
+        hold. The load-bearing race guard is /orders/place at execution time;
+        a position can still close after this passes, which the frontend hides
+        and /orders/place ultimately refuses.
+
+    No order is placed. The row lands status=pending and surfaces as an amber
+    card the human confirms.
+    """
+    if not is_soccer_ticker(body.ticker):
+        raise HTTPException(status_code=400, detail=f"{body.ticker} is not a soccer market")
+
+    market_id = await session.scalar(
+        select(Market.id).where(Market.kalshi_ticker == body.ticker)
+    )
+    if market_id is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no market {body.ticker} in the ledger — can't suggest on it",
+        )
+
+    if body.kind is SuggestionKind.EXIT:
+        held = await session.scalar(
+            select(Position.quantity)
+            .where(Position.market_id == market_id, Position.side == body.side)
+        )
+        if not held:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"exit suggestion for {body.side.value.upper()} {body.ticker} "
+                    f"but no such position is held"
+                ),
+            )
+
+    suggestion = Suggestion(
+        sport=Sport.SOCCER,
+        market_id=market_id,
+        kind=body.kind,
+        side=body.side,
+        suggested_price_cents=body.suggested_price_cents,
+        suggested_size_cents=body.suggested_size_cents,
+        strategy=body.strategy,
+        justification=body.justification,
+        confidence=body.confidence,
+        urgency=body.urgency,
+        status=SuggestionStatus.PENDING,
+        kelly_fraction_bps=body.kelly_fraction_bps,
+        estimated_edge_bps=body.estimated_edge_bps,
+        ai_probability_pct=body.ai_probability_pct,
+        market_probability_pct=body.market_probability_pct,
+        expires_at=body.expires_at,
+    )
+    session.add(suggestion)
+    await session.commit()
+    await session.refresh(suggestion)
+
+    # Broadcast post-commit so the browser's refetch reads the row we just
+    # wrote. Discrete event → the frontend invalidates ['suggestions']; this
+    # mirrors supervisor._broadcast_position_synced (direct app-event call, no
+    # _serialize builder). Best-effort: a missing broadcaster (no supervisor in
+    # tests) must not fail the write.
+    # Use the validated Pydantic enums (body.*) for serialization, not the
+    # refreshed ORM attributes: the columns are String, so a refreshed
+    # `suggestion.kind` reads back as a plain str with no .value. body.kind is
+    # the real enum. SuggestionStatus.PENDING is a constant we set above.
+    broadcast = getattr(request.app.state, "broadcast", None)
+    if broadcast is not None:
+        await broadcast.broadcast_app_event(
+            {
+                "type": "suggestion",
+                "suggestion_id": suggestion.id,
+                "kind": body.kind.value,
+                "ticker": body.ticker,
+            }
+        )
+
+    return {
+        "suggestion_id": suggestion.id,
+        "kind": body.kind.value,
+        "ticker": body.ticker,
+        "side": body.side.value,
+        "status": SuggestionStatus.PENDING.value,
+    }
