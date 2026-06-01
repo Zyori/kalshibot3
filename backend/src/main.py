@@ -31,6 +31,7 @@ from src.api.routes import (
     ledger,
     markets,
     orders,
+    partner,
     positions,
     settings,
 )
@@ -163,6 +164,7 @@ app.include_router(positions.router, prefix="/api")
 app.include_router(ledger.router, prefix="/api")
 app.include_router(events.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
+app.include_router(partner.router, prefix="/api")
 app.include_router(ws_endpoint.router)
 
 
