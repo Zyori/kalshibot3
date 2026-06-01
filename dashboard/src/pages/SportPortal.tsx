@@ -294,6 +294,7 @@ function SuggestedBetsTile() {
       market: s.ticker,
       stage_side: s.side,
       stage_price: String(s.suggested_price_cents),
+      stage_size: String(s.suggested_size_cents),
     })
     navigate(`/event/${encodeURIComponent(ev)}?${params.toString()}`)
   }

@@ -127,11 +127,18 @@ function ExpandedBody({ ticker }: { ticker: string }) {
   )
   const [prefill, setPrefill] = useState<OrderPrefill | null>(null)
   const stage = (s: Suggestion) => {
+    // Exit cards carry a stake in cents (suggested_size_cents); the panel wants
+    // a contract count. Convert at the suggested price, then clamp to what's
+    // actually held — LUTZ can advise a partial ("bank 25%") or over-size, but
+    // you can never sell more than you hold (the order path's ghost-share guard
+    // would refuse it anyway). Fall back to held qty if the math yields nothing.
+    const held = market.position?.quantity ?? 0
+    const fromStake = Math.floor(s.suggested_size_cents / s.suggested_price_cents)
+    const count = held > 0 ? Math.min(fromStake || held, held) : fromStake || undefined
     setPrefill({
       side: s.side,
       price: s.suggested_price_cents,
-      // size is a stake in cents; leave count to the panel default for now —
-      // the user sizes the sell.
+      count,
       nonce: Date.now(),
     })
   }
@@ -149,12 +156,21 @@ function ExpandedBody({ ticker }: { ticker: string }) {
     if (searchParams.get('market') !== ticker) return
     const side = searchParams.get('stage_side')
     const price = searchParams.get('stage_price')
+    const size = searchParams.get('stage_size')
     if (side !== 'yes' && side !== 'no') return
     if (price === null) return
-    setPrefill({ side, price: Number(price), nonce: Date.now() })
+    // Entry handoff: derive contract count from the staked cents at the
+    // suggested price (no held position to clamp to, unlike the exit path).
+    const priceCents = Number(price)
+    const count =
+      size !== null && priceCents > 0
+        ? Math.floor(Number(size) / priceCents) || undefined
+        : undefined
+    setPrefill({ side, price: priceCents, count, nonce: Date.now() })
     const next = new URLSearchParams(searchParams)
     next.delete('stage_side')
     next.delete('stage_price')
+    next.delete('stage_size')
     setSearchParams(next, { replace: true })  // setSearchParams is stable (React Router)
   }, [searchParams, ticker])
   /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
