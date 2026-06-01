@@ -74,7 +74,11 @@ export default function OrderPanel({
   const [side, setSide] = useState<Side>('yes')
   const [count, setCount] = useState<number>(1)
   const [price, setPrice] = useState<number>(50)
-  const [postOnly, setPostOnly] = useState(false)
+  // Default ON: a manual limit rests as a maker (zero Kalshi fee) instead of
+  // crossing and paying the taker fee. The quick "Buy/Sell now" buttons below
+  // deliberately override this to false — they exist to cross the spread and
+  // take the offer immediately, which post-only would reject.
+  const [postOnly, setPostOnly] = useState(true)
   const [loudReasons, setLoudReasons] = useState<
     { reasons: string[]; action: Action; price: number } | null
   >(null)
@@ -141,20 +145,22 @@ export default function OrderPanel({
   const place = useMutation<
     PlaceResponse,
     Error,
-    { action: Action; acknowledged_loud?: boolean; price_override?: number; count_override?: number }
+    { action: Action; acknowledged_loud?: boolean; price_override?: number; count_override?: number; post_only_override?: boolean }
   >({
-    mutationFn: async ({ action, acknowledged_loud = false, price_override, count_override }) => {
+    mutationFn: async ({ action, acknowledged_loud = false, price_override, count_override, post_only_override }) => {
       // price_override / count_override carry the exact price + size the
       // clicked button computed (quick buy/sell = ask+1 / bid-1 at ½ unit).
       // Relying on `price`/`count` state here was a bug: setState before
       // mutate() doesn't flush before this closure runs, so the quick buttons
       // posted the previously-typed values. The overrides are what the user
       // actually saw and clicked.
+      // post_only_override: the quick "now" buttons force false (they cross the
+      // spread on purpose); manual limits use the checkbox (default on = maker).
       const effectivePrice = price_override ?? price
       const effectiveCount = count_override ?? count
       const body = {
         ticker, side, action, count: effectiveCount,
-        price_cents: effectivePrice, post_only: postOnly, acknowledged_loud,
+        price_cents: effectivePrice, post_only: post_only_override ?? postOnly, acknowledged_loud,
       }
       const res = await fetch('/api/orders/place', {
         method: 'POST',
@@ -208,7 +214,7 @@ export default function OrderPanel({
   // Single guarded entry point for every order submission. The ref check is
   // synchronous, so a fast double-click can't fire two mutations before the
   // first re-render disables the buttons.
-  const submit = (vars: { action: Action; acknowledged_loud?: boolean; price_override?: number; count_override?: number }) => {
+  const submit = (vars: { action: Action; acknowledged_loud?: boolean; price_override?: number; count_override?: number; post_only_override?: boolean }) => {
     if (submittingRef.current) return
     submittingRef.current = true
     place.mutate(vars)
@@ -275,7 +281,7 @@ export default function OrderPanel({
             setPrice(quickBuy)
             setCount(quickBuyCount)
             holdPrice()
-            submit({ action: 'buy', price_override: quickBuy, count_override: quickBuyCount })
+            submit({ action: 'buy', price_override: quickBuy, count_override: quickBuyCount, post_only_override: false })
           }}
         />
         <QuickButton
@@ -297,7 +303,7 @@ export default function OrderPanel({
             setPrice(quickSell)
             setCount(quickSellCount)
             holdPrice()
-            submit({ action: 'sell', price_override: quickSell, count_override: quickSellCount })
+            submit({ action: 'sell', price_override: quickSell, count_override: quickSellCount, post_only_override: false })
           }}
         />
       </div>
@@ -318,7 +324,7 @@ export default function OrderPanel({
               setPrice(quickSell)
               setCount(heldOnThisSide)
               holdPrice()
-              submit({ action: 'sell', price_override: quickSell, count_override: heldOnThisSide })
+              submit({ action: 'sell', price_override: quickSell, count_override: heldOnThisSide, post_only_override: false })
             }}
           />
         </div>
