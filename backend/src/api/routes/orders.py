@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from src.core.db import get_session
-from src.core.exceptions import KalshiError
+from src.core.exceptions import KalshiError, PostOnlyRejected
 from src.core.logging import get_logger
 from src.kalshi.rest import KalshiRestClient, new_client_order_id
 from src.kalshi.schemas import PlaceOrderRequest
@@ -194,6 +194,23 @@ async def place_order(
     async with KalshiRestClient() as client:
         try:
             resp = await client.place_order(req)
+        except PostOnlyRejected as e:
+            # Not a server failure — post-only did its job. The limit price
+            # would have crossed the spread (i.e. taken liquidity), and
+            # post-only means "maker-only, don't cross." Surface it as an
+            # actionable 422, not a scary 502, so the user understands the
+            # order simply wasn't placed and why.
+            log.info("place_order_post_only_rejected", ticker=body.ticker, price_cents=body.price_cents)
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "reasons": [
+                        f"Post-only: a {body.side.upper()} limit at {body.price_cents}¢ would "
+                        f"cross the spread, so it wasn't placed (post-only is maker-only). "
+                        f"Lower your price to rest behind the book, or uncheck post-only to take the offer."
+                    ],
+                },
+            )
         except KalshiError as e:
             log.warning("place_order_kalshi_error", ticker=body.ticker, error=str(e))
             raise HTTPException(status_code=502, detail=f"kalshi: {e}") from e
@@ -287,31 +304,46 @@ def _normalize_price_cents(raw: Any) -> int | None:
 @router.delete("/orders/{order_id}")
 async def cancel_order(
     order_id: str,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Cancel a resting order. Returns the updated order state.
 
-    Cross-market isolation: we cancel ONLY orders we placed (orders with a
-    matching BET row in our ledger). Validating before the Kalshi call is
-    load-bearing — checking the ticker on Kalshi's *response* would already
-    have cancelled the order. An order_id from another market (politics,
-    crypto) has no BET row here, so it's refused without ever reaching Kalshi.
+    Cross-market isolation: we cancel any resting order whose ticker is soccer,
+    whether or not we placed it through this app (so a user can pull an order
+    they rested on kalshi.com too). The soccer check runs BEFORE the Kalshi call
+    — checking Kalshi's cancel *response* ticker is too late, the order's already
+    gone. The ticker comes from the live WS order book (live_state.open_orders),
+    which is exactly the source the frontend's resting-orders list is built from,
+    so anything the user can see a Cancel button for resolves here. A non-soccer
+    order (politics, crypto) fails the soccer check and never reaches Kalshi.
 
-    After Kalshi confirms the cancel, transition the matching BET row to
-    CANCELLED status so the bankroll-deployed math doesn't keep counting
-    its stake as in-flight. (The WS user_order handler does the same on
-    its side; this is the synchronous path so the route caller sees the
-    state change before the next /api/ledger/stats poll.)
+    After Kalshi confirms the cancel, transition any matching BET row to
+    CANCELLED so the bankroll-deployed math stops counting its stake as
+    in-flight. (The WS user_order handler does the same; this is the synchronous
+    path so the caller sees the state change before the next stats poll. Orders
+    with no local BET row — placed on kalshi.com — simply have nothing to
+    transition, which mark_bet_terminal_by_order_id handles as a no-op.)
     """
-    # Refuse to cancel an order we have no record of placing. This is the
-    # cross-market guard: it runs BEFORE the Kalshi call, so a non-soccer
-    # order_id can never be cancelled through this app.
-    ours = await session.scalar(
-        select(Bet.id).where(Bet.kalshi_order_id == order_id).limit(1)
-    )
-    if ours is None:
-        log.warning("cancel_order_unknown_order_id", order_id=order_id)
-        raise HTTPException(status_code=404, detail="no such order in this ledger")
+    # Resolve the order's ticker from the live WS book and gate on soccer.
+    # This replaces the old "must have a BET row" guard: that refused (404)
+    # every order the app didn't place — including the user's own kalshi.com
+    # orders — and the frontend swallowed the 404, so Cancel silently did
+    # nothing. Soccer-on-the-ticker keeps cross-market isolation intact.
+    live_state = getattr(request.app.state, "live_state", None)
+    order = live_state.open_orders.get(order_id) if live_state is not None else None
+    if order is None:
+        log.warning("cancel_order_not_in_book", order_id=order_id)
+        raise HTTPException(
+            status_code=404,
+            detail="no such resting order — it may have already filled or been cancelled",
+        )
+    if not is_soccer_ticker(order.ticker):
+        log.warning("cancel_order_non_soccer", order_id=order_id, ticker=order.ticker)
+        raise HTTPException(
+            status_code=400,
+            detail=f"{order.ticker} is not a soccer market",
+        )
 
     async with KalshiRestClient() as client:
         try:

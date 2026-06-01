@@ -17,8 +17,17 @@ export default function OpenOrdersCard({ ticker }: { ticker: string }) {
         method: 'DELETE',
       })
       if (!res.ok) {
-        const body = await res.text()
-        throw new Error(body)
+        // Surface the backend reason. FastAPI puts it in {detail}; fall back to
+        // raw text. Without this the mutation threw into the void and Cancel
+        // looked like it silently did nothing.
+        let msg = `Cancel failed (${res.status})`
+        try {
+          const body = await res.json()
+          msg = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
+        } catch {
+          msg = (await res.text()) || msg
+        }
+        throw new Error(msg)
       }
       return res.json()
     },
@@ -29,6 +38,9 @@ export default function OpenOrdersCard({ ticker }: { ticker: string }) {
       queryClient.invalidateQueries({ queryKey: ['positions'] })
       queryClient.invalidateQueries({ queryKey: ['bankroll_deployed'] })
     },
+    // onError: no-op handler so a rejected cancel doesn't become an unhandled
+    // promise rejection; the error is rendered from cancel.error below.
+    onError: () => {},
   })
 
   if (isError) {
@@ -46,6 +58,11 @@ export default function OpenOrdersCard({ ticker }: { ticker: string }) {
   return (
     <div className="rounded-lg border border-border bg-bg-card p-4">
       <h3 className="mb-3 text-sm font-semibold text-text">Resting orders</h3>
+      {cancel.isError && (
+        <div className="mb-3">
+          <InlineError message="Couldn't cancel that order." detail={cancel.error} />
+        </div>
+      )}
       <ul className="space-y-2">
         {orders.map((o) => (
           <li

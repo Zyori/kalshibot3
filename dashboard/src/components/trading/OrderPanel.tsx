@@ -171,8 +171,20 @@ export default function OrderPanel({
         throw new Error('loud_confirm')
       }
       if (!res.ok) {
-        const text = await res.text()
-        throw new Error(text || `place: ${res.status}`)
+        // Structured errors (e.g. post-only would-cross, sanity refuse) come
+        // back as {detail: {reasons: [...]}}. Surface the reason text, not the
+        // raw JSON blob. Read the body once as text, then try to parse it.
+        const raw = await res.text()
+        let msg = raw || `place: ${res.status}`
+        try {
+          const body = JSON.parse(raw)
+          const reasons = body?.detail?.reasons
+          if (Array.isArray(reasons)) msg = reasons.join(' ')
+          else if (typeof body?.detail === 'string') msg = body.detail
+        } catch {
+          // not JSON — keep the raw text
+        }
+        throw new Error(msg)
       }
       return res.json()
     },
@@ -289,6 +301,28 @@ export default function OrderPanel({
           }}
         />
       </div>
+
+      {/* DUMP: close the WHOLE held position in one click, at the quick-sell
+          price. Count is EXACTLY heldOnThisSide — never more (the order route's
+          ghost-share guard would refuse an oversell anyway, but this never even
+          offers it). Only shown when there's a position to dump. */}
+      {heldOnThisSide > 0 && (
+        <div className="mb-3">
+          <QuickButton
+            label={`DUMP all ${heldOnThisSide} ${side.toUpperCase()}`}
+            subLabel={quickSell === null ? 'no bid' : `${heldOnThisSide} @ ${quickSell}¢`}
+            disabled={quickSell === null || place.isPending}
+            resetKey={`dump:${side}:${quickSell}:${heldOnThisSide}`}
+            onConfirm={() => {
+              if (quickSell === null) return
+              setPrice(quickSell)
+              setCount(heldOnThisSide)
+              holdPrice()
+              submit({ action: 'sell', price_override: quickSell, count_override: heldOnThisSide })
+            }}
+          />
+        </div>
+      )}
 
       <div className="mb-2 border-t border-border pt-3 text-xs text-text-muted">
         Or place a limit at your own price:
