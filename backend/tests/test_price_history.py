@@ -24,16 +24,6 @@ def test_unknown_ticker_empty():
     assert PriceHistory().series("NOPE") == []
 
 
-def test_drop_removes_series():
-    ph = PriceHistory()
-    ph.record("X", 50)
-    ph.drop("X")
-    assert ph.series("X") == []
-    # a later record starts fresh
-    ph.record("X", 60)
-    assert [m for _, m in ph.series("X")] == [60]
-
-
 def test_mids_stay_integer_cents():
     ph = PriceHistory()
     ph.record("X", 47)
@@ -42,18 +32,19 @@ def test_mids_stay_integer_cents():
 
 
 def test_retain_only_drops_absent_tickers():
-    """The bounded-growth guard: tickers not in the live set are pruned."""
+    """The bounded-growth guard: tickers not in the subscribed set are pruned."""
     ph = PriceHistory()
     ph.record("A", 50)
     ph.record("B", 50)
     ph.record("C", 50)
     ph.retain_only({"A", "C"})
-    assert set(ph.tracked_tickers()) == {"A", "C"}
     assert ph.series("B") == []
+    assert [m for _, m in ph.series("A")] == [50]
+    assert [m for _, m in ph.series("C")] == [50]
 
 
 def test_retain_only_empty_set_clears_all():
     ph = PriceHistory()
     ph.record("A", 50)
     ph.retain_only(set())
-    assert ph.tracked_tickers() == []
+    assert ph.series("A") == []

@@ -63,6 +63,56 @@ def test_goal_classification():
     assert shots[0].minute == "63'"
 
 
+def test_away_goal_attributed_to_away_not_home():
+    """Regression: ESPN 'Goal!' lines carry the scoreline naming BOTH teams.
+    The shooter's team is the FIRST parenthesized name, not 'any team in the
+    line' — an away goal must not be mis-sided to home."""
+    items = [_commentary(
+        "Goal! Austria 1, Tunisia 1. Hannibal Mejbri (Tunisia) right footed shot from the centre of the box.",
+        "70'",
+    )]
+    shots = _parse_commentary_shots(items, HOME, AWAY)
+    assert shots[0].side == "away"  # the shooter is Tunisia, despite 'Austria' appearing first
+    assert shots[0].quality == "goal"
+
+
+def test_keeper_team_does_not_steal_side():
+    """The keeper's team is named in a later paren ('saved by X (Tunisia)').
+    The shooter's (first) paren wins."""
+    items = [_commentary(
+        "Attempt saved. Marcel Sabitzer (Austria) shot from outside the box is saved by Chamakh (Tunisia)."
+    )]
+    shots = _parse_commentary_shots(items, HOME, AWAY)
+    assert shots[0].side == "home"
+
+
+def test_rebound_goal_off_woodwork_is_goal_not_woodwork():
+    """Regression: 'goal!' is checked before woodwork, so a rebound goal that
+    mentions the post still grades as a goal."""
+    items = [_commentary("Goal! Player (Austria) scores on the rebound after his shot hits the post.", "80'")]
+    shots = _parse_commentary_shots(items, HOME, AWAY)
+    assert shots[0].quality == "goal"
+
+
+def test_no_phantom_goal_from_towards_goal():
+    """Regression: a non-goal attempt mentioning 'goal' ('shot towards goal')
+    must NOT be graded a goal — there is no loose word-'goal' fallback."""
+    items = [_commentary("Attempt missed. Player (Austria) drags his shot towards goal but well wide.")]
+    shots = _parse_commentary_shots(items, HOME, AWAY)
+    assert shots[0].quality == "missed"  # matched the 'attempt missed' stem, not 'goal'
+
+
+def test_abbreviation_does_not_collide_in_prose():
+    """Regression: a 3-letter abbrev in home_names ('aut') must not match inside
+    an unrelated word. Side resolves only from the first parenthesized team."""
+    home = ("Austria", "austria", "aut")
+    away = ("Tunisia", "tunisia", "tun")
+    # No parenthesized team; prose contains 'authentic' (has 'aut') and 'tunnel'
+    items = [_commentary("Attempt blocked. An authentic scramble in the tunnel-like crowd of bodies.")]
+    shots = _parse_commentary_shots(items, home, away)
+    assert shots[0].side is None  # not 'home' via 'aut' in 'authentic'
+
+
 def test_non_shot_lines_skipped():
     """Fouls, corners, substitutions are not shots — dropped, not recorded."""
     items = [

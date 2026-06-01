@@ -106,6 +106,13 @@ class KalshiWsClient:
         a live book races the delta stream and corrupts it)."""
         return ticker in self._market_tickers
 
+    def subscribed_tickers(self) -> set[str]:
+        """The current orderbook subscription set — shrinks on unsubscribe
+        (delete_markets), unlike live_state.books which only ever grows. The
+        price-history sampler prunes against this so its buffer can't accumulate
+        markets we've stopped following."""
+        return set(self._market_tickers)
+
     def _auth_headers(self) -> dict[str, str]:
         """Kalshi WS signs the path /trade-api/ws/v2 same way REST does the route."""
         timestamp_ms = str(int(time.time() * 1000))

@@ -33,7 +33,7 @@ from src.kalshi.ws import (
     BACKOFF_MAX_S,
     KalshiWsClient,
 )
-from src.core.types import BetStatus
+from src.core.types import BetSide, BetStatus
 from src.kalshi.ws_wire import Fill, KalshiWsMessage, MarketLifecycle, UserOrder
 from src.services.bet_service import (
     backfill_open_bets_precision,
@@ -45,7 +45,7 @@ from src.services.fills_sync import FillsSyncer
 from src.services.market_refresher import MarketRefresher
 from src.services.market_tier import MarketTier, classify
 from src.services.nudge_evaluator import Nudge, NudgeEvaluator
-from src.services.position_sync import PositionSyncer
+from src.services.position_sync import PositionSyncer, _mark_price_cents
 from src.services.price_history import PriceHistory
 from src.services.settlement_sweeper import SettlementSweeper
 from src.models import Market, Position
@@ -238,19 +238,26 @@ class Supervisor:
                 log.exception("nudge_observer_cycle_failed")
 
     def _sample_prices(self) -> None:
-        """Record one mid sample per currently-subscribed book into the price
-        buffer, and prune series for books that are no longer present. Sampling
-        on this tick (not per delta) bounds the write rate; the resolved mid is
-        the same value /events shows. A book with only one side priced has no
-        mid yet and is skipped."""
-        for ticker, book in self.live_state.books.items():
-            bid, ask = book.yes_best_bid, book.yes_best_ask
-            if bid is None or ask is None:
+        """Record one YES-mid sample per currently-subscribed book into the price
+        buffer, and prune series for markets we no longer follow. Sampling on
+        this tick (not per delta) bounds the write rate; the mid uses the same
+        helper position marks use, so the tape and the marks can't diverge.
+
+        Scoped to the WS-subscribed set, NOT live_state.books: books only ever
+        grows (release_ws_ownership flips a flag, never deletes), so pruning
+        against books would never drop anything and the buffer would leak one
+        deque per market ever seen. The subscription set shrinks on unsubscribe,
+        so it's the correct steady-state boundary. Locked/crossed zombie books
+        are skipped — their derived mid is nonsense until the REST resync."""
+        subscribed = self.kalshi_ws.subscribed_tickers()
+        for ticker in subscribed:
+            book = self.live_state.books.get(ticker)
+            if book is None or book.is_locked:
                 continue
-            self.price_history.record(ticker, round((bid + ask) / 2))
-        # Drop series for books that vanished (unsubscribed/closed) so the
-        # buffer can't accumulate dead markets across a session.
-        self.price_history.retain_only(set(self.live_state.books.keys()))
+            mid = _mark_price_cents(book, BetSide.YES)
+            if mid is not None:
+                self.price_history.record(ticker, mid)
+        self.price_history.retain_only(subscribed)
 
     async def _on_market_lifecycle(self, msg: MarketLifecycle) -> None:
         """Settle BETs when Kalshi reports a terminal market status.

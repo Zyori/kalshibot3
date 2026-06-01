@@ -281,20 +281,27 @@ def _enrich_with_details(
 # === /summary enrichment: per-shot commentary stream + extra boxscore stats ===
 
 # Quality stems, checked in order. ESPN's commentary is templated provider text
-# (Stats Perform), so these are stable; the woodwork variants and "Goal!" cover
-# the observed phrasings. Order matters: woodwork lines also contain "attempt".
+# (Stats Perform), so these are stable. Order matters and is deliberate:
+# `goal!` is checked FIRST so a rebound goal ("Goal! ... after his shot hits the
+# post") grades as a goal, not woodwork. A goal is ALWAYS prefixed "Goal!" in
+# this feed — there is no loose "contains the word goal" fallback, because
+# phrases like "shot towards goal" / "attempt on goal" are misses, not goals.
 _QUALITY_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("goal", "goal!"),
     ("woodwork", "hits the bar"),
     ("woodwork", "hits the post"),
     ("woodwork", "hits the woodwork"),
     ("saved", "attempt saved"),
     ("missed", "attempt missed"),
     ("blocked", "attempt blocked"),
-    ("goal", "goal!"),
 )
-# A goal can also read "... scores ..." without "goal!"; checked as a fallback
-# only when no other quality matched but the line is clearly a shot.
-_GOAL_FALLBACK = re.compile(r"\bscores\b|\bgoal\b")
+
+# The shooter's team is the FIRST parenthesized name on a shot line, e.g.
+# "Marcel Sabitzer (Austria) ... saved ... by Chamakh (Tunisia)". Later parens
+# (the keeper's team) and the "Goal! Austria 1, Tunisia 0" scoreline both name
+# the other team, so matching "any team name in the line" mis-sides — we take
+# the first parenthesized group only.
+_FIRST_PAREN = re.compile(r"\(([^)]+)\)")
 
 _INSIDE_BOX_PHRASES = (
     "inside the box",
@@ -323,8 +330,6 @@ def _classify_shot_quality(text_lower: str) -> str | None:
         if stem in text_lower:
             return quality
     if any(m in text_lower for m in _SHOT_MARKERS):
-        if _GOAL_FALLBACK.search(text_lower):
-            return "goal"
         return "unknown"
     return None
 
@@ -341,14 +346,25 @@ def _classify_shot_location(text_lower: str) -> str | None:
 
 
 def _shot_side(text: str, home_names: tuple[str, ...], away_names: tuple[str, ...]) -> str | None:
-    """Resolve which side took the shot from the team name in parentheses, e.g.
-    "Marcel Sabitzer (Austria) ...". Matches the team-name set we already carry
-    (home_names[0] is original-case; the rest are lower)."""
-    t = text.lower()
-    # home_names[0] is original case; compare everything lower.
-    if any(n.lower() in t for n in home_names):
+    """Resolve which side took the shot from the FIRST parenthesized team on the
+    line — that's the shooter's team ("Sabitzer (Austria) ... saved by Chamakh
+    (Tunisia)"; "Goal! Austria 1, Tunisia 0. Sabitzer (Austria) ..."). Matching
+    the whole first group against the name set (exact, case-insensitive) avoids
+    both the scoreline trap (both teams named) and abbreviation substring
+    collisions ('aut' inside 'authentic'). None when no team is parenthesized or
+    it matches neither side."""
+    m = _FIRST_PAREN.search(text)
+    if m is None:
+        return None
+    paren = m.group(1).strip().lower()
+    # Exact match against the carried names (home_names[0] is original case;
+    # all are compared lowered). The parenthesized group is the bare team name,
+    # so equality — not substring — is what we want.
+    home = {n.lower() for n in home_names}
+    away = {n.lower() for n in away_names}
+    if paren in home:
         return "home"
-    if any(n.lower() in t for n in away_names):
+    if paren in away:
         return "away"
     return None
 

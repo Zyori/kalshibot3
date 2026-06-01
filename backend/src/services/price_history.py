@@ -48,17 +48,9 @@ class PriceHistory:
         buf = self._series.get(ticker)
         return list(buf) if buf is not None else []
 
-    def drop(self, ticker: str) -> None:
-        """Forget a ticker's series — called when a market closes or
-        unsubscribes, so the buffer doesn't accumulate dead markets."""
-        self._series.pop(ticker, None)
-
     def retain_only(self, tickers: set[str]) -> None:
         """Drop every series whose ticker isn't in `tickers`. The bounded-growth
-        guard: called each sampling tick with the currently-subscribed set so
-        closed/unsubscribed markets fall out automatically."""
+        guard: called each sampling tick with the currently WS-subscribed set so
+        markets we've stopped following fall out automatically."""
         for dead in self._series.keys() - tickers:
             self._series.pop(dead, None)
-
-    def tracked_tickers(self) -> list[str]:
-        return list(self._series.keys())
