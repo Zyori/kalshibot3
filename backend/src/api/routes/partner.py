@@ -82,6 +82,21 @@ def _bankroll_cents(request: Request) -> int | None:
     return getattr(request.app.state, "kalshi_balance_cents", None)
 
 
+def _price_series(request: Request, ticker: str | None) -> list[dict[str, Any]]:
+    """Recent mid trajectory for a market, oldest first, as
+    [{"mid_cents": int}, …]. Empty when the buffer has nothing yet (just
+    subscribed / just restarted) or no buffer exists (tests). Best-effort like
+    the bankroll read — never raises. We drop the monotonic timestamp on the
+    wire: it's process-relative and meaningless to a reader; order + cadence
+    carry the trajectory."""
+    if ticker is None:
+        return []
+    ph = getattr(request.app.state, "price_history", None)
+    if ph is None:
+        return []
+    return [{"mid_cents": mid} for _, mid in ph.series(ticker)]
+
+
 @router.get("/partner/context")
 async def partner_context(
     request: Request,
@@ -103,6 +118,10 @@ async def partner_context(
     propagates unchanged — the partner must not see non-soccer state.
     """
     positions = await list_positions(session)
+    # Attach each position's recent mid trajectory so the partner reads the tape,
+    # not just the snapshot ("47 climbing from 30" vs "falling from 55").
+    for p in positions["positions"]:
+        p["price_history"] = _price_series(request, p.get("ticker"))
 
     out: dict[str, Any] = {
         "scope": "event" if event else "book",
@@ -115,7 +134,10 @@ async def partner_context(
         # Reuse the exact EventView data path — same run-of-play, same child
         # markets, same per-side position embedding the site renders. Errors
         # (non-soccer 400, not-in-cache 404, supervisor-down 503) propagate.
-        out["event"] = await get_event(event, request, session)
+        ev = await get_event(event, request, session)
+        for m in ev.get("markets", []):
+            m["price_history"] = _price_series(request, m.get("ticker"))
+        out["event"] = ev
 
     return out
 

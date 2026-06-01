@@ -121,9 +121,17 @@ async def test_global_scope_returns_positions_and_trades(client: AsyncClient) ->
 async def test_position_pnl_parity_with_positions_route(client: AsyncClient) -> None:
     ctx = (await client.get("/api/partner/context")).json()
     pos = (await client.get("/api/positions")).json()
-    # Same code path → identical numbers. Single source of truth.
-    assert ctx["positions"] == pos["positions"]
+    # Same code path → identical numbers. Single source of truth. The partner
+    # context *enriches* each position with a `price_history` trajectory the
+    # bare /positions route doesn't carry; strip it before comparing so the
+    # parity assertion is about the shared numbers, not the enrichment.
+    ctx_positions = [
+        {k: v for k, v in p.items() if k != "price_history"} for p in ctx["positions"]
+    ]
+    assert ctx_positions == pos["positions"]
     assert ctx["positions"][0]["unrealized_pnl_cents"] == 210
+    # The enrichment key is present (empty here — no buffer in test).
+    assert ctx["positions"][0]["price_history"] == []
 
 
 async def test_empty_book_returns_empty_arrays(empty_client: AsyncClient) -> None:

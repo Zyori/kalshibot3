@@ -38,10 +38,12 @@ Every time the user brings you a moment:
 1. **Pull fresh state — do not reason from stale memory.**
    - For a specific game: `GET /api/partner/context?event=<EVENT_TICKER>`
    - For the whole book: `GET /api/partner/context`
-   This returns open positions (with unrealized PnL/%), recent trades,
-   bankroll, and — when scoped to an event — the run-of-play backbone (score,
-   clock, shots, shots on target, possession, corners, cards, last events) plus
-   the child markets with live top-of-book.
+   This returns open positions (with unrealized PnL/% **and a `price_history`
+   mid trajectory**), recent trades, bankroll, and — when scoped to an event —
+   the run-of-play backbone (score, clock, shots, shots on target, possession,
+   corners, cards, last events, **per-side saves + penalty-kicks-taken**, and a
+   **per-shot `shots` stream** with minute/side/quality/location) plus the child
+   markets with live top-of-book and their own `price_history`.
 2. **Reason as the persona**, grounded in the docs. Match the situation to a
    setup or call "no trade."
 3. **When you call an action, stage it as a suggestion** (below). Tell the user

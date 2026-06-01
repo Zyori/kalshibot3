@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.db import get_session
 from src.core.logging import get_logger
 from src.core.types import utc_iso
-from src.ingestion.espn_scoreboard import EspnEvent, MatchEvent, TeamStats
+from src.ingestion.espn_scoreboard import EspnEvent, MatchEvent, ShotEvent, TeamStats
 from src.models import Market, Position
 from src.sports.soccer import is_soccer_ticker, kalshi_category_url, league_display_name
 
@@ -197,6 +197,12 @@ def _team_stats_dict(s: TeamStats) -> dict[str, Any]:
         "fouls": s.fouls,
         "yellow_cards": s.yellow_cards,
         "red_cards": s.red_cards,
+        # From the richer /summary boxscore — None until a live game's summary
+        # is fetched (or for leagues without the breakdown).
+        "saves": s.saves,
+        "blocked_shots": s.blocked_shots,
+        "penalty_kicks_taken": s.penalty_kicks_taken,
+        "penalty_goals": s.penalty_goals,
     }
 
 
@@ -207,6 +213,16 @@ def _match_event_dict(e: MatchEvent) -> dict[str, Any]:
         "player": e.player,
         "side": e.side,
         "text": e.text,
+    }
+
+
+def _shot_dict(s: ShotEvent) -> dict[str, Any]:
+    return {
+        "minute": s.minute,
+        "side": s.side,
+        "quality": s.quality,
+        "location": s.location,
+        "text": s.raw_text,
     }
 
 
@@ -225,4 +241,5 @@ def _live_payload(espn: EspnEvent | None) -> dict[str, Any] | None:
         "home": _team_stats_dict(espn.home_stats),
         "away": _team_stats_dict(espn.away_stats),
         "last_event": _match_event_dict(espn.last_event) if espn.last_event else None,
+        "shots": [_shot_dict(s) for s in espn.shots],
     }

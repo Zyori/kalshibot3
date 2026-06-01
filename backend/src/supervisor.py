@@ -46,6 +46,7 @@ from src.services.market_refresher import MarketRefresher
 from src.services.market_tier import MarketTier, classify
 from src.services.nudge_evaluator import Nudge, NudgeEvaluator
 from src.services.position_sync import PositionSyncer
+from src.services.price_history import PriceHistory
 from src.services.settlement_sweeper import SettlementSweeper
 from src.models import Market, Position
 from sqlalchemy import select
@@ -110,6 +111,11 @@ class Supervisor:
         # task started in start().
         self.nudge_evaluator = NudgeEvaluator()
         self._nudge_observer_interval_s = 20.0
+
+        # Recent-mid trajectory per subscribed market, sampled on the observer
+        # tick (NOT per WS delta — that's the firehose). In-memory/ephemeral,
+        # same rationale as the nudge state. Read by /partner/context.
+        self.price_history = PriceHistory()
 
         # Track each ticker's last-known tier so we can detect transitions
         # (FAR→SOON, LIVE→DONE, etc.) and run the right hand-off logic.
@@ -225,10 +231,26 @@ class Supervisor:
                 nudges = self.nudge_evaluator.evaluate_live_games(list(seen.values()))
                 if nudges:
                     await self._broadcast_nudges(nudges)
+                self._sample_prices()
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
                 log.exception("nudge_observer_cycle_failed")
+
+    def _sample_prices(self) -> None:
+        """Record one mid sample per currently-subscribed book into the price
+        buffer, and prune series for books that are no longer present. Sampling
+        on this tick (not per delta) bounds the write rate; the resolved mid is
+        the same value /events shows. A book with only one side priced has no
+        mid yet and is skipped."""
+        for ticker, book in self.live_state.books.items():
+            bid, ask = book.yes_best_bid, book.yes_best_ask
+            if bid is None or ask is None:
+                continue
+            self.price_history.record(ticker, round((bid + ask) / 2))
+        # Drop series for books that vanished (unsubscribed/closed) so the
+        # buffer can't accumulate dead markets across a session.
+        self.price_history.retain_only(set(self.live_state.books.keys()))
 
     async def _on_market_lifecycle(self, msg: MarketLifecycle) -> None:
         """Settle BETs when Kalshi reports a terminal market status.

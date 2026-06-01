@@ -21,9 +21,9 @@ identifiers, which would couple us to their schema if it ever shifts.
 from __future__ import annotations
 
 import asyncio
-import time
+import re
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -51,7 +51,12 @@ FETCH_WINDOW_DAYS_FORWARD = 3  # today + next 2 days
 class TeamStats:
     """In-game stats per side. Numeric fields are int (counts) or float
     (percentages). None means ESPN didn't ship the stat (pre-match, or
-    leagues without that breakdown)."""
+    leagues without that breakdown).
+
+    `saves`/`blocked_shots`/`penalty_kicks_taken`/`penalty_goals` come from the
+    richer /summary boxscore (not the /scoreboard payload) — None until a live
+    game's summary is fetched. The penalty fields are the coarse PK signal LUTZ
+    asked for: they say a spot-kick was taken, not that one is imminent."""
     score: int | None = None
     shots: int | None = None
     shots_on_target: int | None = None
@@ -60,6 +65,26 @@ class TeamStats:
     fouls: int | None = None
     yellow_cards: int = 0
     red_cards: int = 0
+    saves: int | None = None
+    blocked_shots: int | None = None
+    penalty_kicks_taken: int | None = None
+    penalty_goals: int | None = None
+
+
+@dataclass(frozen=True)
+class ShotEvent:
+    """One shot from the /summary commentary stream. `quality` and `location`
+    are best-effort parses of ESPN's templated commentary text; `raw_text` is
+    always the original sentence, so a parse miss degrades to a less-detailed
+    shot, never a lost or broken one (the raw-text floor)."""
+    minute: str | None
+    """Match clock as ESPN renders it, e.g. "4'" or "45+2'"."""
+    side: str | None  # 'home' | 'away' | None (when the team name didn't resolve)
+    quality: str
+    """'goal' | 'saved' | 'missed' | 'blocked' | 'woodwork' | 'unknown'."""
+    location: str | None
+    """'inside_box' | 'outside_box' | None (unparseable / not stated)."""
+    raw_text: str
 
 
 @dataclass(frozen=True)
@@ -99,6 +124,9 @@ class EspnEvent:
     """The most recent goal/card/etc. — what we render as 'Last: ...' in
     the header. None when nothing has happened yet (pre or quiet first
     few minutes)."""
+    shots: tuple[ShotEvent, ...] = ()
+    """Per-shot stream from /summary, in event order. Empty until a live game's
+    summary is fetched (and for any game ESPN has no commentary for)."""
 
 
 @dataclass
@@ -250,6 +278,168 @@ def _enrich_with_details(
     return home_out, away_out, last
 
 
+# === /summary enrichment: per-shot commentary stream + extra boxscore stats ===
+
+# Quality stems, checked in order. ESPN's commentary is templated provider text
+# (Stats Perform), so these are stable; the woodwork variants and "Goal!" cover
+# the observed phrasings. Order matters: woodwork lines also contain "attempt".
+_QUALITY_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("woodwork", "hits the bar"),
+    ("woodwork", "hits the post"),
+    ("woodwork", "hits the woodwork"),
+    ("saved", "attempt saved"),
+    ("missed", "attempt missed"),
+    ("blocked", "attempt blocked"),
+    ("goal", "goal!"),
+)
+# A goal can also read "... scores ..." without "goal!"; checked as a fallback
+# only when no other quality matched but the line is clearly a shot.
+_GOAL_FALLBACK = re.compile(r"\bscores\b|\bgoal\b")
+
+_INSIDE_BOX_PHRASES = (
+    "inside the box",
+    "centre of the box",
+    "center of the box",
+    "six yard box",
+    "from close range",
+    "from very close range",
+)
+_OUTSIDE_BOX_PHRASES = (
+    "outside the box",
+    "from long range",
+    "from a long way out",
+)
+
+# A commentary line is shot-like if it carries one of these markers; non-shot
+# lines (fouls, corners, substitutions) are skipped entirely.
+_SHOT_MARKERS = ("attempt", "hits the bar", "hits the post", "hits the woodwork", "goal!")
+
+
+def _classify_shot_quality(text_lower: str) -> str | None:
+    """Map a commentary line to a shot quality, or None if it isn't a shot.
+    Returns 'unknown' for a shot-like line whose quality we can't pin down —
+    that still records the shot (raw-text floor), just ungraded."""
+    for quality, stem in _QUALITY_PATTERNS:
+        if stem in text_lower:
+            return quality
+    if any(m in text_lower for m in _SHOT_MARKERS):
+        if _GOAL_FALLBACK.search(text_lower):
+            return "goal"
+        return "unknown"
+    return None
+
+
+def _classify_shot_location(text_lower: str) -> str | None:
+    """Bucket a shot's location from the commentary, or None if not stated.
+    Inside checked before outside is irrelevant (phrases are disjoint), but we
+    keep inside first for readability."""
+    if any(p in text_lower for p in _INSIDE_BOX_PHRASES):
+        return "inside_box"
+    if any(p in text_lower for p in _OUTSIDE_BOX_PHRASES):
+        return "outside_box"
+    return None
+
+
+def _shot_side(text: str, home_names: tuple[str, ...], away_names: tuple[str, ...]) -> str | None:
+    """Resolve which side took the shot from the team name in parentheses, e.g.
+    "Marcel Sabitzer (Austria) ...". Matches the team-name set we already carry
+    (home_names[0] is original-case; the rest are lower)."""
+    t = text.lower()
+    # home_names[0] is original case; compare everything lower.
+    if any(n.lower() in t for n in home_names):
+        return "home"
+    if any(n.lower() in t for n in away_names):
+        return "away"
+    return None
+
+
+def _parse_commentary_shots(
+    commentary: list[dict[str, Any]],
+    home_names: tuple[str, ...],
+    away_names: tuple[str, ...],
+) -> tuple[ShotEvent, ...]:
+    """Walk /summary `commentary` for shot events. Each shot keeps its raw text
+    no matter what; an unrecognized shot phrasing is logged at debug so the
+    pattern set can be tightened over real games (self-reporting gaps)."""
+    out: list[ShotEvent] = []
+    for item in commentary or []:
+        text = item.get("text") or ""
+        if not text:
+            continue
+        t = text.lower()
+        quality = _classify_shot_quality(t)
+        if quality is None:
+            continue  # not a shot — foul, corner, sub, etc.
+        if quality == "unknown":
+            log.debug("espn_shot_unmatched_quality", text=text[:140])
+        minute = (item.get("time") or {}).get("displayValue") or None
+        out.append(ShotEvent(
+            minute=minute,
+            side=_shot_side(text, home_names, away_names),
+            quality=quality,
+            location=_classify_shot_location(t),
+            raw_text=text,
+        ))
+    return tuple(out)
+
+
+# Boxscore stat labels (the /summary boxscore uses human labels, unlike the
+# /scoreboard statistics which use camelCase names). Only the ones we don't
+# already get from /scoreboard.
+_SUMMARY_STAT_LABELS = {
+    "saves": "saves",
+    "blocked shots": "blocked_shots",
+    "penalty kicks taken": "penalty_kicks_taken",
+    "penalty goals": "penalty_goals",
+}
+
+
+def _parse_summary_boxscore_side(stats: list[dict[str, Any]]) -> dict[str, int]:
+    """Pull the extra stats (saves, blocked, penalties) off one boxscore team's
+    statistics list. Labels are matched case-insensitively; unknown labels are
+    ignored (we only want the four we don't already have)."""
+    out: dict[str, int] = {}
+    for s in stats or []:
+        label = str(s.get("label") or s.get("name") or "").strip().lower()
+        key = _SUMMARY_STAT_LABELS.get(label)
+        if key is None:
+            continue
+        raw = s.get("displayValue", s.get("value"))
+        if raw is None:
+            continue
+        try:
+            out[key] = int(float(raw))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _enrich_with_summary(event: EspnEvent, payload: dict[str, Any]) -> EspnEvent:
+    """Attach the /summary-derived shot stream + extra boxscore stats to an
+    EspnEvent (frozen, so we build a new one via replace). Boxscore team order
+    in ESPN's payload is [home, away] for soccer; we map by index and fall back
+    to leaving the new stats None if the shape is unexpected — never raising."""
+    shots = _parse_commentary_shots(
+        payload.get("commentary") or [],
+        event.home_names,
+        event.away_names,
+    )
+
+    home_stats, away_stats = event.home_stats, event.away_stats
+    for team in (payload.get("boxscore") or {}).get("teams") or []:
+        extra = _parse_summary_boxscore_side(team.get("statistics") or [])
+        if not extra:
+            continue
+        # Match by the team's own homeAway flag rather than list position —
+        # the payload carries it and it's more robust than trusting index order.
+        if team.get("homeAway") == "home":
+            home_stats = replace(home_stats, **extra)
+        elif team.get("homeAway") == "away":
+            away_stats = replace(away_stats, **extra)
+
+    return replace(event, shots=shots, home_stats=home_stats, away_stats=away_stats)
+
+
 def _event_from_raw(raw: dict[str, Any], slug: str) -> EspnEvent | None:
     """Convert one /scoreboard event into our normalized record. None if
     the payload is missing the fields we need."""
@@ -367,11 +557,35 @@ class EspnScoreboard:
         deduped: dict[str, EspnEvent] = {}
         for ev in events:
             deduped[ev.espn_id] = ev
+
+        # Enrich live games with the richer /summary feed (per-shot stream +
+        # extra boxscore stats). Live-only: the bounded set, on the same 40s
+        # cadence this refresh already runs at. One game's summary failing is
+        # swallowed — the scoreboard data for every game still stands.
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S) as client:
+            for espn_id, ev in deduped.items():
+                if ev.state != "in":
+                    continue
+                try:
+                    deduped[espn_id] = await self._fetch_summary(client, ev)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("espn_summary_failed", espn_id=espn_id, slug=ev.slug, error=str(e)[:120])
+
         self.snapshot = EspnSnapshot(
             events=list(deduped.values()),
             refreshed_at=now,
         )
         log.info("espn_refreshed", slugs=len(self._slugs), events=len(deduped))
+
+    async def _fetch_summary(self, client: httpx.AsyncClient, event: EspnEvent) -> EspnEvent:
+        """Fetch /summary for one live game and return the event enriched with
+        its shot stream + extra boxscore stats. On a non-200, returns the event
+        unchanged (caller already wraps in try/except for transport errors)."""
+        url = f"{ESPN_BASE}/{event.slug}/summary?event={event.espn_id}"
+        r = await client.get(url)
+        if r.status_code != 200:
+            return event
+        return _enrich_with_summary(event, r.json())
 
     async def _fetch_one(
         self, client: httpx.AsyncClient, slug: str, date_str: str,

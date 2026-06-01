@@ -122,6 +122,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.supervisor = Supervisor()
     app.state.live_state = app.state.supervisor.live_state
     app.state.broadcast = app.state.supervisor.broadcast
+    app.state.price_history = app.state.supervisor.price_history
     app.state.supervisor.app_state = app.state
     if app.state.kalshi_auth_ok:
         await app.state.supervisor.start()
