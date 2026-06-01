@@ -8,11 +8,11 @@ short, fill in the blanks. Update as your thinking sharpens.
 
 - **mean_reversion** — Betting against an early outlier swing while there's still enough time on the clock for the price to drift back toward fair. Tends to be held longer / to resolution.
 - **mean_confirmation** — Riding a favorite that's leading early and confirming the opening line rather than fighting it.
+- **time_decay** — Holding a position (often a draw) that gains value purely from the clock running down with the game state unchanged.
 - **lock_parlay** — Chain of high-confidence picks expected to all hit; modest combined return.
 - **moon_parlay** — Chain of longshots, high-confidence underdogs, or one underdog paired with locks for added value.
-- **underdog** — Single underdog you think is mispriced — value the market isn't seeing.
 - **predictive** — Pre-event entry on an open line that looks undervalued vs. your read, before the game starts.
-- **time_decay** — Holding a position (often a draw) that gains value purely from the clock running down with the game state unchanged.
+- **underdog** — Single underdog you think is mispriced — value the market isn't seeing.
 - **scalp** — Opportunistic quick trade for a smaller, faster return — often news-driven (red card, injury, momentum swing). In and out, not held to resolution.
 - **hedge** — Closing risk on an open position by taking the other side; common when one leg of a parlay is left and the locked value beats the variance.
 - **manual** — Catch-all when none of the above fits; describe the real shape in the memo.
