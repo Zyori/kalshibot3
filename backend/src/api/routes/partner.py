@@ -43,6 +43,7 @@ from src.core.types import (
     SuggestionKind,
     SuggestionStatus,
     Urgency,
+    utc_iso,
 )
 from src.api.routes.events import get_event
 from src.api.routes.ledger import _bet_to_dict
@@ -240,3 +241,70 @@ async def create_suggestion(
         "side": body.side.value,
         "status": SuggestionStatus.PENDING.value,
     }
+
+
+def _suggestion_to_dict(s: Suggestion, ticker: str | None) -> dict[str, Any]:
+    """Serialize a SUGGESTION for the frontend cards. Money in integer cents;
+    the frontend formats. `ticker` is the market ticker (joined in)."""
+    return {
+        "id": s.id,
+        "kind": s.kind,
+        "ticker": ticker,
+        "side": s.side,
+        "suggested_price_cents": s.suggested_price_cents,
+        "suggested_size_cents": s.suggested_size_cents,
+        "strategy": s.strategy,
+        "justification": s.justification,
+        "confidence": s.confidence,
+        "urgency": s.urgency,
+        "status": s.status,
+        "ai_probability_pct": s.ai_probability_pct,
+        "market_probability_pct": s.market_probability_pct,
+        "estimated_edge_bps": s.estimated_edge_bps,
+        "created_at": utc_iso(s.created_at),
+        "expires_at": utc_iso(s.expires_at),
+    }
+
+
+@router.get("/partner/suggestions")
+async def list_suggestions(
+    status: str = "pending",
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Suggestions for the frontend to cold-load (default: pending only).
+
+    The browser bootstraps the amber cards from here, then keeps them fresh by
+    invalidating ['suggestions'] on the WS `suggestion` event. Newest first.
+    """
+    stmt = (
+        select(Suggestion, Market.kalshi_ticker)
+        .join(Market, Market.id == Suggestion.market_id, isouter=True)
+        .where(Suggestion.status == status)
+        .order_by(Suggestion.id.desc())
+    )
+    rows = (await session.execute(stmt)).all()
+    return {"suggestions": [_suggestion_to_dict(s, ticker) for s, ticker in rows]}
+
+
+@router.post("/partner/suggestions/{suggestion_id}/dismiss")
+async def dismiss_suggestion(
+    suggestion_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Mark a suggestion rejected (the user dismissed the card). Idempotent-ish:
+    a missing id is a 404; an already-terminal one is left as-is. Broadcasts so
+    other open tabs drop the card too."""
+    suggestion = await session.get(Suggestion, suggestion_id)
+    if suggestion is None:
+        raise HTTPException(status_code=404, detail="no such suggestion")
+    if suggestion.status == SuggestionStatus.PENDING:
+        suggestion.status = SuggestionStatus.REJECTED
+        await session.commit()
+
+    broadcast = getattr(request.app.state, "broadcast", None)
+    if broadcast is not None:
+        await broadcast.broadcast_app_event(
+            {"type": "suggestion", "suggestion_id": suggestion_id, "dismissed": True}
+        )
+    return {"suggestion_id": suggestion_id, "status": SuggestionStatus.REJECTED.value}

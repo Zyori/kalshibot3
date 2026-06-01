@@ -177,3 +177,41 @@ async def test_validation_rejects_bad_bodies(ctx, over) -> None:
     res = await client.post("/api/partner/suggestions", json=_entry_body(**over))
     assert res.status_code == 422
     assert spy.events == []
+
+
+async def test_list_returns_only_pending_newest_first(ctx) -> None:
+    client, _, _ = ctx
+    await client.post("/api/partner/suggestions", json=_entry_body())
+    await client.post(
+        "/api/partner/suggestions",
+        json=_entry_body(side="yes", suggested_price_cents=55),
+    )
+    res = await client.get("/api/partner/suggestions")
+    assert res.status_code == 200
+    rows = res.json()["suggestions"]
+    assert len(rows) == 2
+    assert rows[0]["id"] > rows[1]["id"]  # newest first
+    assert all(r["status"] == "pending" for r in rows)
+    assert all(r["ticker"] == TICKER for r in rows)
+
+
+async def test_dismiss_marks_rejected_and_drops_from_list(ctx) -> None:
+    client, spy, _ = ctx
+    created = (await client.post("/api/partner/suggestions", json=_entry_body())).json()
+    sid = created["suggestion_id"]
+    spy.events.clear()
+
+    res = await client.post(f"/api/partner/suggestions/{sid}/dismiss")
+    assert res.status_code == 200
+    assert res.json()["status"] == "rejected"
+    # broadcast carries the dismissed flag so other tabs drop the card
+    assert spy.events and spy.events[-1].get("dismissed") is True
+
+    remaining = (await client.get("/api/partner/suggestions")).json()["suggestions"]
+    assert remaining == []
+
+
+async def test_dismiss_unknown_id_404(ctx) -> None:
+    client, _, _ = ctx
+    res = await client.post("/api/partner/suggestions/9999/dismiss")
+    assert res.status_code == 404
