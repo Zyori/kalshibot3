@@ -47,7 +47,7 @@ function ownSidePrice(o: OpenOrder): number | null {
 function OrderRow({ order: o }: { order: OpenOrder }) {
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState(false)
-  const [price, setPrice] = useState<number>(ownSidePrice(o) ?? 1)
+  const [price, setPrice] = useState<number>(ownSidePrice(o) ?? 0)
   const [count, setCount] = useState<number>(o.remaining_count)
 
   const invalidateAll = () => {
@@ -115,7 +115,7 @@ function OrderRow({ order: o }: { order: OpenOrder }) {
           onClick={() => {
             // Reset inputs to the live values whenever opening the editor.
             if (!editing) {
-              setPrice(ownSidePrice(o) ?? 1)
+              setPrice(ownSidePrice(o) ?? 0)
               setCount(o.remaining_count)
             }
             setEditing((v) => !v)
@@ -157,6 +157,9 @@ function OrderRow({ order: o }: { order: OpenOrder }) {
               className="w-16 rounded-md border border-border bg-bg-card px-2 py-1 font-mono text-xs text-text"
             />
           </label>
+          {ownSidePrice(o) === null && (
+            <span className="text-[10px] text-text-muted">enter a price</span>
+          )}
           <button
             type="button"
             onClick={() => amend.mutate()}

@@ -123,6 +123,13 @@ class Supervisor:
         # (FAR→SOON, LIVE→DONE, etc.) and run the right hand-off logic.
         self._last_tier: dict[str, MarketTier] = {}
 
+        # game event_ticker → its total-goals market tickers, registered when an
+        # event page fetches them (events._fetch_total_goals). The tier
+        # dispatcher unsubscribes a game's totals when the game is no longer
+        # active, so totals subscriptions don't leak (totals aren't in the
+        # discovery feed, so they have no tier of their own).
+        self._total_goals_tickers: dict[str, list[str]] = {}
+
         # Set externally (main.lifespan) so the fill handler can invalidate
         # the cached balance after a fill changes the account state.
         self.app_state: Any = None
@@ -238,6 +245,12 @@ class Supervisor:
                 raise
             except Exception:  # noqa: BLE001
                 log.exception("nudge_observer_cycle_failed")
+
+    def track_total_goals(self, game_event_ticker: str, total_tickers: list[str]) -> None:
+        """Register a game's total-goals tickers so the tier dispatcher keeps
+        them subscribed while the game is active and unsubscribes them when it
+        goes away. Called by the event endpoint when it fetches totals."""
+        self._total_goals_tickers[game_event_ticker] = total_tickers
 
     def _wc_kickoff_soon(self) -> bool:
         """True when a World Cup game kicks off within the next hour — the window
@@ -380,6 +393,19 @@ class Supervisor:
                 done_tickers.add(m.ticker)
 
             self._last_tier[m.ticker] = tier
+
+        # Total-goals subscriptions follow their game's lifecycle. A game's
+        # event_ticker is the prefix of its market tickers (KX…GAME-DATE…-SIDE),
+        # so derive the set of currently-active game events from subscribe_tickers
+        # and keep those games' totals subscribed; unsubscribe + forget totals for
+        # any game no longer active (its markets dropped out of SOON/LIVE).
+        active_events = {t.rsplit("-", 1)[0] for t in subscribe_tickers}
+        for game_event, total_tickers in list(self._total_goals_tickers.items()):
+            if game_event in active_events:
+                subscribe_tickers.update(total_tickers)
+            else:
+                done_tickers.update(total_tickers)
+                del self._total_goals_tickers[game_event]
 
         # Hand-off order matters: drop transitioning tickers from the FAR
         # poller before letting WS take over, then issue the WS subscribes,

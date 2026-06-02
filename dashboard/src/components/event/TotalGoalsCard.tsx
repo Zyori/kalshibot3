@@ -81,10 +81,11 @@ function TotalGoalBody({ ticker, snapshot }: { ticker: string; snapshot: TotalGo
     queryFn: () => undefined,
     enabled: false,
   })
-  // Seed the cache from the event-endpoint snapshot once, so the panel opens
-  // with a real top-of-book before the first WS delta lands. Only the two best
-  // prices are known here (no depth), which is enough for the panel's auto-
-  // follow; WS deltas then own the book. No-op once a book exists.
+  // Seed the cache from the event-endpoint snapshot so the panel opens with a
+  // real top-of-book. Totals are NOT WS-subscribed (that would leak subscriptions
+  // the tier dispatcher can't prune), so this REST snapshot is the price source —
+  // it refreshes on each event-page load, not live-tick. Enough for the panel's
+  // auto-follow + placing a limit; order placement doesn't need a live book.
   if (book === undefined && (snapshot.yes_bid_cents !== null || snapshot.yes_ask_cents !== null)) {
     queryClient.setQueryData<MarketBook>(['book', ticker], {
       ticker,

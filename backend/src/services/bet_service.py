@@ -26,7 +26,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.logging import get_logger
@@ -597,15 +597,22 @@ async def reprice_bet_for_amend(
     user amends through us has nothing to update here, and the next position
     sync reconciles reality regardless.
 
-    Only OPEN bets are repriced. A bet that already went terminal (filled,
-    settled) isn't a resting order and must not be rewritten. The fill path is
-    the source of truth for realized quantity; this only updates the order's
-    *requested* shape while it's still resting.
+    Caller contract: the amend route refuses up front (before the Kalshi call) to
+    amend a partially-filled order — overwriting quantity/entry/stake would
+    destroy the filled contracts' cost basis. So this only ever runs on an
+    untouched resting order. The fills==0 guard here is defense-in-depth; if it
+    trips we skip the rewrite rather than corrupt cost basis.
     """
     bet = await session.scalar(
         select(Bet).where(Bet.kalshi_order_id == old_order_id)
     )
     if bet is None or bet.status != BetStatus.OPEN:
+        return None
+    fills = await session.scalar(
+        select(func.count(BetFill.id)).where(BetFill.bet_id == bet.id)
+    )
+    if fills:  # belt-and-suspenders: route already refused; never clobber fills
+        log.warning("reprice_skipped_partial_fill", order_id=old_order_id, fills=fills)
         return None
     bet.kalshi_order_id = new_order_id
     bet.entry_price_cents = new_price_cents

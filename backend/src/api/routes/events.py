@@ -57,11 +57,14 @@ async def _fetch_total_goals(
     request: Request, game_event_ticker: str
 ) -> list[dict[str, Any]]:
     """The per-game Over/Under ladder for a game, as its own list (separate from
-    the moneyline `markets`, so it never lands on the price chart). Fetched
-    on-demand from Kalshi REST, WS-subscribed for live prices the same way the
-    moneyline children are. Empty list when the league has no total series, the
-    totals event doesn't exist (not listed yet), or the fetch fails — never
-    breaks the event read."""
+    the moneyline `markets`, so it never lands on the price chart). WS-subscribed
+    for live prices like the moneyline children — but the subscription is tied to
+    the game's lifecycle by the supervisor: when the game goes DONE, the tier
+    dispatcher unsubscribes its totals too (supervisor._total_tickers_for /
+    done-handling), so they don't leak. Kalshi's REST /markets returns null
+    bid/ask on these thin markets even when a book exists, so the WS book is the
+    real price source. Empty list when the league has no total series, the event
+    isn't listed, or the fetch fails — never breaks the event read."""
     total_event = _total_goals_event_ticker(game_event_ticker)
     if total_event is None:
         return []
@@ -79,11 +82,14 @@ async def _fetch_total_goals(
         return []
 
     tickers = [m.ticker for m in markets]
+    # Register these totals with the supervisor so its tier dispatcher keeps them
+    # subscribed while the game is live and unsubscribes them when it's DONE —
+    # the lifecycle hook that stops the subscription set from leaking.
+    supervisor.track_total_goals(game_event_ticker, tickers)
     try:
         await supervisor.kalshi_ws.add_market_subscriptions(tickers)
     except Exception as e:  # noqa: BLE001
         log.warning("total_goals_subscribe_failed", total_event=total_event, error=str(e)[:120])
-    # Seed books not yet WS-owned so first view carries real prices.
     unseeded = [
         t for t in tickers
         if not ((book := supervisor.live_state.books.get(t)) is not None and book.ws_owned)

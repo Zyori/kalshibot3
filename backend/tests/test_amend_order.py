@@ -43,9 +43,17 @@ def _resting(order_id: str, ticker: str, side: str = "yes", action: str = "buy")
             "status": "resting"}
 
 
+def _session(*, bet_id: int | None = 1, fills: int = 0) -> AsyncMock:
+    """A session whose scalar() answers the amend route's two pre-check queries
+    in order: (1) the BET id for this order, (2) the fill count for that bet."""
+    session = AsyncMock()
+    session.scalar = AsyncMock(side_effect=[bet_id, fills])
+    return session
+
+
 async def test_amend_soccer_order_swaps_bet_id() -> None:
     client = _mock_client(resting_order=_resting("old", SOCCER), new_order_id="new123")
-    session = AsyncMock()
+    session = _session()
     reprice = AsyncMock(return_value=None)
     with patch("src.api.routes.orders.KalshiRestClient", return_value=client), \
          patch("src.api.routes.orders.reprice_bet_for_amend", new=reprice):
@@ -64,7 +72,7 @@ async def test_amend_passes_authoritative_side_action_to_kalshi() -> None:
     """The amend request to Kalshi carries the side/action READ FROM KALSHI,
     not anything the client supplied (which is only price+count)."""
     client = _mock_client(resting_order=_resting("o", SOCCER, side="no", action="sell"))
-    session = AsyncMock()
+    session = _session()
     with patch("src.api.routes.orders.KalshiRestClient", return_value=client), \
          patch("src.api.routes.orders.reprice_bet_for_amend", new=AsyncMock(return_value=None)):
         await amend_order("o", AmendBody(price_cents=30, count=5), _request(), session)  # type: ignore[arg-type]
@@ -75,7 +83,7 @@ async def test_amend_passes_authoritative_side_action_to_kalshi() -> None:
 
 async def test_amend_non_soccer_refused() -> None:
     client = _mock_client(resting_order=_resting("o2", NON_SOCCER))
-    session = AsyncMock()
+    session = _session()
     with patch("src.api.routes.orders.KalshiRestClient", return_value=client):
         with pytest.raises(HTTPException) as ei:
             await amend_order("o2", AmendBody(price_cents=45, count=8), _request(), session)  # type: ignore[arg-type]
@@ -85,12 +93,25 @@ async def test_amend_non_soccer_refused() -> None:
 
 async def test_amend_order_not_resting() -> None:
     client = _mock_client(resting_order=None)  # not in the resting list
-    session = AsyncMock()
+    session = _session()
     with patch("src.api.routes.orders.KalshiRestClient", return_value=client):
         with pytest.raises(HTTPException) as ei:
             await amend_order("ghost", AmendBody(price_cents=45, count=8), _request(), session)  # type: ignore[arg-type]
     assert ei.value.status_code == 404
     client.amend_order.assert_not_awaited()
+
+
+async def test_amend_refused_when_partially_filled() -> None:
+    """A resting order that already has fills is refused (409) BEFORE the Kalshi
+    amend call — amending would clobber the filled cost basis."""
+    client = _mock_client(resting_order=_resting("o", SOCCER))
+    session = _session(bet_id=7, fills=3)  # 3 fills on this order's bet
+    with patch("src.api.routes.orders.KalshiRestClient", return_value=client):
+        with pytest.raises(HTTPException) as ei:
+            await amend_order("o", AmendBody(price_cents=45, count=8), _request(), session)  # type: ignore[arg-type]
+    assert ei.value.status_code == 409
+    assert "fill" in str(ei.value.detail).lower()
+    client.amend_order.assert_not_awaited()  # never touched Kalshi
 
 
 def test_amend_body_rejects_bad_inputs() -> None:

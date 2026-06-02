@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from src.core.db import get_session
 from src.core.exceptions import KalshiError, PostOnlyRejected
@@ -30,7 +30,7 @@ from src.core.logging import get_logger
 from src.kalshi.rest import KalshiRestClient, new_client_order_id
 from src.kalshi.schemas import AmendOrderRequest, PlaceOrderRequest
 from src.core.types import BetStatus, ExitType
-from src.models import Bet, Market, Position
+from src.models import Bet, BetFill, Market, Position
 from src.services.bet_service import (
     mark_bet_terminal_by_order_id,
     record_placed_order,
@@ -339,10 +339,12 @@ async def cancel_order(
     whether or not we placed it through this app (so a user can pull an order
     they rested on kalshi.com too). The soccer check runs BEFORE the Kalshi call
     — checking Kalshi's cancel *response* ticker is too late, the order's already
-    gone. The ticker comes from the live WS order book (live_state.open_orders),
-    which is exactly the source the frontend's resting-orders list is built from,
-    so anything the user can see a Cancel button for resolves here. A non-soccer
-    order (politics, crypto) fails the soccer check and never reaches Kalshi.
+    gone. The ticker comes from Kalshi's own /portfolio/orders (server-
+    authoritative), NOT the WS cache: the WS user_order stream has no snapshot of
+    orders that were already resting before this session, so a real order placed
+    on kalshi.com or before a backend restart is absent from the cache — the
+    frontend (which REST-bootstraps its list) shows a Cancel button for it, and
+    the old WS-cache lookup 404'd it. Same lookup the amend route uses.
 
     After Kalshi confirms the cancel, transition any matching BET row to
     CANCELLED so the bankroll-deployed math stops counting its stake as
@@ -351,27 +353,18 @@ async def cancel_order(
     with no local BET row — placed on kalshi.com — simply have nothing to
     transition, which mark_bet_terminal_by_order_id handles as a no-op.)
     """
-    # Resolve the order's ticker from the live WS book and gate on soccer.
-    # This replaces the old "must have a BET row" guard: that refused (404)
-    # every order the app didn't place — including the user's own kalshi.com
-    # orders — and the frontend swallowed the 404, so Cancel silently did
-    # nothing. Soccer-on-the-ticker keeps cross-market isolation intact.
-    live_state = getattr(request.app.state, "live_state", None)
-    order = live_state.open_orders.get(order_id) if live_state is not None else None
-    if order is None:
-        log.warning("cancel_order_not_in_book", order_id=order_id)
-        raise HTTPException(
-            status_code=404,
-            detail="no such resting order — it may have already filled or been cancelled",
-        )
-    if not is_soccer_ticker(order.ticker):
-        log.warning("cancel_order_non_soccer", order_id=order_id, ticker=order.ticker)
-        raise HTTPException(
-            status_code=400,
-            detail=f"{order.ticker} is not a soccer market",
-        )
-
     async with KalshiRestClient() as client:
+        order = await _resting_order_from_kalshi(client, order_id)
+        if order is None:
+            raise HTTPException(
+                status_code=404,
+                detail="no such resting order — it may have already filled or been cancelled",
+            )
+        ticker = order.get("ticker") or order.get("market_ticker") or ""
+        if not is_soccer_ticker(ticker):
+            log.warning("cancel_order_non_soccer", order_id=order_id, ticker=ticker)
+            raise HTTPException(status_code=400, detail=f"{ticker} is not a soccer market")
+
         try:
             resp = await client.cancel_order(order_id)
         except KalshiError as e:
@@ -463,6 +456,25 @@ async def amend_order(
         ))
         if sanity.verdict == Verdict.HARD_REFUSE:
             raise HTTPException(status_code=400, detail={"reasons": sanity.reasons})
+
+        # Refuse to amend a partially-filled order BEFORE touching Kalshi. Amend
+        # would overwrite the filled contracts' cost basis on the BET row. Check
+        # up front so we never amend on Kalshi and then fail the local reprice.
+        bet_id = await session.scalar(
+            select(Bet.id).where(Bet.kalshi_order_id == order_id)
+        )
+        if bet_id is not None:
+            fills = await session.scalar(
+                select(func.count(BetFill.id)).where(BetFill.bet_id == bet_id)
+            )
+            if fills:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"reasons": [
+                        f"This order has {fills} fill(s) — cancel and re-place instead "
+                        f"of editing (editing would lose the filled cost basis)."
+                    ]},
+                )
 
         updated_client_order_id = new_client_order_id()
         req = AmendOrderRequest(

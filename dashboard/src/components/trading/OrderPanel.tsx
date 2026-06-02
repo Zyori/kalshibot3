@@ -80,7 +80,7 @@ export default function OrderPanel({
   // take the offer immediately, which post-only would reject.
   const [postOnly, setPostOnly] = useState(true)
   const [loudReasons, setLoudReasons] = useState<
-    { reasons: string[]; action: Action; price: number } | null
+    { reasons: string[]; action: Action; price: number; postOnly: boolean } | null
   >(null)
   const [placedNote, setPlacedNote] = useState<string | null>(null)
   // Synchronous double-submit guard. `place.isPending` only disables the button
@@ -158,9 +158,10 @@ export default function OrderPanel({
       // spread on purpose); manual limits use the checkbox (default on = maker).
       const effectivePrice = price_override ?? price
       const effectiveCount = count_override ?? count
+      const effectivePostOnly = post_only_override ?? postOnly
       const body = {
         ticker, side, action, count: effectiveCount,
-        price_cents: effectivePrice, post_only: post_only_override ?? postOnly, acknowledged_loud,
+        price_cents: effectivePrice, post_only: effectivePostOnly, acknowledged_loud,
       }
       const res = await fetch('/api/orders/place', {
         method: 'POST',
@@ -173,6 +174,10 @@ export default function OrderPanel({
           reasons: errBody.detail?.reasons ?? ['Order requires confirmation.'],
           action,
           price: effectivePrice,
+          // Carry the post-only the order was actually submitted with, so the
+          // re-submit doesn't fall back to the default and reject a quick-buy
+          // that deliberately crosses the spread.
+          postOnly: effectivePostOnly,
         })
         throw new Error('loud_confirm')
       }
@@ -414,6 +419,7 @@ export default function OrderPanel({
               action: loudReasons.action,
               acknowledged_loud: true,
               price_override: loudReasons.price,
+              post_only_override: loudReasons.postOnly,
             })
           }}
         />
