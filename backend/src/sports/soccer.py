@@ -89,6 +89,36 @@ SOCCER_GAME_SERIES_NAMES: dict[str, str] = {
 SOCCER_GAME_SERIES: tuple[str, ...] = tuple(SOCCER_GAME_SERIES_NAMES.keys())
 
 
+# Per-game total-goals (Over/Under) series, keyed by the game series they pair
+# with. Kalshi lists these as a SEPARATE series/event from the moneyline — same
+# {date}{matchup} suffix, different prefix, with one market per threshold
+# (Over 1.5/2.5/3.5/4.5, ticker suffix -1/-2/-3/-4). The names are NOT a clean
+# "{GAME}→{TOTAL}" swap (KXWCTOTALGOAL is tournament-aggregate, not per-game;
+# KXBRASILEIROTOTAL ≠ KXCOPADOBRASILGAME), so they are hand-verified like the
+# ESPN slugs — add an entry only after confirming live markets exist for it.
+#
+# Verified 2026-06-01 with live markets (KXINTLFRIENDLYTOTAL-26JUN01COLCRI-N).
+# World Cup PER-GAME totals are not listed yet (WC is weeks out; Kalshi lists
+# per-game O/U near match time). When they appear, add the game→total mapping
+# here — likely KXWCGAME → KX<something>; confirm the real series name first.
+SOCCER_TOTAL_SERIES: dict[str, str] = {
+    "KXINTLFRIENDLYGAME": "KXINTLFRIENDLYTOTAL",
+    # "KXWCGAME": "KX...",  # TODO: add when WC per-game totals are listed
+}
+
+# Tuple of total-series prefixes, for cross-market isolation. These are soccer
+# markets and must pass is_soccer_ticker so orders/positions on them aren't
+# refused as "not soccer".
+SOCCER_TOTAL_SERIES_PREFIXES: tuple[str, ...] = tuple(SOCCER_TOTAL_SERIES.values())
+
+
+def total_series_for_game(game_series: str) -> str | None:
+    """The total-goals series paired with a game series, or None if we don't
+    have (a confirmed) one. Discovery uses this to fetch the O/U event for a
+    game it's already tracking."""
+    return SOCCER_TOTAL_SERIES.get(game_series)
+
+
 # Kalshi prefix → ESPN scoreboard path (after `soccer/`). None means
 # ESPN doesn't publish a scoreboard for this league under any slug we
 # could verify — callers fall back to Kalshi's occurrence_datetime.
@@ -229,8 +259,10 @@ def is_soccer_ticker(ticker: str) -> bool:
     match any of our prefixes is somebody else's (politics, crypto, weather)
     and this app must not act on it.
     """
-    return any(ticker.startswith(p) for p in SOCCER_GAME_SERIES) or any(
-        ticker.startswith(p) for p in WORLD_CUP_DERIVATIVE_SERIES
+    return (
+        any(ticker.startswith(p) for p in SOCCER_GAME_SERIES)
+        or any(ticker.startswith(p) for p in SOCCER_TOTAL_SERIES_PREFIXES)
+        or any(ticker.startswith(p) for p in WORLD_CUP_DERIVATIVE_SERIES)
     )
 
 
@@ -253,6 +285,18 @@ class ParsedMarketTicker:
 _GAME_TICKER_RE = re.compile(
     r"^(?P<series>[A-Z0-9]+)-\d{2}[A-Z]{3}\d{2}(?P<home>[A-Z]{3})(?P<away>[A-Z]{3})-(?P<sel>[A-Z]{3})$"
 )
+
+
+def total_goals_threshold(ticker: str) -> float | None:
+    """The Over/Under line for a total-goals market ticker. The suffix is an
+    integer N meaning 'Over N.5 goals' (KX…TOTAL-26JUN01COLCRI-3 → 3.5).
+    Returns None for a non-total ticker or unexpected suffix."""
+    if not any(ticker.startswith(p) for p in SOCCER_TOTAL_SERIES_PREFIXES):
+        return None
+    suffix = ticker.rsplit("-", 1)[-1]
+    if not suffix.isdigit():
+        return None
+    return int(suffix) + 0.5
 
 
 def parse_market_ticker(ticker: str) -> ParsedMarketTicker | None:
