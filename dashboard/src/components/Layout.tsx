@@ -21,7 +21,7 @@ export default function Layout() {
             <nav className="flex gap-1">
               <NavTab to="/" label="Overview" end />
               <NavTab to="/sport/soccer" label="Soccer" />
-              <NavTab to="/futures" label="Futures" />
+              <NavTab to="/futures" label="World Cup" />
               <NavTab to="/ledger" label="Ledger" />
               <NavTab to="/settings" label="Settings" />
             </nav>

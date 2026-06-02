@@ -144,8 +144,29 @@ async def partner_context(
         for m in ev.get("markets", []):
             m["price_history"] = _price_series(request, m.get("ticker"))
         out["event"] = ev
+        # Recent news tagged to THIS game's teams — injuries, lineups,
+        # suspensions LUTZ should factor into the read. Scoped to the two teams
+        # so it's signal, not the whole board.
+        out["event_news"] = _news_for_event(request, ev)
 
     return out
+
+
+def _news_for_event(request: Request, event_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """WC news tagged to either team in this game. Empty when no news poller, no
+    match, or non-WC teams. Headline + published + url — enough for LUTZ to read
+    and ask the user about."""
+    news = getattr(request.app.state, "espn_news", None)
+    if news is None:
+        return []
+    live = event_payload.get("live") or {}
+    teams = {n for n in (live.get("home_name"), live.get("away_name")) if n}
+    if not teams:
+        return []
+    return [
+        {"headline": a.headline, "published": utc_iso(a.published), "url": a.url}
+        for a in news.for_teams(teams)
+    ]
 
 
 # === Write: suggestions ===================================================

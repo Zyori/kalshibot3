@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from src.core.db import get_session_factory
 from src.core.logging import get_logger
 from src.core.ws_manager import BroadcastManager
+from src.ingestion.espn_news import EspnNews
 from src.ingestion.espn_scoreboard import EspnScoreboard
 from src.ingestion.market_discovery import MarketDiscovery, MarketFeed
 from src.kalshi.live_state import LiveState
@@ -83,6 +84,7 @@ class Supervisor:
         # on some series. The matcher inside market_discovery reads from
         # this shared snapshot.
         self.espn_scoreboard = EspnScoreboard()
+        self.espn_news = EspnNews()
         self.market_discovery = MarketDiscovery(espn=self.espn_scoreboard)
         self.market_discovery.register_refresh_callback(self._on_discovery_refresh)
         # MarketRefresher shares the browser broadcast queue so its REST
@@ -459,6 +461,9 @@ class Supervisor:
             self.espn_scoreboard.run(), name="espn_scoreboard",
         ))
         self._tasks.append(asyncio.create_task(
+            self.espn_news.run(), name="espn_news",
+        ))
+        self._tasks.append(asyncio.create_task(
             self.market_discovery.run(), name="market_discovery",
         ))
         self._tasks.append(asyncio.create_task(
@@ -489,6 +494,7 @@ class Supervisor:
         await self.market_discovery.stop()
         await self.market_refresher.stop()
         await self.espn_scoreboard.stop()
+        await self.espn_news.stop()
         await self.broadcast.stop()
         for t in self._tasks:
             t.cancel()

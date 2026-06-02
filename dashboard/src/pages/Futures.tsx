@@ -1,6 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
 
 import InlineError from '../components/InlineError'
+import { formatET } from '../lib/format'
+
+type NewsArticle = {
+  headline: string
+  description: string
+  published: string | null
+  teams: string[]
+  url: string | null
+}
+type NewsResponse = { articles: NewsArticle[]; refreshed_at: string | null }
 
 type FuturesOption = {
   ticker: string
@@ -42,11 +52,13 @@ export default function Futures() {
   return (
     <div className="space-y-6">
       <div className="flex items-baseline justify-between">
-        <h2 className="text-lg font-semibold text-text">World Cup Futures</h2>
+        <h2 className="text-lg font-semibold text-text">World Cup</h2>
         <span className="text-[11px] text-text-muted">
           Read-only · trade futures on kalshi.com
         </span>
       </div>
+
+      <NewsBoard />
 
       {isError && <InlineError message="Couldn't load futures." detail={error} />}
       {isPending && <div className="text-sm text-text-muted">Loading the board…</div>}
@@ -81,6 +93,47 @@ function FuturesSectionBlock({ section }: { section: FuturesSection }) {
           </div>
         ))}
       </div>
+    </section>
+  )
+}
+
+function NewsBoard() {
+  const { data, isError } = useQuery<NewsResponse>({
+    queryKey: ['news'],
+    queryFn: async () => {
+      const res = await fetch('/api/news')
+      if (!res.ok) throw new Error(`/api/news: ${res.status}`)
+      return res.json()
+    },
+    refetchInterval: 300_000, // 5 min
+  })
+
+  // Don't render an empty/broken news block — it's a bonus surface.
+  if (isError || !data || data.articles.length === 0) return null
+
+  return (
+    <section className="rounded-lg border border-border bg-bg-card p-4">
+      <h3 className="mb-3 text-sm font-semibold text-text">World Cup news</h3>
+      <ul className="divide-y divide-border">
+        {data.articles.slice(0, 15).map((a, i) => (
+          <li key={i} className="py-2">
+            <a
+              href={a.url ?? '#'}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs text-text hover:text-action"
+            >
+              {a.headline}
+            </a>
+            <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-text-muted">
+              {a.published && <span>{formatET(a.published)}</span>}
+              {a.teams.slice(0, 4).map((t) => (
+                <span key={t} className="rounded bg-bg px-1.5 py-0.5">{t}</span>
+              ))}
+            </div>
+          </li>
+        ))}
+      </ul>
     </section>
   )
 }

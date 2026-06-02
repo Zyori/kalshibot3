@@ -31,6 +31,7 @@ from src.api.routes import (
     health,
     ledger,
     markets,
+    news,
     orders,
     partner,
     positions,
@@ -124,6 +125,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.live_state = app.state.supervisor.live_state
     app.state.broadcast = app.state.supervisor.broadcast
     app.state.price_history = app.state.supervisor.price_history
+    app.state.espn_news = app.state.supervisor.espn_news
     app.state.supervisor.app_state = app.state
     if app.state.kalshi_auth_ok:
         await app.state.supervisor.start()
@@ -168,6 +170,7 @@ app.include_router(events.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
 app.include_router(partner.router, prefix="/api")
 app.include_router(futures.router, prefix="/api")
+app.include_router(news.router, prefix="/api")
 app.include_router(ws_endpoint.router)
 
 
