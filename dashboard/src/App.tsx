@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useParams } from 'react-router'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import EventView from './pages/EventView'
+import Futures from './pages/Futures'
 import SportPortal from './pages/SportPortal'
 import Ledger from './pages/Ledger'
 import Settings from './pages/Settings'
@@ -19,6 +20,7 @@ export default function App() {
             get the event ticker). */}
         <Route path="market/:ticker" element={<LegacyMarketRedirect />} />
         <Route path="sport/:slug" element={<SportPortal />} />
+        <Route path="futures" element={<Futures />} />
         <Route path="ledger" element={<Ledger />} />
         <Route path="settings" element={<Settings />} />
       </Route>
