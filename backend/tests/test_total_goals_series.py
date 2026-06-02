@@ -40,3 +40,18 @@ def test_threshold_none_for_non_total_ticker():
 
 def test_threshold_none_for_garbage_suffix():
     assert total_goals_threshold("KXINTLFRIENDLYTOTAL-26JUN01COLCRI-TIE") is None
+
+
+def test_total_event_ticker_derivation():
+    from src.api.routes.events import _total_goals_event_ticker
+    # Game event → totals event: same date+matchup, mapped series prefix.
+    assert (
+        _total_goals_event_ticker("KXINTLFRIENDLYGAME-26JUN01COLCRI")
+        == "KXINTLFRIENDLYTOTAL-26JUN01COLCRI"
+    )
+
+
+def test_total_event_ticker_none_for_unmapped_league():
+    from src.api.routes.events import _total_goals_event_ticker
+    # World Cup has no per-game total series mapped yet.
+    assert _total_goals_event_ticker("KXWCGAME-26JUN27COLPOR") is None

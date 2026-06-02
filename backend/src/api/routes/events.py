@@ -26,11 +26,89 @@ from src.core.db import get_session
 from src.core.logging import get_logger
 from src.core.types import utc_iso
 from src.ingestion.espn_scoreboard import EspnEvent, MatchEvent, ShotEvent, TeamStats
+from src.kalshi.rest import KalshiRestClient
 from src.models import Market, Position
-from src.sports.soccer import is_soccer_ticker, kalshi_category_url, league_display_name
+from src.sports.soccer import (
+    is_soccer_ticker,
+    kalshi_category_url,
+    league_display_name,
+    total_goals_threshold,
+    total_series_for_game,
+)
 
 router = APIRouter()
 log = get_logger(__name__)
+
+
+def _total_goals_event_ticker(game_event_ticker: str) -> str | None:
+    """Derive the total-goals event_ticker for a game event_ticker, or None when
+    we don't have a total series for this league. Same {date}{matchup} suffix,
+    different series prefix:
+        KXINTLFRIENDLYGAME-26JUN01COLCRI → KXINTLFRIENDLYTOTAL-26JUN01COLCRI
+    """
+    game_series, _, suffix = game_event_ticker.partition("-")
+    total_series = total_series_for_game(game_series)
+    if total_series is None or not suffix:
+        return None
+    return f"{total_series}-{suffix}"
+
+
+async def _fetch_total_goals(
+    request: Request, game_event_ticker: str
+) -> list[dict[str, Any]]:
+    """The per-game Over/Under ladder for a game, as its own list (separate from
+    the moneyline `markets`, so it never lands on the price chart). Fetched
+    on-demand from Kalshi REST, WS-subscribed for live prices the same way the
+    moneyline children are. Empty list when the league has no total series, the
+    totals event doesn't exist (not listed yet), or the fetch fails — never
+    breaks the event read."""
+    total_event = _total_goals_event_ticker(game_event_ticker)
+    if total_event is None:
+        return []
+
+    supervisor = request.app.state.supervisor
+    try:
+        async with KalshiRestClient() as client:
+            resp = await client.get_markets(event_ticker=total_event, limit=50)
+    except Exception as e:  # noqa: BLE001 — totals are a bonus, never fail the game read
+        log.warning("total_goals_fetch_failed", total_event=total_event, error=str(e)[:120])
+        return []
+
+    markets = [m for m in resp.markets if total_goals_threshold(m.ticker) is not None]
+    if not markets:
+        return []
+
+    tickers = [m.ticker for m in markets]
+    try:
+        await supervisor.kalshi_ws.add_market_subscriptions(tickers)
+    except Exception as e:  # noqa: BLE001
+        log.warning("total_goals_subscribe_failed", total_event=total_event, error=str(e)[:120])
+    # Seed books not yet WS-owned so first view carries real prices.
+    unseeded = [
+        t for t in tickers
+        if not ((book := supervisor.live_state.books.get(t)) is not None and book.ws_owned)
+    ]
+    await asyncio.gather(
+        *(supervisor.market_refresher.refresh_now_await(t) for t in unseeded),
+        return_exceptions=True,
+    )
+
+    live_state = supervisor.live_state
+    out: list[dict[str, Any]] = []
+    for m in markets:
+        book = live_state.books.get(m.ticker)
+        out.append({
+            "ticker": m.ticker,
+            "threshold": total_goals_threshold(m.ticker),  # 1.5 / 2.5 / 3.5 / 4.5
+            "label": m.yes_sub_title,  # "Over 2.5 goals scored"
+            "status": m.status,
+            "yes_bid_cents": book.yes_best_bid if book else None,
+            "yes_ask_cents": book.yes_best_ask if book else None,
+            "no_bid_cents": book.no_best_bid if book else None,
+            "no_ask_cents": book.no_best_ask if book else None,
+        })
+    out.sort(key=lambda d: d["threshold"])
+    return out
 
 
 @router.get("/events/{event_ticker}")
@@ -169,6 +247,10 @@ async def get_event(
     # order — not perfect but stable.
     children.sort(key=lambda m: m.ticker)
 
+    # Per-game Over/Under ladder — fetched on-demand, kept in its OWN array so it
+    # never enters `markets` (and therefore never the price chart). Best-effort.
+    total_goals = await _fetch_total_goals(request, event_ticker)
+
     return {
         "event_ticker": event_ticker,
         "event_title": head.event_title,
@@ -184,6 +266,7 @@ async def get_event(
         "espn_status_detail": head.espn_status_detail,
         "live": _live_payload(head.espn_event),
         "markets": [child_dict(m) for m in children],
+        "total_goals": total_goals,
     }
 
 

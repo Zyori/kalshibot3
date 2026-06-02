@@ -152,6 +152,19 @@ export type Suggestion = {
   expires_at: string | null
 }
 
+// One rung of the per-game Over/Under ladder (Over 1.5/2.5/3.5/4.5 goals).
+// Kept separate from ChildMarket so it never enters the price chart.
+export type TotalGoal = {
+  ticker: string
+  threshold: number // 1.5 | 2.5 | 3.5 | 4.5
+  label: string | null // "Over 2.5 goals scored"
+  status: string
+  yes_bid_cents: number | null
+  yes_ask_cents: number | null
+  no_bid_cents: number | null
+  no_ask_cents: number | null
+}
+
 export type EventDetail = {
   event_ticker: string
   event_title: string | null
@@ -167,4 +180,5 @@ export type EventDetail = {
   espn_status_detail: string | null
   live: LiveSnapshot | null
   markets: ChildMarket[]
+  total_goals: TotalGoal[]
 }

@@ -22,6 +22,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import CombinedPriceChart from '../components/event/CombinedPriceChart'
 import InlineError from '../components/InlineError'
 import MarketCard from '../components/event/MarketCard'
+import TotalGoalsCard from '../components/event/TotalGoalsCard'
 import MatchHeader from '../components/event/MatchHeader'
 import Skeleton from '../components/Skeleton'
 import type { MarketBook } from '../contexts/WebSocketProvider'
@@ -137,6 +138,8 @@ export default function EventView() {
               />
             ))}
           </div>
+          {/* Over/Under ladder — its own block, never on the chart above. */}
+          {data.total_goals.length > 0 && <TotalGoalsCard totals={data.total_goals} />}
         </>
       )}
     </div>
