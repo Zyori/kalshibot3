@@ -54,9 +54,9 @@ from src.sports.soccer import is_soccer_ticker
 router = APIRouter()
 log = get_logger(__name__)
 
-RECENT_TRADES_LIMIT = 20
-"""How many recent bets the partner gets as ledger context. Enough to see the
-session's shape without flooding the terminal."""
+RECENT_TRADES_LIMIT = 100
+"""How many recent bets the partner gets as ledger context — enough detail to
+read the recent arc, while history_stats carries the all-time aggregates."""
 
 
 async def _recent_trades(session: AsyncSession) -> list[dict[str, Any]]:

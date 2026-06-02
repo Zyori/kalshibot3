@@ -38,7 +38,7 @@ export default function Settings() {
 // (the trigger) if either changes.
 const PARTNER_FEEDS: { name: string; detail: string }[] = [
   { name: 'Open positions', detail: 'side, size, avg entry, unrealized P&L %, and a recent price trajectory per market' },
-  { name: 'Recent trades', detail: 'your last 20 bets — strategy, price, result' },
+  { name: 'Recent trades', detail: 'your last 100 bets — strategy, price, result' },
   { name: 'History stats', detail: 'overall win-rate + net P&L, broken down per strategy (so LUTZ catches repeating patterns)' },
   { name: 'Bankroll', detail: 'current available balance' },
   { name: 'Run of play (per game)', detail: 'score, clock, shots, shots on target, possession, corners, cards, saves, penalties + a per-shot stream (quality + location)' },
