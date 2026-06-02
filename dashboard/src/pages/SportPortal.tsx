@@ -58,7 +58,7 @@ export default function SportPortal() {
       <header>
         <h2 className="text-lg font-semibold text-text capitalize">{sport}</h2>
         <p className="mt-1 text-sm text-text-muted">
-          Live games and your open positions. Suggestions, markets, and news land later.
+          Live games, open positions, partner suggestions, and the latest news.
         </p>
       </header>
 
@@ -69,7 +69,7 @@ export default function SportPortal() {
         <OpenPositionsTile />
         <PlaceholderTile title="Markets" note="Browse the full feed →" to="/" />
         <SuggestedBetsTile />
-        <PlaceholderTile title="News" note="Coming soon." />
+        <NewsTile />
       </div>
 
       <HistorySection sport={sport} />
@@ -313,6 +313,51 @@ function SuggestedBetsTile() {
             <SuggestionCard key={s.id} suggestion={s} onStage={stage} />
           ))}
         </div>
+      )}
+    </Tile>
+  )
+}
+
+type NewsArticle = { headline: string; teams: string[]; url: string | null }
+
+function NewsTile() {
+  const { data, isError } = useQuery<{ articles: NewsArticle[] }>({
+    queryKey: ['news'],
+    queryFn: async () => {
+      const res = await fetch('/api/news')
+      if (!res.ok) throw new Error(`/api/news: ${res.status}`)
+      return res.json()
+    },
+    refetchInterval: 300_000,
+  })
+  const articles = (data?.articles ?? []).slice(0, 6)
+
+  return (
+    <Tile title="News">
+      {isError ? (
+        <InlineError message="Couldn't load news." />
+      ) : articles.length === 0 ? (
+        <p className="text-xs text-text-muted">No news right now.</p>
+      ) : (
+        <ul className="space-y-2">
+          {articles.map((a, i) => (
+            <li key={i} className="text-xs leading-snug">
+              <a
+                href={a.url ?? '#'}
+                target="_blank"
+                rel="noreferrer"
+                className="text-text hover:text-action"
+              >
+                {a.headline}
+              </a>
+              {a.teams.length > 0 && (
+                <span className="ml-1 text-[10px] text-text-muted">
+                  {a.teams.slice(0, 2).join(', ')}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
     </Tile>
   )
