@@ -430,18 +430,43 @@ def _parse_summary_boxscore_side(stats: list[dict[str, Any]]) -> dict[str, int]:
     return out
 
 
-def _enrich_with_summary(event: EspnEvent, payload: dict[str, Any]) -> EspnEvent:
+_CARRY_FORWARD_FIELDS = ("saves", "blocked_shots", "penalty_kicks_taken", "penalty_goals")
+"""Boxscore extras (from /summary, not /scoreboard) that carry forward across
+polls when ESPN ships an empty boxscore. Monotonic counts — a stale-low carried
+value is harmless; a flickering null is not."""
+
+
+def _carry_forward(fresh: TeamStats, prev: TeamStats | None) -> TeamStats:
+    """Seed `fresh` (rebuilt from /scoreboard, so the extras are None) with the
+    previous poll's boxscore extras, so they don't flicker to null on a poll
+    where ESPN's /summary boxscore is empty. A later non-empty poll overwrites."""
+    if prev is None:
+        return fresh
+    carry = {
+        f: getattr(prev, f)
+        for f in _CARRY_FORWARD_FIELDS
+        if getattr(fresh, f) is None and getattr(prev, f) is not None
+    }
+    return replace(fresh, **carry) if carry else fresh
+
+
+def _enrich_with_summary(
+    event: EspnEvent, payload: dict[str, Any], prev: EspnEvent | None = None,
+) -> EspnEvent:
     """Attach the /summary-derived shot stream + extra boxscore stats to an
-    EspnEvent (frozen, so we build a new one via replace). Boxscore team order
-    in ESPN's payload is [home, away] for soccer; we map by index and fall back
-    to leaving the new stats None if the shape is unexpected — never raising."""
+    EspnEvent (frozen, so we build a new one via replace). Boxscore extras carry
+    forward from `prev` when this poll's are empty (ESPN ships the boxscore
+    intermittently). Team order in ESPN's payload is [home, away] for soccer, but
+    we map by the homeAway flag, not index. Never raises."""
     shots = _parse_commentary_shots(
         payload.get("commentary") or [],
         event.home_names,
         event.away_names,
     )
 
-    home_stats, away_stats = event.home_stats, event.away_stats
+    # Start from last poll's extras so an empty boxscore this cycle keeps them.
+    home_stats = _carry_forward(event.home_stats, prev.home_stats if prev else None)
+    away_stats = _carry_forward(event.away_stats, prev.away_stats if prev else None)
     for team in (payload.get("boxscore") or {}).get("teams") or []:
         extra = _parse_summary_boxscore_side(team.get("statistics") or [])
         if not extra:
@@ -578,12 +603,21 @@ class EspnScoreboard:
         # extra boxscore stats). Live-only: the bounded set, on the same 40s
         # cadence this refresh already runs at. One game's summary failing is
         # swallowed — the scoreboard data for every game still stands.
+        #
+        # Each refresh rebuilds events from /scoreboard (no boxscore extras), so
+        # we pass the PREVIOUS snapshot's event in: ESPN's /summary boxscore is
+        # intermittent (present some polls, empty others, per game), and without
+        # carry-forward the saves/blocks/penalty counts would flicker to null
+        # every time a poll catches an empty boxscore. These are monotonic
+        # counts, so a carried value can only be stale-low by a poll — never
+        # misleading.
+        prev_by_id = {e.espn_id: e for e in self.snapshot.events}
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S) as client:
             for espn_id, ev in deduped.items():
                 if ev.state != "in":
                     continue
                 try:
-                    deduped[espn_id] = await self._fetch_summary(client, ev)
+                    deduped[espn_id] = await self._fetch_summary(client, ev, prev_by_id.get(espn_id))
                 except Exception as e:  # noqa: BLE001
                     log.warning("espn_summary_failed", espn_id=espn_id, slug=ev.slug, error=str(e)[:120])
 
@@ -593,15 +627,19 @@ class EspnScoreboard:
         )
         log.info("espn_refreshed", slugs=len(self._slugs), events=len(deduped))
 
-    async def _fetch_summary(self, client: httpx.AsyncClient, event: EspnEvent) -> EspnEvent:
+    async def _fetch_summary(
+        self, client: httpx.AsyncClient, event: EspnEvent, prev: EspnEvent | None = None,
+    ) -> EspnEvent:
         """Fetch /summary for one live game and return the event enriched with
-        its shot stream + extra boxscore stats. On a non-200, returns the event
-        unchanged (caller already wraps in try/except for transport errors)."""
+        its shot stream + extra boxscore stats. `prev` is last poll's version of
+        the same game — its boxscore extras carry forward when this poll's are
+        empty. On a non-200, returns the event unchanged (caller wraps transport
+        errors)."""
         url = f"{ESPN_BASE}/{event.slug}/summary?event={event.espn_id}"
         r = await client.get(url)
         if r.status_code != 200:
             return event
-        return _enrich_with_summary(event, r.json())
+        return _enrich_with_summary(event, r.json(), prev)
 
     async def _fetch_one(
         self, client: httpx.AsyncClient, slug: str, date_str: str,

@@ -212,3 +212,36 @@ def test_enrich_survives_missing_boxscore():
     out = _enrich_with_summary(_bare_event(), payload)
     assert len(out.shots) == 1
     assert out.home_stats.saves is None
+
+
+def test_boxscore_carries_forward_when_empty():
+    """ESPN's boxscore is intermittent. When this poll has no boxscore, the
+    previous poll's saves/blocks/penalties carry forward instead of nulling."""
+    from dataclasses import replace
+    # prev poll had real stats
+    prev = _bare_event()
+    prev = replace(
+        prev,
+        home_stats=replace(prev.home_stats, saves=3, blocked_shots=1, penalty_kicks_taken=1),
+        away_stats=replace(prev.away_stats, saves=5),
+    )
+    # this poll's /summary has shots but an EMPTY boxscore
+    payload = {"commentary": [_commentary("Attempt saved. X (Austria) shot from outside the box.")]}
+    out = _enrich_with_summary(_bare_event(), payload, prev)
+    assert out.home_stats.saves == 3
+    assert out.home_stats.blocked_shots == 1
+    assert out.away_stats.saves == 5
+    assert len(out.shots) == 1  # shots still parsed fresh
+
+
+def test_fresh_boxscore_overwrites_carried():
+    """A non-empty boxscore this poll wins over the carried-forward value."""
+    from dataclasses import replace
+    prev = _bare_event()
+    prev = replace(prev, home_stats=replace(prev.home_stats, saves=3))
+    payload = {
+        "commentary": [],
+        "boxscore": {"teams": [{"homeAway": "home", "statistics": [{"label": "Saves", "displayValue": "7"}]}]},
+    }
+    out = _enrich_with_summary(_bare_event(), payload, prev)
+    assert out.home_stats.saves == 7  # fresh value, not the carried 3
