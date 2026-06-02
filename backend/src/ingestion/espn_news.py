@@ -14,6 +14,7 @@ fetch article bodies (ESPN gates those, and the headline carries the read).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -25,7 +26,13 @@ from src.core.logging import get_logger
 log = get_logger(__name__)
 
 NEWS_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/news"
-POLL_INTERVAL_S = 600  # 10 min — news isn't live-tick data
+# Adaptive cadence: news trickles in over hours most of the time, but confirmed
+# XIs + late injury news drop in the hour before kickoff and move prices. Poll
+# slow when no WC game is imminent, fast in the pre-kickoff window — same shape
+# as the scoreboard poller. ESPN's news endpoint is free/public, so even the
+# fast rate is cheap; the point is mostly to cut the dead pings off-match-day.
+POLL_INTERVAL_IDLE_S = 1800   # 30 min — no WC kickoff soon
+POLL_INTERVAL_HOT_S = 180     # 3 min — a WC game kicks off within the hour
 HTTP_TIMEOUT_S = 8.0
 MAX_ARTICLES = 50
 
@@ -80,14 +87,18 @@ class EspnNews:
     """Polls ESPN's WC news feed into an in-memory snapshot. One instance on the
     supervisor; the news route + partner context read `.snapshot`."""
 
-    def __init__(self) -> None:
+    def __init__(self, kickoff_soon: Callable[[], bool] | None = None) -> None:
         self.snapshot = NewsSnapshot()
         self._stopped = False
+        # Returns True when a WC game kicks off within the hour → poll fast.
+        # None → always slow (e.g. tests). Supervisor wires this to the feed.
+        self._kickoff_soon = kickoff_soon
 
     async def run(self) -> None:
         await self._refresh_once()
         while not self._stopped:
-            await asyncio.sleep(POLL_INTERVAL_S)
+            hot = self._kickoff_soon() if self._kickoff_soon is not None else False
+            await asyncio.sleep(POLL_INTERVAL_HOT_S if hot else POLL_INTERVAL_IDLE_S)
             try:
                 await self._refresh_once()
             except Exception:  # noqa: BLE001 — a bad poll never kills the loop

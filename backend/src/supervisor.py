@@ -19,7 +19,7 @@ from typing import Any
 
 import websockets
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from src.core.db import get_session_factory
 from src.core.logging import get_logger
@@ -84,7 +84,7 @@ class Supervisor:
         # on some series. The matcher inside market_discovery reads from
         # this shared snapshot.
         self.espn_scoreboard = EspnScoreboard()
-        self.espn_news = EspnNews()
+        self.espn_news = EspnNews(kickoff_soon=self._wc_kickoff_soon)
         self.market_discovery = MarketDiscovery(espn=self.espn_scoreboard)
         self.market_discovery.register_refresh_callback(self._on_discovery_refresh)
         # MarketRefresher shares the browser broadcast queue so its REST
@@ -238,6 +238,19 @@ class Supervisor:
                 raise
             except Exception:  # noqa: BLE001
                 log.exception("nudge_observer_cycle_failed")
+
+    def _wc_kickoff_soon(self) -> bool:
+        """True when a World Cup game kicks off within the next hour — the window
+        confirmed XIs and late injury news drop. Drives the news poller's fast
+        cadence. Reads the discovery feed's upcoming WC games (open_time)."""
+        now = datetime.now(timezone.utc)
+        horizon = now + timedelta(hours=1)
+        feed = self.market_discovery.get_feed()
+        for m in feed.upcoming:
+            if m.ticker.startswith("KXWCGAME") and m.open_time is not None:
+                if now <= m.open_time <= horizon:
+                    return True
+        return False
 
     def _sample_prices(self) -> None:
         """Record one YES-mid sample per currently-subscribed book into the price
