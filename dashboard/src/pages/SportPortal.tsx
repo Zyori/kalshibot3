@@ -67,8 +67,9 @@ export default function SportPortal() {
       <div className="grid gap-4 md:grid-cols-2">
         <LiveGamesTile />
         <OpenPositionsTile />
-        <PlaceholderTile title="Markets" note="Browse the full feed →" to="/" />
+        <StrategyTile />
         <SuggestedBetsTile />
+        <WorldCupWinnerTile />
         <NewsTile />
       </div>
 
@@ -96,28 +97,6 @@ function Tile({
       </div>
       {children}
     </div>
-  )
-}
-
-function PlaceholderTile({
-  title,
-  note,
-  to,
-}: {
-  title: string
-  note: string
-  to?: string
-}) {
-  return (
-    <Tile title={title}>
-      {to ? (
-        <Link to={to} className="text-xs text-action hover:underline">
-          {note}
-        </Link>
-      ) : (
-        <p className="text-xs text-text-muted">{note}</p>
-      )}
-    </Tile>
   )
 }
 
@@ -358,6 +337,78 @@ function NewsTile() {
             </li>
           ))}
         </ul>
+      )}
+    </Tile>
+  )
+}
+
+// The four core soccer tenets — straight from docs/ai-context/soccer-principles.md
+// (the three game-state setups + the exit discipline everything rests on). Static
+// reference text, not live data: this is the user's authored strategy, surfaced
+// at a glance. Keep in sync with the doc if the strategy sharpens.
+const SOCCER_TENETS: { n: number; title: string; body: string }[] = [
+  { n: 1, title: 'Underdog scores early → DRAW', body: 'Mean reversion. Fade the early swing if the favorite is still creating real chances.' },
+  { n: 2, title: 'Favorite scores early & playing well → FAVORITE', body: 'Mean confirmation. Hold longer — until the tide turns (shots on target against).' },
+  { n: 3, title: 'Dead-state game → DRAW / UNDER', body: 'Time decay. 20–25 min of passive play + strong defense. Lower conviction; ride the drift, sell early.' },
+  { n: 4, title: 'Bank by 75′', body: 'Goal density peaks in the 40–45′ and 75–90′ windows. 75′ is the default close-out — most of the money is in the exit.' },
+]
+
+function StrategyTile() {
+  return (
+    <Tile title="Soccer playbook">
+      <ol className="space-y-2">
+        {SOCCER_TENETS.map((t) => (
+          <li key={t.n} className="flex gap-2 text-xs">
+            <span className="font-mono font-semibold text-action">{t.n}</span>
+            <span>
+              <span className="font-medium text-text">{t.title}</span>
+              <span className="text-text-muted"> — {t.body}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </Tile>
+  )
+}
+
+type FuturesOption = { ticker: string; label: string | null; yes_ask: string | null }
+type FuturesEvent = { options: FuturesOption[] }
+type FuturesSection = { series: string; events: FuturesEvent[] }
+type FuturesResponse = { sections: FuturesSection[] }
+
+function WorldCupWinnerTile() {
+  const { data, isError } = useQuery<FuturesResponse>({
+    queryKey: ['futures'],
+    queryFn: async () => {
+      const res = await fetch('/api/futures')
+      if (!res.ok) throw new Error(`/api/futures: ${res.status}`)
+      return res.json()
+    },
+    refetchInterval: 300_000,
+  })
+  // The Winner series (KXMENWORLDCUP) is one event; backend sorts favorites
+  // first, so the top 10 options are the 10 most likely to win.
+  const winner = data?.sections.find((s) => s.series === 'KXMENWORLDCUP')
+  const top = (winner?.events[0]?.options ?? []).slice(0, 10)
+
+  return (
+    <Tile title="Who wins the World Cup">
+      {isError ? (
+        <InlineError message="Couldn't load futures." />
+      ) : top.length === 0 ? (
+        <p className="text-xs text-text-muted">No prices yet.</p>
+      ) : (
+        <ol className="space-y-1">
+          {top.map((o, i) => (
+            <li key={o.ticker} className="flex items-baseline justify-between text-xs">
+              <span className="text-text">
+                <span className="mr-1.5 font-mono text-text-muted">{i + 1}</span>
+                {o.label}
+              </span>
+              <span className="font-mono tabular-nums text-text">{o.yes_ask ?? '—'}</span>
+            </li>
+          ))}
+        </ol>
       )}
     </Tile>
   )
