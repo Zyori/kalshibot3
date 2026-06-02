@@ -45,8 +45,33 @@ from src.core.types import (
 )
 from src.models import Bet, BetFill, Market
 from src.services.bet_service import settle_bets_for_market
+from src.sports.soccer import league_display_name
 
 router = APIRouter()
+
+
+def _market_label(b: Bet, ticker: str | None) -> str:
+    """Human-readable market: 'League — Home v Away — Selection'. Prefers full
+    team names (captured from ESPN at placement), falls back to the 3-letter
+    codes (always present for a per-game bet), then to the raw ticker when the
+    bet predates these fields or isn't a per-game market. The SIDE (yes/no)
+    is rendered separately by the frontend."""
+    if b.home_code is None or b.away_code is None:
+        return ticker or "—"
+    league = league_display_name(b.event_series) or b.event_series or "Soccer"
+    home = b.home_name or b.home_code
+    away = b.away_name or b.away_code
+    # Selection: the team it's on by name/code, or "Draw" for the tie.
+    sel_code = b.selection_code
+    if sel_code == "TIE":
+        selection = "Draw"
+    elif sel_code == b.home_code:
+        selection = home
+    elif sel_code == b.away_code:
+        selection = away
+    else:
+        selection = sel_code or "?"
+    return f"{league} — {home} v {away} — {selection}"
 
 
 def _bet_to_dict(
@@ -64,6 +89,7 @@ def _bet_to_dict(
         "id": b.id,
         "sport": b.sport,
         "ticker": ticker,
+        "market_label": _market_label(b, ticker),
         "market_status": market_status,
         "market_id": b.market_id,
         "kalshi_order_id": b.kalshi_order_id,

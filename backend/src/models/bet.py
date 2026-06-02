@@ -131,6 +131,19 @@ class Bet(Base):
     game_period: Mapped[str | None] = mapped_column(String(8))
     game_clock: Mapped[str | None] = mapped_column(String(16))
 
+    # === Market label (captured at placement, for readable ledger + analysis) ===
+    # Codes (home/away/selection) come from the ticker and are always present
+    # for a per-game market; full names come from the live ESPN feed and are
+    # null when no match was resolved (futures, early pre-match). series maps to
+    # a league display name. Nullable throughout — old rows and unparseable
+    # tickers fall back to the raw ticker at display.
+    event_series: Mapped[str | None] = mapped_column(String(48))
+    home_code: Mapped[str | None] = mapped_column(String(8))
+    away_code: Mapped[str | None] = mapped_column(String(8))
+    home_name: Mapped[str | None] = mapped_column(String(64))
+    away_name: Mapped[str | None] = mapped_column(String(64))
+    selection_code: Mapped[str | None] = mapped_column(String(8))
+
     # === Flexible tags + audit fields ===
     tags: Mapped[list[str] | None] = mapped_column(JSON)
     metadata_edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

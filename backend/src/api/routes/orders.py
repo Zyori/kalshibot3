@@ -103,6 +103,25 @@ def _make_sanity_input(body: OrderRequestBody, snapshot: dict[str, Any]) -> Sani
     )
 
 
+def _resolve_team_names(request: Request, ticker: str) -> tuple[str | None, str | None]:
+    """Full home/away team names for a market ticker, from the live discovery
+    feed's ESPN match (home_names[0] is the original-case display name). Returns
+    (None, None) when no ESPN match is resolved — futures, early pre-match, or a
+    league ESPN doesn't cover. Best-effort: the codes (always available from the
+    ticker) carry the structure; names are the nice-to-have."""
+    supervisor = getattr(request.app.state, "supervisor", None)
+    if supervisor is None:
+        return (None, None)
+    feed = supervisor.market_discovery.get_feed()
+    for bucket in (feed.live, feed.upcoming, feed.recent):
+        for m in bucket:
+            if m.ticker == ticker and m.espn_event is not None:
+                home = m.espn_event.home_names[0] if m.espn_event.home_names else None
+                away = m.espn_event.away_names[0] if m.espn_event.away_names else None
+                return (home, away)
+    return (None, None)
+
+
 async def _open_position_qty(
     session: AsyncSession, *, ticker: str, side: str,
 ) -> int:
@@ -219,6 +238,7 @@ async def place_order(
             log.warning("place_order_kalshi_error", ticker=body.ticker, error=str(e))
             raise HTTPException(status_code=502, detail=f"kalshi: {e}") from e
 
+    home_name, away_name = _resolve_team_names(request, body.ticker)
     bet = await record_placed_order(
         session,
         order=resp.order,
@@ -226,6 +246,8 @@ async def place_order(
         requested_count=body.count,
         requested_price_cents=body.price_cents,
         action=body.action,
+        home_name=home_name,
+        away_name=away_name,
     )
     await session.commit()
 

@@ -12,6 +12,9 @@ Ported from V2 (Kalshi-Mean-Reversion-Bot/backend/src/ingestion/kalshi_rest.py).
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+
 # Per-game (match-result) series — Kalshi prefix → human league name.
 # The prefix matches event_tickers Kalshi publishes as
 # "{PREFIX}-{date}{home}{away}" with markets for each side.
@@ -228,4 +231,43 @@ def is_soccer_ticker(ticker: str) -> bool:
     """
     return any(ticker.startswith(p) for p in SOCCER_GAME_SERIES) or any(
         ticker.startswith(p) for p in WORLD_CUP_DERIVATIVE_SERIES
+    )
+
+
+@dataclass(frozen=True)
+class ParsedMarketTicker:
+    """The structured pieces of a per-game market ticker, for the readable
+    ledger label and future analysis. Codes are the 3-letter Kalshi team codes
+    (home listed first), `selection` is the outcome the market is on
+    (a team code, or TIE for the draw)."""
+    series: str           # e.g. "KXINTLFRIENDLYGAME"
+    home_code: str        # e.g. "AUT"
+    away_code: str        # e.g. "TUN"
+    selection_code: str   # e.g. "AUT" | "TUN" | "TIE"
+
+
+# {SERIES}-{YYMONDD}{HOME}{AWAY}-{SELECTION}, where HOME/AWAY/SELECTION are
+# 3-letter codes (TIE for the draw). Verified across all 23 distinct tickers in
+# the DB: every matchup block is exactly two 3-char codes. The date is
+# 2-digit-year + 3-letter-month + 2-digit-day.
+_GAME_TICKER_RE = re.compile(
+    r"^(?P<series>[A-Z0-9]+)-\d{2}[A-Z]{3}\d{2}(?P<home>[A-Z]{3})(?P<away>[A-Z]{3})-(?P<sel>[A-Z]{3})$"
+)
+
+
+def parse_market_ticker(ticker: str) -> ParsedMarketTicker | None:
+    """Decode a per-game market ticker into series + home/away/selection codes.
+
+    Returns None when the ticker doesn't match the per-game shape (futures,
+    derivatives, or an unexpected format) — the caller falls back to showing the
+    raw ticker. Pure: no I/O, no team-name resolution (names come from the live
+    ESPN feed at the call site, when available)."""
+    m = _GAME_TICKER_RE.match(ticker)
+    if m is None:
+        return None
+    return ParsedMarketTicker(
+        series=m.group("series"),
+        home_code=m.group("home"),
+        away_code=m.group("away"),
+        selection_code=m.group("sel"),
     )

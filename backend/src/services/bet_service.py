@@ -45,7 +45,7 @@ from src.core.types import (
 from src.kalshi.schemas import Order
 from src.kalshi.ws_wire import Fill
 from src.models import Bet, BetFill, Market
-from src.sports.soccer import is_soccer_ticker
+from src.sports.soccer import is_soccer_ticker, parse_market_ticker
 
 log = get_logger(__name__)
 
@@ -188,6 +188,8 @@ async def record_placed_order(
     confidence: Confidence = Confidence.MEDIUM,
     timing: Timing = Timing.PRE_MATCH,
     human_reasoning: str | None = None,
+    home_name: str | None = None,
+    away_name: str | None = None,
 ) -> Bet | None:
     """Persist a freshly-placed order.
 
@@ -222,6 +224,7 @@ async def record_placed_order(
         return existing
 
     market_id = await _get_or_create_market(session, ticker=order.ticker)
+    parsed = parse_market_ticker(order.ticker)
     # Record the entry price for the SIDE we actually bought. Kalshi's order
     # response populates BOTH yes_price and no_price (complementary: a NO buy at
     # 35¢ comes back yes_price=65, no_price=35), so always taking yes_price
@@ -262,6 +265,16 @@ async def record_placed_order(
         game_period=None,
         game_clock=None,
         tags=None,
+        # Market label: codes/series/selection from the ticker (always present
+        # for a per-game market), full names passed in from the live ESPN feed
+        # (null when no match resolved). parsed is None for a futures/derivative
+        # ticker — the ledger then falls back to the raw ticker.
+        event_series=parsed.series if parsed else None,
+        home_code=parsed.home_code if parsed else None,
+        away_code=parsed.away_code if parsed else None,
+        home_name=home_name,
+        away_name=away_name,
+        selection_code=parsed.selection_code if parsed else None,
         verified=True,
         version=1,
         placed_at=datetime.now(timezone.utc),

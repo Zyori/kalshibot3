@@ -385,7 +385,9 @@ function BetRow({
           <SportBadge sport={bet.sport} compact />
         </td>
         <td className="px-3 py-2 text-xs text-text-muted">{formatET(bet.placed_at)}</td>
-        <td className="px-3 py-2 font-mono text-xs">{bet.ticker ?? '—'}</td>
+        <td className="px-3 py-2 text-xs" title={bet.ticker ?? undefined}>
+          {bet.market_label}
+        </td>
         <td className="px-3 py-2 text-xs">{bet.side.toUpperCase()}</td>
         <td className="px-3 py-2 text-right font-mono tabular-nums text-xs">
           {partialClose ? (

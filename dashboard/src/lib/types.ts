@@ -6,6 +6,7 @@ export type Bet = {
   id: number
   sport: string
   ticker: string | null
+  market_label: string
   market_status: 'open' | 'closed' | 'settled' | null
   market_id: number
   kalshi_order_id: string | null
