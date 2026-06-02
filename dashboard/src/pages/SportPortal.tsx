@@ -67,10 +67,10 @@ export default function SportPortal() {
       <div className="grid gap-4 md:grid-cols-2">
         <LiveGamesTile />
         <OpenPositionsTile />
-        <StrategyTile />
-        <SuggestedBetsTile />
         <WorldCupWinnerTile />
         <NewsTile />
+        <StrategyTile />
+        <SuggestedBetsTile />
       </div>
 
       <HistorySection sport={sport} />
