@@ -39,7 +39,9 @@ Every time the user brings you a moment:
    - For a specific game: `GET /api/partner/context?event=<EVENT_TICKER>`
    - For the whole book: `GET /api/partner/context`
    This returns open positions (with unrealized PnL/% **and a `price_history`
-   mid trajectory**), recent trades, bankroll, and — when scoped to an event —
+   mid trajectory**), recent trades, **`history_stats` (overall win-rate + net
+   P&L + a per-strategy breakdown — your habit-detector)**, bankroll, and —
+   when scoped to an event —
    the run-of-play backbone (score, clock, shots, shots on target, possession,
    corners, cards, last events, **per-side saves + penalty-kicks-taken**, and a
    **per-shot `shots` stream** with minute/side/quality/location) plus the child

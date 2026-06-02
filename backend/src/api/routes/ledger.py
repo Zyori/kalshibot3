@@ -234,6 +234,34 @@ async def ledger_stats(
     rate (won / settled), ROI (P&L / total stake), and a strategy-level
     breakdown for the StrategyBreakdown chart.
     """
+    return await compute_ledger_stats(
+        session,
+        sport=sport or None,
+        status=status or None,
+        strategy=strategy or None,
+        source=source or None,
+        timing=timing or None,
+        market=market,
+        since=since,
+        until=until,
+    )
+
+
+async def compute_ledger_stats(
+    session: AsyncSession,
+    *,
+    sport: list[str] | None = None,
+    status: list[str] | None = None,
+    strategy: list[str] | None = None,
+    source: list[str] | None = None,
+    timing: list[str] | None = None,
+    market: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> dict[str, Any]:
+    """Plain-callable core of /ledger/stats — same numbers, no FastAPI Query()
+    params, so the partner-context endpoint (and any service) can reuse it
+    without going through the HTTP layer. The route is a thin wrapper."""
     # Build each aggregate query directly with the same filter chain. The
     # previous shape — `select(...).select_from(base.subquery())` — produced
     # a cartesian product between `bet` and the subquery because the

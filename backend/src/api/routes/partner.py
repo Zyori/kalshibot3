@@ -46,7 +46,7 @@ from src.core.types import (
     utc_iso,
 )
 from src.api.routes.events import get_event
-from src.api.routes.ledger import _bet_to_dict
+from src.api.routes.ledger import _bet_to_dict, compute_ledger_stats
 from src.api.routes.positions import list_positions
 from src.models import Bet, Market, Position, Suggestion
 from src.sports.soccer import is_soccer_ticker
@@ -128,6 +128,12 @@ async def partner_context(
         "bankroll_cents": _bankroll_cents(request),
         "positions": positions["positions"],
         "recent_trades": await _recent_trades(session),
+        # Aggregate behavioral history so the partner can spot patterns the last
+        # 20 trades don't show — win-rate and net P&L overall AND per strategy.
+        # Same single source the Settings/Ledger charts use (ledger_stats), so
+        # the numbers match the site. This is what lets LUTZ say "your draw bets
+        # are -EV over 30 trades" instead of eyeballing recent rows.
+        "history_stats": await compute_ledger_stats(session),
     }
 
     if event is not None:
