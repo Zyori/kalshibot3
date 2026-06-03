@@ -39,6 +39,7 @@ from src.core.types import (
     BetSource,
     BetStatus,
     Confidence,
+    SnapshotPhase,
     Strategy,
     Timing,
     utc_iso,
@@ -398,7 +399,9 @@ async def list_bet_fills(
     }
 
 
-_SNAPSHOT_PHASE_ORDER = {"entry": 0, "exit_open": 1, "exit_close": 2}
+# Canonical post-mortem order, derived from the enum's member order so it
+# can't drift from SnapshotPhase.
+_SNAPSHOT_PHASE_ORDER = {p.value: i for i, p in enumerate(SnapshotPhase)}
 
 
 @router.get("/ledger/{bet_id}/snapshots")

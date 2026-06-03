@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.types import SnapshotPhase
 from src.services.bet_service import record_fill
 
 # Reuse the in-memory fill/bet builders + session-engine setup from the sibling
@@ -36,7 +37,7 @@ async def test_buy_fill_emits_entry(session: AsyncSession) -> None:
         trade_id="b1", order_id="ord-1", side="yes", action="buy",
         price_cents=30, qty=100,
     ))
-    assert captures == [(bet.id, "entry")]
+    assert captures == [(bet.id, SnapshotPhase.ENTRY)]
 
 
 @pytest.mark.asyncio
@@ -52,7 +53,7 @@ async def test_clean_single_sell_emits_both_exit_phases(session: AsyncSession) -
         trade_id="s1", order_id="ord-2", side="yes", action="sell",
         price_cents=45, qty=100,
     ))
-    assert captures == [(bet.id, "exit_open"), (bet.id, "exit_close")]
+    assert captures == [(bet.id, SnapshotPhase.EXIT_OPEN), (bet.id, SnapshotPhase.EXIT_CLOSE)]
 
 
 @pytest.mark.asyncio
@@ -70,13 +71,13 @@ async def test_scale_out_splits_exit_open_and_close(session: AsyncSession) -> No
         trade_id="s1", order_id="ord-2", side="yes", action="sell",
         price_cents=50, qty=40,
     ))
-    assert first == [(bet.id, "exit_open")]
+    assert first == [(bet.id, SnapshotPhase.EXIT_OPEN)]
 
     second = await record_fill(session, _make_fill(
         trade_id="s2", order_id="ord-3", side="yes", action="sell",
         price_cents=42, qty=60,
     ))
-    assert second == [(bet.id, "exit_close")]
+    assert second == [(bet.id, SnapshotPhase.EXIT_CLOSE)]
 
 
 @pytest.mark.asyncio
@@ -100,8 +101,8 @@ async def test_cross_opener_sell_emits_per_opener(session: AsyncSession) -> None
         price_cents=50, qty=100,
     ))
     assert captures == [
-        (b1.id, "exit_open"), (b1.id, "exit_close"),
-        (b2.id, "exit_open"), (b2.id, "exit_close"),
+        (b1.id, SnapshotPhase.EXIT_OPEN), (b1.id, SnapshotPhase.EXIT_CLOSE),
+        (b2.id, SnapshotPhase.EXIT_OPEN), (b2.id, SnapshotPhase.EXIT_CLOSE),
     ]
 
 

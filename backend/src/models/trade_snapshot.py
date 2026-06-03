@@ -50,6 +50,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
 from src.core.db import Base
+from src.core.types import SnapshotPhase
+
+_PHASE_IN_SQL = ", ".join(f"'{p.value}'" for p in SnapshotPhase)
+"""`'entry', 'exit_open', 'exit_close'` — derived from the enum so the CHECK
+can't drift from SnapshotPhase. The frozen migration carries the same literal."""
 
 
 class TradeSnapshot(Base):
@@ -90,7 +95,7 @@ class TradeSnapshot(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "phase IN ('entry', 'exit_open', 'exit_close')",
+            f"phase IN ({_PHASE_IN_SQL})",
             name="ck_trade_snapshot_phase",
         ),
         UniqueConstraint("bet_id", "phase", name="uq_trade_snapshot_bet_phase"),

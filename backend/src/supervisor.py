@@ -27,7 +27,7 @@ from src.core.logging import get_logger
 from src.core.ws_manager import BroadcastManager
 from src.ingestion.espn_news import EspnNews
 from src.ingestion.espn_scoreboard import EspnScoreboard
-from src.ingestion.market_discovery import MarketDiscovery, MarketFeed
+from src.ingestion.market_discovery import FeedMarket, MarketDiscovery, MarketFeed
 from src.kalshi.live_state import LiveState
 from src.kalshi.rest import KalshiRestClient
 from src.kalshi.ws import (
@@ -35,7 +35,7 @@ from src.kalshi.ws import (
     BACKOFF_MAX_S,
     KalshiWsClient,
 )
-from src.core.types import BetSide, BetStatus
+from src.core.types import BetSide, BetStatus, SnapshotPhase
 from src.kalshi.ws_wire import Fill, KalshiWsMessage, MarketLifecycle, UserOrder
 from src.services.bet_service import (
     backfill_open_bets_precision,
@@ -146,31 +146,37 @@ class Supervisor:
         self._ledger_write_lock = asyncio.Lock()
 
         self._tasks: list[asyncio.Task[None]] = []
+        # Fire-and-forget tasks (e.g. snapshot writes) kept in a set so the event
+        # loop holds a strong reference until they finish — a bare create_task
+        # whose handle is dropped can be GC'd mid-flight. Self-discarding via the
+        # done-callback, so this never grows unbounded.
+        self._transient_tasks: set[asyncio.Task[None]] = set()
 
     async def _on_fill(self, fill: Fill) -> None:
         """Persist a fill to the DB. Cross-market isolation lives inside
         record_fill — non-soccer fills are logged and dropped."""
         factory = get_session_factory()
-        captures: list[tuple[int, str]] = []
+        captures: list[tuple[int, SnapshotPhase]] = []
+        fill_committed = False
         try:
             async with self._ledger_write_lock:
                 async with factory() as session:
                     captures = await record_fill(session, fill)
                     await session.commit()
+                    fill_committed = True
         except Exception:  # noqa: BLE001
             log.exception("fill_persist_failed", trade_id=fill.msg.trade_id)
-        # Trade snapshots: freeze the live run-of-play at this fill moment for
-        # exit post-mortems. Done AFTER the fill commit, in its own session and
-        # try/except, so a snapshot failure can never roll back or delay the
-        # money path. Reads the SAME in-memory run-of-play the events route
-        # serves; pre-match fills (no live game) capture just the market mid.
-        if captures:
-            try:
-                await self._capture_trade_snapshots(fill, captures)
-            except Exception:  # noqa: BLE001 — a logbook nicety must never break fills
-                log.exception(
-                    "trade_snapshot_capture_failed", trade_id=fill.msg.trade_id
-                )
+        # Trade snapshots: freeze the live run-of-play for exit post-mortems.
+        # The READ happens here, synchronously, at the fill moment — the same
+        # in-memory run-of-play the events route serves, before any await lets
+        # the discovery poll advance it (so the frozen state matches captured_at,
+        # not a later minute). The WRITE is fired off the critical path so a slow
+        # snapshot insert can't delay the position/fees syncs below. Gated on
+        # fill_committed so a rolled-back fill never gets a snapshot. Pre-match
+        # fills (no live game) freeze just the market mid — not an error.
+        if fill_committed and captures:
+            rows = self._freeze_snapshot_rows(fill, captures)
+            self._spawn(self._write_trade_snapshots(fill, rows))
         # Trigger a position sync — a fill almost certainly changed our position.
         try:
             await self.position_syncer.trigger()
@@ -189,7 +195,14 @@ class Supervisor:
         if self.app_state is not None:
             self.app_state._balance_refreshed_at_mono = 0.0
 
-    def _feed_market(self, ticker: str) -> Any | None:
+    def _spawn(self, coro: "Any") -> None:
+        """Run a fire-and-forget coroutine, holding a strong reference until it
+        finishes so it isn't GC'd mid-flight, then self-discarding."""
+        task = asyncio.create_task(coro)
+        self._transient_tasks.add(task)
+        task.add_done_callback(self._transient_tasks.discard)
+
+    def _feed_market(self, ticker: str) -> FeedMarket | None:
         """The FeedMarket carrying live game state for a market ticker, or None
         if the ticker isn't in the current discovery feed (e.g. a market whose
         game-state poller isn't running). Same O(n) scan the events route uses;
@@ -201,18 +214,16 @@ class Supervisor:
                     return m
         return None
 
-    async def _capture_trade_snapshots(
-        self, fill: Fill, captures: list[tuple[int, str]]
-    ) -> None:
-        """Freeze the live run-of-play at this fill and write one trade_snapshot
-        per (bet_id, phase) the fill produced. Reads the SAME in-memory state
-        the events route serves so the frozen blob is byte-identical to what was
-        on screen. A pre-match fill (no live game in the feed) writes a snapshot
-        with null run-of-play and just the market mid — not an error.
-
-        Idempotent across replays/concurrent fills via on_conflict_do_nothing on
-        the unique (bet_id, phase) constraint: first fill wins, no read-modify.
-        """
+    def _freeze_snapshot_rows(
+        self, fill: Fill, captures: list[tuple[int, SnapshotPhase]]
+    ) -> list[dict[str, Any]]:
+        """Freeze the live run-of-play at the fill moment into trade_snapshot row
+        dicts — one per (bet_id, phase). Synchronous and side-effect-free: it
+        reads the SAME in-memory state the events route serves, with no await in
+        between, so the frozen blob matches captured_at rather than a later poll.
+        A pre-match fill (no live game in the feed) yields null run-of-play and
+        just the market mid — not an error. Called on the fill path; the write
+        is deferred to _write_trade_snapshots off the critical path."""
         ticker = fill.msg.ticker
         fm = self._feed_market(ticker)
         espn = fm.espn_event if fm is not None else None
@@ -228,12 +239,12 @@ class Supervisor:
             else None
         )
         tape = [{"mid_cents": m} for _, m in self.price_history.series(ticker)]
-        captured_at = fill.msg.ts or datetime.now(timezone.utc)
+        captured_at = fill.msg.ts if fill.msg.ts is not None else datetime.now(timezone.utc)
 
-        rows = [
+        return [
             {
                 "bet_id": bet_id,
-                "phase": phase,
+                "phase": phase.value,
                 "captured_at": captured_at,
                 "game_clock": clock,
                 "score_home": score_home,
@@ -244,20 +255,35 @@ class Supervisor:
             }
             for bet_id, phase in captures
         ]
+
+    async def _write_trade_snapshots(
+        self, fill: Fill, rows: list[dict[str, Any]]
+    ) -> None:
+        """Persist pre-frozen snapshot rows. Fired off the fill critical path so
+        a slow insert can't delay the position/fees syncs. Own try/except — a
+        logbook nicety must never surface as an unhandled task exception.
+
+        Idempotent across replays via on_conflict_do_nothing on the unique
+        (bet_id, phase) constraint: first fill wins, no read-modify."""
         stmt = sqlite_insert(TradeSnapshot).on_conflict_do_nothing(
             index_elements=["bet_id", "phase"]
         )
-        factory = get_session_factory()
-        async with factory() as session:
-            await session.execute(stmt, rows)
-            await session.commit()
-        log.info(
-            "trade_snapshots_captured",
-            trade_id=fill.msg.trade_id,
-            ticker=ticker,
-            phases=[p for _, p in captures],
-            had_run_of_play=rop is not None,
-        )
+        try:
+            factory = get_session_factory()
+            async with factory() as session:
+                await session.execute(stmt, rows)
+                await session.commit()
+            log.info(
+                "trade_snapshots_captured",
+                trade_id=fill.msg.trade_id,
+                ticker=fill.msg.ticker,
+                phases=[r["phase"] for r in rows],
+                had_run_of_play=rows[0]["run_of_play_json"] is not None,
+            )
+        except Exception:  # noqa: BLE001 — a logbook nicety must never break anything
+            log.exception(
+                "trade_snapshot_capture_failed", trade_id=fill.msg.trade_id
+            )
 
     async def _on_position_synced(self) -> None:
         """Post-commit hook after a position reconciliation: tell browsers to
@@ -620,6 +646,11 @@ class Supervisor:
         await self.espn_scoreboard.stop()
         await self.espn_news.stop()
         await self.broadcast.stop()
+        # Let in-flight snapshot writes finish — they're short inserts, and
+        # cancelling one mid-write just loses a logbook row for no benefit.
+        if self._transient_tasks:
+            with contextlib.suppress(Exception):
+                await asyncio.wait(self._transient_tasks, timeout=2.0)
         for t in self._tasks:
             t.cancel()
         for t in self._tasks:

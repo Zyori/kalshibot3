@@ -99,6 +99,18 @@ class ExitType(StrEnum):
     PARTIAL_CLOSE = "partial_close"
 
 
+class SnapshotPhase(StrEnum):
+    """Which fill moment a trade_snapshot froze. Iteration order is the
+    canonical post-mortem order (entry, then the exit span), so callers can
+    derive a sort key from member position instead of a parallel dict."""
+
+    ENTRY = "entry"
+    EXIT_OPEN = "exit_open"
+    """First sell on a bet — when we started getting out."""
+    EXIT_CLOSE = "exit_close"
+    """The sell that drove remaining quantity to zero — when we were fully out."""
+
+
 class BetSource(StrEnum):
     """Who proposed the bet."""
 

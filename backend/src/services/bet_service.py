@@ -38,6 +38,7 @@ from src.core.types import (
     ExitType,
     MarketSettlement,
     MarketStatus,
+    SnapshotPhase,
     Sport,
     Strategy,
     Timing,
@@ -294,7 +295,7 @@ async def record_placed_order(
     return bet
 
 
-async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, str]]:
+async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, SnapshotPhase]]:
     """Apply a WS fill event.
 
     Inserts a bet_fill row (idempotent on trade_id) and then either:
@@ -397,7 +398,7 @@ async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, str]
             entry_price_cents=bet.entry_price_cents,
             buy_centi_total=total_centi,
         )
-        return [(bet.id, "entry")]
+        return [(bet.id, SnapshotPhase.ENTRY)]
 
     # SELL: peek at the first FIFO opener BEFORE persisting a bet_fill row.
     # If no opener exists (e.g. settle race), bail without leaving a phantom
@@ -428,7 +429,7 @@ async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, str]
 
     # Snapshot capture events accumulated across the openers this sell touches.
     # exit_open for every opener; exit_close for any opener this fill zeroes.
-    captures: list[tuple[int, str]] = []
+    captures: list[tuple[int, SnapshotPhase]] = []
     remaining_to_attribute_centi = new_centi
     primary_bet_id: int | None = None
     # Carry the REST-side fee (if fills_sync already populated it) so we
@@ -535,9 +536,9 @@ async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, str]
         # the same opener (scale-out) must not re-emit it. exit_close fires on
         # the sell that drives remaining to zero — the moment we were fully out.
         # A clean single sell is both first and zeroing, so it emits both.
-        sell_row_count = sum(1 for f in opener_fills if f.action == "sell")
-        if sell_row_count == 1:
-            captures.append((opener.id, "exit_open"))
+        is_first_sell = sum(1 for f in opener_fills if f.action == "sell") == 1
+        if is_first_sell:
+            captures.append((opener.id, SnapshotPhase.EXIT_OPEN))
         if opener.remaining_quantity_centi == 0:
             opener.status = (
                 BetStatus.WON if (opener.realized_pnl_cents or 0) > 0
@@ -546,7 +547,7 @@ async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, str]
             opener.exit_type = ExitType.CLOSED_EARLY
             opener.settled_at = datetime.now(timezone.utc)
             opener.pnl_cents = opener.realized_pnl_cents
-            captures.append((opener.id, "exit_close"))
+            captures.append((opener.id, SnapshotPhase.EXIT_CLOSE))
 
         opener.version += 1
         await session.flush()

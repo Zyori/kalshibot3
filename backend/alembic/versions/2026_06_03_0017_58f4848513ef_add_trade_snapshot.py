@@ -32,6 +32,7 @@ def upgrade() -> None:
     sa.Column('market_mid_cents', sa.Integer(), nullable=True),
     sa.Column('price_history_json', sa.JSON(), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    # Frozen literal — mirrors core.types.SnapshotPhase (migrations don't import app code).
     sa.CheckConstraint("phase IN ('entry', 'exit_open', 'exit_close')", name='ck_trade_snapshot_phase'),
     sa.ForeignKeyConstraint(['bet_id'], ['bet.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
