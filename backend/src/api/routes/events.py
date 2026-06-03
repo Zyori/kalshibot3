@@ -69,7 +69,9 @@ async def _fetch_total_goals(
     if total_event is None:
         return []
 
-    supervisor = request.app.state.supervisor
+    supervisor = getattr(request.app.state, "supervisor", None)
+    if supervisor is None:
+        return []
     try:
         async with KalshiRestClient() as client:
             resp = await client.get_markets(event_ticker=total_event, limit=50)

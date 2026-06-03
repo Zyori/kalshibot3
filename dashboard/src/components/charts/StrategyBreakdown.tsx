@@ -22,6 +22,13 @@ type Stats = {
   }>
 }
 
+// Retired strategy keys still appear on historical bets; label them clearly
+// so an old 'draw_value' bar doesn't read as a live strategy. See the
+// draw_value -> time_decay rename.
+const LEGACY_STRATEGY_LABELS: Record<string, string> = {
+  draw_value: 'draw_value (legacy)',
+}
+
 /**
  * Net ROI per strategy as a bar chart. Net = after Kalshi fees. Bars
  * are green when net ROI > 0, red when < 0. Strategies with no settled
@@ -31,7 +38,7 @@ export default function StrategyBreakdown({ stats }: { stats: Stats | undefined 
   const data = (stats?.by_strategy ?? [])
     .filter((row) => row.net_roi !== null && row.stake_cents > 0)
     .map((row) => ({
-      strategy: row.strategy,
+      strategy: LEGACY_STRATEGY_LABELS[row.strategy] ?? row.strategy,
       roi_pct: (row.net_roi as number) * 100,
       count: row.count,
     }))

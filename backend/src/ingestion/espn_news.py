@@ -97,12 +97,30 @@ class EspnNews:
     async def run(self) -> None:
         await self._refresh_once()
         while not self._stopped:
-            hot = self._kickoff_soon() if self._kickoff_soon is not None else False
-            await asyncio.sleep(POLL_INTERVAL_HOT_S if hot else POLL_INTERVAL_IDLE_S)
+            await self._wait_next_poll()
+            if self._stopped:
+                break
             try:
                 await self._refresh_once()
             except Exception:  # noqa: BLE001 — a bad poll never kills the loop
                 log.exception("espn_news_refresh_failed")
+
+    async def _wait_next_poll(self) -> None:
+        """Sleep until the next poll. Hot now → one hot interval. Idle → sleep in
+        hot-interval chunks up to the idle total, but return early the moment a
+        kickoff enters the window. A flat idle sleep would commit to the full
+        30 min and miss a game crossing the 1-hour horizon mid-sleep — exactly
+        when pre-kickoff news (confirmed XI, late injuries) is most price-moving."""
+        soon = self._kickoff_soon
+        if soon is not None and soon():
+            await asyncio.sleep(POLL_INTERVAL_HOT_S)
+            return
+        waited = 0
+        while waited < POLL_INTERVAL_IDLE_S and not self._stopped:
+            await asyncio.sleep(POLL_INTERVAL_HOT_S)
+            waited += POLL_INTERVAL_HOT_S
+            if soon is not None and soon():
+                return  # kickoff entered the window — poll now
 
     async def stop(self) -> None:
         self._stopped = True

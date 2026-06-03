@@ -612,20 +612,43 @@ class EspnScoreboard:
         # counts, so a carried value can only be stale-low by a poll — never
         # misleading.
         prev_by_id = {e.espn_id: e for e in self.snapshot.events}
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S) as client:
-            for espn_id, ev in deduped.items():
-                if ev.state != "in":
-                    continue
-                try:
-                    deduped[espn_id] = await self._fetch_summary(client, ev, prev_by_id.get(espn_id))
-                except Exception as e:  # noqa: BLE001
-                    log.warning("espn_summary_failed", espn_id=espn_id, slug=ev.slug, error=str(e)[:120])
+        live = [(eid, ev) for eid, ev in deduped.items() if ev.state == "in"]
+        # Enrich live games CONCURRENTLY. Serially, N games × the per-request
+        # timeout could blow past the live poll cadence during simultaneous WC
+        # kickoffs — freezing score/clock for every game exactly when the most
+        # are live. gather bounds the wall time to the slowest single summary,
+        # not their sum. Per-game failures are isolated (each task swallows its
+        # own error and returns the un-enriched event), so one slow/failed
+        # summary never drops another game's scoreboard data.
+        if live:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S) as client:
+                enriched = await asyncio.gather(*(
+                    self._fetch_summary_safe(client, ev, prev_by_id.get(eid))
+                    for eid, ev in live
+                ))
+            for (eid, _), ev in zip(live, enriched):
+                deduped[eid] = ev
 
         self.snapshot = EspnSnapshot(
             events=list(deduped.values()),
             refreshed_at=now,
         )
         log.info("espn_refreshed", slugs=len(self._slugs), events=len(deduped))
+
+    async def _fetch_summary_safe(
+        self, client: httpx.AsyncClient, event: EspnEvent, prev: EspnEvent | None = None,
+    ) -> EspnEvent:
+        """_fetch_summary with per-game error isolation, for concurrent gather:
+        a transport error on one game's summary returns that game un-enriched
+        rather than failing the whole batch."""
+        try:
+            return await self._fetch_summary(client, event, prev)
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "espn_summary_failed", espn_id=event.espn_id, slug=event.slug,
+                error=str(e)[:120],
+            )
+            return event
 
     async def _fetch_summary(
         self, client: httpx.AsyncClient, event: EspnEvent, prev: EspnEvent | None = None,
