@@ -109,6 +109,12 @@ class SnapshotPhase(StrEnum):
     """First sell on a bet — when we started getting out."""
     EXIT_CLOSE = "exit_close"
     """The sell that drove remaining quantity to zero — when we were fully out."""
+    FINAL = "final"
+    """The game's own ending, stamped on every positioned bet when ESPN flips
+    the match in->post — final score, final clock, and FT/AET/Penalties. Unlike
+    the fill-driven phases this fires once per game, not per fill; it's the
+    retro-analysis anchor for "how did the game I exited actually end." Last in
+    iteration order so the post-mortem reads entry -> exit span -> final."""
 
 
 class BetSource(StrEnum):

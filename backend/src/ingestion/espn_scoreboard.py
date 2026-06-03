@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -567,6 +567,11 @@ class EspnScoreboard:
         self._stopped = False
         self._task: asyncio.Task[None] | None = None
         self._burst_until: float = 0.0
+        self.on_game_end: Callable[[list[EspnEvent]], Awaitable[None]] | None = None
+        """Set by the supervisor. Called with the events that flipped in->post
+        this poll, while their final score/clock/status_detail are still fresh.
+        The poller stays I/O-only — it detects the transition and hands it off;
+        the supervisor does the DB write (final-phase trade snapshots)."""
         """Monotonic deadline; while now < this, poll at the burst cadence.
         Set by request_burst() when a watched market spikes."""
 
@@ -655,11 +660,28 @@ class EspnScoreboard:
             for (eid, _), ev in zip(live, enriched):
                 deduped[eid] = ev
 
+        # Games that just ended: 'in' last poll, 'post' now. Caught here, before
+        # the swap, while the final score/clock/status_detail are freshest. The
+        # supervisor freezes a final-phase snapshot per positioned bet off this.
+        # prev_by_id was built above for the boxscore carry-forward; reuse it.
+        ended = [
+            ev for eid, ev in deduped.items()
+            if ev.state == "post"
+            and (prev := prev_by_id.get(eid)) is not None
+            and prev.state == "in"
+        ]
+
         self.snapshot = EspnSnapshot(
             events=list(deduped.values()),
             refreshed_at=now,
         )
         log.info("espn_refreshed", slugs=len(self._slugs), events=len(deduped))
+
+        if ended and self.on_game_end is not None:
+            try:
+                await self.on_game_end(ended)
+            except Exception:  # noqa: BLE001 — a snapshot-write failure must not kill the poll loop
+                log.exception("espn_game_end_hook_failed", count=len(ended))
 
     async def _fetch_summary_safe(
         self, client: httpx.AsyncClient, event: EspnEvent, prev: EspnEvent | None = None,

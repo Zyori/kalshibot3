@@ -76,6 +76,11 @@ class TradeSnapshot(Base):
     post-mortem reads the raw clock fine. Null when no live game state."""
     score_home: Mapped[int | None] = mapped_column(Integer)
     score_away: Mapped[int | None] = mapped_column(Integer)
+    status_detail: Mapped[str | None] = mapped_column(String(16))
+    """ESPN's match-state label, captured only on the `final` phase: 'FT',
+    'AET', 'Penalties'. This is the queryable categorical for "did the game go
+    to extra time / a shootout" — null on entry/exit phases (mid-match the
+    label is just the running clock, already in game_clock)."""
     run_of_play_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     """The frozen live run-of-play, serialized by the SAME serializer the
     events route uses (live_payload) so it's byte-identical to what the site

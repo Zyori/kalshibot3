@@ -27,7 +27,7 @@ from src.core.db import get_session_factory
 from src.core.logging import get_logger
 from src.core.ws_manager import BroadcastManager
 from src.ingestion.espn_news import EspnNews
-from src.ingestion.espn_scoreboard import EspnScoreboard
+from src.ingestion.espn_scoreboard import EspnEvent, EspnScoreboard
 from src.ingestion.market_discovery import FeedMarket, MarketDiscovery, MarketFeed
 from src.kalshi.live_state import LiveState
 from src.kalshi.rest import KalshiRestClient
@@ -51,7 +51,7 @@ from src.services.nudge_evaluator import Nudge, NudgeEvaluator
 from src.services.position_sync import PositionSyncer, _mark_price_cents
 from src.services.price_history import PriceHistory
 from src.services.settlement_sweeper import SettlementSweeper
-from src.models import Market, Position, TradeSnapshot
+from src.models import Bet, Market, Position, TradeSnapshot
 from src.sports.run_of_play import live_payload
 from sqlalchemy import select
 
@@ -104,6 +104,10 @@ class Supervisor:
         self.espn_news = EspnNews(kickoff_soon=self._wc_kickoff_soon)
         self.market_discovery = MarketDiscovery(espn=self.espn_scoreboard)
         self.market_discovery.register_refresh_callback(self._on_discovery_refresh)
+        # When ESPN flips a game in->post, freeze a final-phase snapshot on its
+        # positioned bets. Wired here, after market_discovery exists (the handler
+        # resolves tickers through the feed).
+        self.espn_scoreboard.on_game_end = self._on_games_ended
         # MarketRefresher shares the browser broadcast queue so its REST
         # snapshots (FAR-tier polls + locked-book resyncs) reach connected
         # browsers, not just LiveState. Without this, browsers see the
@@ -306,6 +310,83 @@ class Supervisor:
             log.exception(
                 "trade_snapshot_capture_failed", trade_id=fill.msg.trade_id
             )
+
+    async def _on_games_ended(self, ended: list[EspnEvent]) -> None:
+        """Freeze a `final`-phase trade snapshot on every positioned bet whose
+        game just flipped in->post. The ended EspnEvents carry the fresh final
+        score / clock / status_detail (FT/AET/Penalties); the discovery feed is
+        the only ticker<->espn_id bridge, so we resolve tickers through it while
+        the just-ended markets are still in the feed (recent bucket).
+
+        "Positioned" = the bet has an `entry` snapshot — i.e. it actually filled
+        (cancelled orders never get one). on_conflict_do_nothing on (bet_id,
+        phase) dedupes if a later poll re-sees the same game as post.
+
+        Off the poll's critical path with its own try/except (the poller already
+        wraps this call too): a final-snapshot write must never disturb polling."""
+        feed = self.market_discovery.get_feed()
+        by_espn_id: dict[str, list[str]] = {}
+        for bucket in (feed.live, feed.upcoming, feed.recent):
+            for m in bucket:
+                if m.espn_event is not None:
+                    by_espn_id.setdefault(m.espn_event.espn_id, []).append(m.ticker)
+
+        rows: list[dict[str, Any]] = []
+        factory = get_session_factory()
+        async with factory() as session:
+            for ev in ended:
+                tickers = by_espn_id.get(ev.espn_id)
+                if not tickers:
+                    # Game ended but its markets already aged out of the feed —
+                    # nothing to anchor a bet to. Rare; logged, not stamped.
+                    log.info("game_end_no_feed_markets", espn_id=ev.espn_id)
+                    continue
+                # Bets that filled (have an `entry` snapshot) on these tickers and
+                # don't yet have a `final`. One query per game; games are few.
+                entry_q = (
+                    select(Bet.id)
+                    .join(Market, Market.id == Bet.market_id)
+                    .join(TradeSnapshot, TradeSnapshot.bet_id == Bet.id)
+                    .where(Market.kalshi_ticker.in_(tickers))
+                    .where(TradeSnapshot.phase == SnapshotPhase.ENTRY.value)
+                )
+                final_q = select(TradeSnapshot.bet_id).where(
+                    TradeSnapshot.phase == SnapshotPhase.FINAL.value
+                )
+                bet_ids = set((await session.execute(entry_q)).scalars().all()) - set(
+                    (await session.execute(final_q)).scalars().all()
+                )
+                rop = live_payload(ev)
+                for bet_id in bet_ids:
+                    rows.append({
+                        "bet_id": bet_id,
+                        "phase": SnapshotPhase.FINAL.value,
+                        "captured_at": datetime.now(timezone.utc),
+                        "game_clock": ev.clock_display,
+                        "score_home": ev.home_stats.score,
+                        "score_away": ev.away_stats.score,
+                        "status_detail": ev.status_detail,
+                        "run_of_play_json": rop,
+                        "market_mid_cents": None,
+                        "price_history_json": None,
+                    })
+
+            if not rows:
+                return
+            try:
+                stmt = sqlite_insert(TradeSnapshot).on_conflict_do_nothing(
+                    index_elements=["bet_id", "phase"]
+                )
+                await session.execute(stmt, rows)
+                await session.commit()
+                log.info(
+                    "final_snapshots_captured",
+                    games=len(ended),
+                    bets=len(rows),
+                    details=[ev.status_detail for ev in ended],
+                )
+            except Exception:  # noqa: BLE001 — a logbook nicety must never break polling
+                log.exception("final_snapshot_capture_failed")
 
     async def _on_position_synced(self) -> None:
         """Post-commit hook after a position reconciliation: tell browsers to
