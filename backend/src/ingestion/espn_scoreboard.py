@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -39,6 +40,12 @@ HTTP_TIMEOUT_S = 8.0
 POLL_INTERVAL_IDLE_S = 1800   # 30 min when no games are live
 POLL_INTERVAL_LIVE_S = 40     # when at least one game is in progress — keeps
                               # the score/clock within ~1 poll of real time
+POLL_INTERVAL_BURST_S = 10    # when a watched market just spiked (likely a goal/
+                              # red card) — tighten to catch the /summary detail
+                              # within ~10s instead of ~40s. ESPN is free + unmetered,
+                              # so the burst's only cost is a few extra requests.
+BURST_WINDOW_S = 75           # how long a single burst request stays hot before
+                              # decaying back to the live cadence
 FETCH_WINDOW_DAYS_BACK = 1  # yesterday — covers UTC/ET date-boundary games
 FETCH_WINDOW_DAYS_FORWARD = 3  # today + next 2 days
 # Total window: 4 days. ESPN buckets events by US-local date, so a Kalshi
@@ -559,15 +566,34 @@ class EspnScoreboard:
         self.snapshot = EspnSnapshot()
         self._stopped = False
         self._task: asyncio.Task[None] | None = None
+        self._burst_until: float = 0.0
+        """Monotonic deadline; while now < this, poll at the burst cadence.
+        Set by request_burst() when a watched market spikes."""
+
+    def request_burst(self) -> None:
+        """Tighten the poll cadence to ~10s for BURST_WINDOW_S. Called when a
+        watched market just moved sharply (likely a goal / red card) so the
+        /summary detail lands within ~10s instead of ~40s. Idempotent — a fresh
+        spike just re-extends the window; overlapping spikes don't stack."""
+        self._burst_until = time.monotonic() + BURST_WINDOW_S
+
+    @property
+    def _bursting(self) -> bool:
+        return time.monotonic() < self._burst_until
 
     async def run(self) -> None:
         """Long-running poller. Initial fetch on start, then adaptive cadence:
-        30 min when nothing is live, 60s when at least one game is in
-        progress (so the match-clock UI updates roughly per minute)."""
+        30 min idle, 40s when a game is live, 10s for ~75s after a watched
+        market spikes (event-burst — see request_burst)."""
         await self._refresh_once()
         while not self._stopped:
             live_now = any(e.state == "in" for e in self.snapshot.events)
-            interval = POLL_INTERVAL_LIVE_S if live_now else POLL_INTERVAL_IDLE_S
+            if live_now and self._bursting:
+                interval = POLL_INTERVAL_BURST_S
+            elif live_now:
+                interval = POLL_INTERVAL_LIVE_S
+            else:
+                interval = POLL_INTERVAL_IDLE_S
             await asyncio.sleep(interval)
             try:
                 await self._refresh_once()

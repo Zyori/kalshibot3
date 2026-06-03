@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from typing import Any
 
 import websockets
@@ -55,6 +56,20 @@ from src.sports.run_of_play import live_payload
 from sqlalchemy import select
 
 log = get_logger(__name__)
+
+# Event-burst spike detection (see _detect_market_spikes). A goal/red card moves a
+# match market's mid in double digits within a poll or two; normal book churn is a
+# cent or two. 10¢ is deliberately wide — this is a feed-latency assist, so it should
+# fire only on the unambiguous "something big happened" jumps, not on noise.
+BURST_SPIKE_THRESHOLD_CENTS = 10
+# Don't compare against a sample older than this — a 10¢ drift accumulated slowly over
+# minutes isn't an event, it's the game evolving. We want a sharp jump, so we look at
+# the mid from roughly one-to-two observer ticks ago.
+BURST_SPIKE_LOOKBACK_S = 45.0
+# Per-event cooldown: after a burst fires for a game, ignore further spikes on it for
+# this long. The burst window itself is ~75s; without a cooldown a market that stays
+# volatile post-goal would re-arm the burst every tick and hold the poller at 10s.
+BURST_COOLDOWN_S = 60.0
 
 
 class Supervisor:
@@ -120,6 +135,13 @@ class Supervisor:
         # tick (NOT per WS delta — that's the firehose). In-memory/ephemeral,
         # same rationale as the nudge state. Read by /partner/context.
         self.price_history = PriceHistory()
+
+        # Event-burst: when a live game's market mid jerks sharply (likely a goal
+        # or red card), tell the ESPN poller to burst so the /summary detail lands
+        # fast instead of up to a baseline-cadence later. Per-event cooldown stops
+        # a thrashing book from re-triggering every tick. event_ticker -> monotonic
+        # ts of last burst. In-memory/ephemeral, same rationale as the nudge state.
+        self._last_burst_at: dict[str, float] = {}
 
         # Track each ticker's last-known tier so we can detect transitions
         # (FAR→SOON, LIVE→DONE, etc.) and run the right hand-off logic.
@@ -352,6 +374,9 @@ class Supervisor:
                 if nudges:
                     await self._broadcast_nudges(nudges)
                 self._sample_prices()
+                # After sampling — needs this tick's mid in the series to detect a
+                # jump against the prior tick.
+                self._detect_market_spikes(feed.live)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
@@ -397,6 +422,52 @@ class Supervisor:
             if mid is not None:
                 self.price_history.record(ticker, mid)
         self.price_history.retain_only(subscribed)
+
+    def _detect_market_spikes(self, live_markets: list[FeedMarket]) -> None:
+        """Burst the ESPN poller when a live game's market mid jumps sharply — the
+        book reprices on a goal/red card seconds before the ESPN feed catches up, so
+        a sharp jump is our earliest signal that an event just fired. Bursting gets
+        the /summary detail (which event, the shots) within ~10s instead of ~40s.
+
+        Reads the same price_history the tape uses; no new sampling. Per-event: a
+        spike on either side of a match bursts that game's poll once, then a cooldown
+        suppresses re-triggering while the post-event book stays volatile. Must run
+        AFTER _sample_prices so this tick's mid is already in the series."""
+        now = time.monotonic()
+        # One burst decision per event — the two sides of a match move together, and
+        # the poller burst is global anyway, so dedupe by event_ticker.
+        spiked: set[str] = set()
+        for m in live_markets:
+            if m.event_ticker in spiked:
+                continue
+            if now - self._last_burst_at.get(m.event_ticker, 0.0) < BURST_COOLDOWN_S:
+                continue
+            if self._ticker_spiked(m.ticker, now):
+                spiked.add(m.event_ticker)
+
+        for event_ticker in spiked:
+            self._last_burst_at[event_ticker] = now
+            self.espn_scoreboard.request_burst()
+            log.info("espn_burst_triggered", event_ticker=event_ticker)
+        # Bounded growth: drop cooldown entries for events no longer live.
+        live_events = {m.event_ticker for m in live_markets}
+        for dead in self._last_burst_at.keys() - live_events:
+            self._last_burst_at.pop(dead, None)
+
+    def _ticker_spiked(self, ticker: str, now: float) -> bool:
+        """True if this market's mid moved >= the spike threshold between a recent
+        sample (~one observer tick ago) and the latest. Compares the newest mid to
+        the oldest sample still inside the lookback window — a sharp jump, not a slow
+        drift. False if the series is too short to judge."""
+        series = self.price_history.series(ticker)
+        if len(series) < 2:
+            return False
+        latest_ts, latest_mid = series[-1]
+        # Oldest sample within the lookback window (series is oldest-first).
+        for ts, mid in series:
+            if latest_ts - ts <= BURST_SPIKE_LOOKBACK_S:
+                return abs(latest_mid - mid) >= BURST_SPIKE_THRESHOLD_CENTS
+        return False
 
     async def _on_market_lifecycle(self, msg: MarketLifecycle) -> None:
         """Settle BETs when Kalshi reports a terminal market status.

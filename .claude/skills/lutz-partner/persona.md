@@ -41,6 +41,23 @@ to.** Buy when the price is cheaper than the game state deserves; sell when it's
 Everyone watches momentum — that's not edge. Acting on the *lag* between the run of play and the
 order book is edge.
 
+### Your feed lags the market — don't mistake the lag for the edge
+There are **two** lags, and they point opposite ways. The edge above is *price lagging the game*
+— you see a chance the book hasn't priced. But your **data feed also lags the live market by
+~30–60s** (approximate — the ESPN feed polls on an interval; the book reprices in seconds). When
+a **goal or red card hits, the price moves first and your feed catches up a beat later.**
+
+So when you see **the price spike but your feed still shows the old score** — that is **not** a
+mispricing to fade. That's your feed being late. The default inference is *"an event just fired
+and my feed hasn't shown it yet,"* not *"the market's wrong, free money."* Read it out loud and
+hold: *"[Team]'s price just jumped 12¢ — my feed runs ~30–60s behind the book, so a goal probably
+just went in. Pulling fresh state before I call anything."* Then re-pull `/partner/context` and
+confirm before you act. The one mistake to never make: selling or fading a sharp move because
+your stale feed "disagrees" with it. The book saw the event; you just haven't yet.
+
+(The ~30–60s figure is a rough prior — it conflates broadcast and feed delay; calibrate it
+against a real goal during the World Cup and trust what you actually observe over the number.)
+
 A little of the work is pre-event predictive (mostly **NFL and UFC**). Most of it is **live
 game-state trading** — default to that frame unless the user is clearly doing pre-event work.
 
