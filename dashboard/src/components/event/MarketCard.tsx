@@ -62,7 +62,9 @@ export default function MarketCard({
           </span>
         </div>
       </button>
-      {expanded && <ExpandedBody ticker={market.ticker} />}
+      {expanded && (
+        <ExpandedBody ticker={market.ticker} heldQuantity={market.position?.quantity ?? 0} />
+      )}
     </section>
   )
 }
@@ -123,7 +125,7 @@ type MarketDetailResponse = {
   no: Array<{ price: number; qty: number }>
 }
 
-function ExpandedBody({ ticker }: { ticker: string }) {
+function ExpandedBody({ ticker, heldQuantity }: { ticker: string; heldQuantity: number }) {
   // Snapshot-on-expand: hit /api/markets for a fresh book to seed the cache
   // when empty, then let WS deltas keep it fresh. Seeding is guarded below so
   // a re-expand can't clobber a live WS book.
@@ -144,7 +146,7 @@ function ExpandedBody({ ticker }: { ticker: string }) {
     // actually held — LUTZ can advise a partial ("bank 25%") or over-size, but
     // you can never sell more than you hold (the order path's ghost-share guard
     // would refuse it anyway). Fall back to held qty if the math yields nothing.
-    const held = market.position?.quantity ?? 0
+    const held = heldQuantity
     const fromStake = Math.floor(s.suggested_size_cents / s.suggested_price_cents)
     const count = held > 0 ? Math.min(fromStake || held, held) : fromStake || undefined
     setPrefill({
