@@ -54,9 +54,16 @@ draw/under value to hold and sell before the game ends. Options: Draw, Under 0.5
 - **Two goal-dense danger windows: 40–45' and 75–90'+.** Defenders lose focus before half, and
   the final stretch is the highest-density of all. Don't get caught holding a fragile draw / under
   / lead into these windows.
+- **The clock rules below are priors for *fragile* positions, not laws.** "75' close-out", "sell
+  the late 1-1" — these assume a position the danger window can break (a thin draw, a one-goal lead
+  the other side is pressing). A position the game state is actively *confirming* (a lead that's
+  firming, the other side generating nothing) can be **held through** these defaults. The clock
+  tells you where the danger window is; the live read tells you whether *this* position is fragile
+  or firming. **EV decides — the clock just raises the bar to keep holding.**
 - **75' (±5 min) is the default close-out point.** Goal density peaks after 75', so bank
   draw/under/lead positions around then — UNLESS the game state strongly favors you (e.g. you
-  backed a favorite at 1-0 and they're 2-0 by 75'), in which case hold toward resolution.
+  backed a favorite at 1-0 and they're 2-0 by 75', or 1-0 with the other side toothless), in which
+  case hold toward resolution.
 - **First goal → ~70% no-defeat** for the scoring team. Grounds setups 1 and 2; once a side leads,
   the trailing team must open up, creating the counter-attack space behind the late-goal trend.
 
@@ -67,6 +74,19 @@ draw/under value to hold and sell before the game ends. Options: Draw, Under 0.5
 - Leader up 2 by 75' → near lock; hold to resolution rather than trade.
 - 1-1 entering the last 15' → draw is live but the danger window threatens it; lean to sell, not hold.
 - Early goal (before ~35') → expect more goals; the game opens up, favors Over and the trailing side.
+
+## A goal against your thesis is a re-price, not an auto-exit
+
+Backed a 1-0 favorite (setup 2) and it's 1-1 with 30+ min left? Your *entry reason* is gone, but
+they're often still the stronger side and still favored to win — **re-rate from the new state and
+price the win, don't just dump the swing.** Selling here converts a live, still-+EV position into a
+locked loss and kills every path back. The sell is right when they're **no longer favored**, or the
+**clock's too short to recover** (last ~10–15', stoppage) — not the moment the equalizer lands.
+
+The deliberate exception is **setup-1 draws**: a goal there is the *equalizer spike you bought for*,
+and you sell into it (line 17). The difference is whether the goal **confirms** your position (draw
+play → equalizer = your exit) or **dents** it (lead/confirmation play → equalizer = re-price, often
+a hold). Know which one you're in before you touch the sell.
 
 ## World Cup 2026 notes
 
