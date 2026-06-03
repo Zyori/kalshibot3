@@ -294,7 +294,7 @@ async def record_placed_order(
     return bet
 
 
-async def record_fill(session: AsyncSession, fill: Fill) -> None:
+async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, str]]:
     """Apply a WS fill event.
 
     Inserts a bet_fill row (idempotent on trade_id) and then either:
@@ -314,11 +314,22 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
 
     Fees: bet_fill.fee_cents is left NULL here — WS fills don't carry fees.
     fills_sync populates them later from REST.
+
+    Returns the trade-snapshot capture events this fill produced, as
+    [(bet_id, phase), …]: a buy emits (bet_id, 'entry'); a sell emits
+    (bet_id, 'exit_open') for every opener it touched, plus
+    (bet_id, 'exit_close') for any opener this fill drove to zero remaining.
+    A single sell that both starts and finishes an exit emits both. The
+    phase decisions are made HERE because the per-opener remaining-quantity
+    signal only exists inside the FIFO loop; the caller (supervisor) does the
+    actual snapshot I/O so this stays free of app-state / ingestion deps.
+    The unique (bet_id, phase) constraint makes 'first fill wins' automatic —
+    we emit on every qualifying fill and the DB dedupes.
     """
     ticker = fill.msg.ticker
     if not is_soccer_ticker(ticker):
         log.warning("fill_dropped_non_soccer_ticker", ticker=ticker)
-        return
+        return []
 
     new_centi = fill.msg.count_centi
     new_price = (
@@ -326,7 +337,7 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
         else fill.msg.no_price_cents
     )
     if new_centi <= 0 or new_price < 1 or new_price > 99:
-        return
+        return []
 
     existing_fill = await session.scalar(
         select(BetFill).where(BetFill.trade_id == fill.msg.trade_id)
@@ -334,7 +345,7 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
     if existing_fill is not None and existing_fill.bet_id is not None:
         # WS replay/reconnect, or fills_sync already attached this trade.
         log.info("fill_already_recorded", trade_id=fill.msg.trade_id)
-        return
+        return []
 
     # Resolve which bet this fill attaches to BEFORE persisting a bet_fill
     # row. The old shape session.add()'d the row up-front and bailed on
@@ -356,7 +367,7 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
                 order_id=fill.msg.order_id,
                 ticker=ticker,
             )
-            return
+            return []
 
         bet_fill = _materialize_bet_fill(
             existing=existing_fill, fill=fill, price_cents=new_price,
@@ -386,7 +397,7 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
             entry_price_cents=bet.entry_price_cents,
             buy_centi_total=total_centi,
         )
-        return
+        return [(bet.id, "entry")]
 
     # SELL: peek at the first FIFO opener BEFORE persisting a bet_fill row.
     # If no opener exists (e.g. settle race), bail without leaving a phantom
@@ -408,13 +419,16 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
             trade_id=fill.msg.trade_id,
             centi=new_centi,
         )
-        return
+        return []
 
     bet_fill = _materialize_bet_fill(
         existing=existing_fill, fill=fill, price_cents=new_price,
         quantity_centi=new_centi, session=session,
     )
 
+    # Snapshot capture events accumulated across the openers this sell touches.
+    # exit_open for every opener; exit_close for any opener this fill zeroes.
+    captures: list[tuple[int, str]] = []
     remaining_to_attribute_centi = new_centi
     primary_bet_id: int | None = None
     # Carry the REST-side fee (if fills_sync already populated it) so we
@@ -516,6 +530,14 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
 
         await _recompute_bet_fees(session, bet=opener)
 
+        # exit_open fires only on the opener's FIRST sell (one sell row exists
+        # after this flush) — the moment we started getting out. A later sell on
+        # the same opener (scale-out) must not re-emit it. exit_close fires on
+        # the sell that drives remaining to zero — the moment we were fully out.
+        # A clean single sell is both first and zeroing, so it emits both.
+        sell_row_count = sum(1 for f in opener_fills if f.action == "sell")
+        if sell_row_count == 1:
+            captures.append((opener.id, "exit_open"))
         if opener.remaining_quantity_centi == 0:
             opener.status = (
                 BetStatus.WON if (opener.realized_pnl_cents or 0) > 0
@@ -524,6 +546,7 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
             opener.exit_type = ExitType.CLOSED_EARLY
             opener.settled_at = datetime.now(timezone.utc)
             opener.pnl_cents = opener.realized_pnl_cents
+            captures.append((opener.id, "exit_close"))
 
         opener.version += 1
         await session.flush()
@@ -577,6 +600,7 @@ async def record_fill(session: AsyncSession, fill: Fill) -> None:
                     await _recompute_bet_fees(session, bet=touched_bet)
 
     await session.flush()
+    return captures
 
 
 async def reprice_bet_for_amend(

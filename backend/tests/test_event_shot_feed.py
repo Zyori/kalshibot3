@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.api.routes.events import _live_payload, _shot_dict, _team_stats_dict
+from src.sports.run_of_play import _shot_dict, _team_stats_dict, live_payload
 from src.ingestion.espn_scoreboard import EspnEvent, ShotEvent, TeamStats
 
 
@@ -61,7 +61,7 @@ def test_live_payload_serializes_shots_in_order():
         ShotEvent(minute="4'", side="home", quality="saved", location="outside_box", raw_text="a"),
         ShotEvent(minute="63'", side="away", quality="goal", location="inside_box", raw_text="b"),
     )
-    out = _live_payload(_event_with_shots(shots))
+    out = live_payload(_event_with_shots(shots))
     assert out is not None
     assert [s["quality"] for s in out["shots"]] == ["saved", "goal"]
     assert [s["minute"] for s in out["shots"]] == ["4'", "63'"]
@@ -69,10 +69,10 @@ def test_live_payload_serializes_shots_in_order():
 
 def test_live_payload_empty_shots():
     """A game with no shots → shots: [], not a missing key or error."""
-    out = _live_payload(_event_with_shots(()))
+    out = live_payload(_event_with_shots(()))
     assert out is not None
     assert out["shots"] == []
 
 
 def test_live_payload_none_when_no_espn():
-    assert _live_payload(None) is None
+    assert live_payload(None) is None

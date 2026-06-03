@@ -18,6 +18,7 @@ import contextlib
 from typing import Any
 
 import websockets
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from datetime import datetime, timedelta, timezone
 
@@ -49,7 +50,8 @@ from src.services.nudge_evaluator import Nudge, NudgeEvaluator
 from src.services.position_sync import PositionSyncer, _mark_price_cents
 from src.services.price_history import PriceHistory
 from src.services.settlement_sweeper import SettlementSweeper
-from src.models import Market, Position
+from src.models import Market, Position, TradeSnapshot
+from src.sports.run_of_play import live_payload
 from sqlalchemy import select
 
 log = get_logger(__name__)
@@ -149,13 +151,26 @@ class Supervisor:
         """Persist a fill to the DB. Cross-market isolation lives inside
         record_fill — non-soccer fills are logged and dropped."""
         factory = get_session_factory()
+        captures: list[tuple[int, str]] = []
         try:
             async with self._ledger_write_lock:
                 async with factory() as session:
-                    await record_fill(session, fill)
+                    captures = await record_fill(session, fill)
                     await session.commit()
         except Exception:  # noqa: BLE001
             log.exception("fill_persist_failed", trade_id=fill.msg.trade_id)
+        # Trade snapshots: freeze the live run-of-play at this fill moment for
+        # exit post-mortems. Done AFTER the fill commit, in its own session and
+        # try/except, so a snapshot failure can never roll back or delay the
+        # money path. Reads the SAME in-memory run-of-play the events route
+        # serves; pre-match fills (no live game) capture just the market mid.
+        if captures:
+            try:
+                await self._capture_trade_snapshots(fill, captures)
+            except Exception:  # noqa: BLE001 — a logbook nicety must never break fills
+                log.exception(
+                    "trade_snapshot_capture_failed", trade_id=fill.msg.trade_id
+                )
         # Trigger a position sync — a fill almost certainly changed our position.
         try:
             await self.position_syncer.trigger()
@@ -173,6 +188,76 @@ class Supervisor:
         # handler's critical path.
         if self.app_state is not None:
             self.app_state._balance_refreshed_at_mono = 0.0
+
+    def _feed_market(self, ticker: str) -> Any | None:
+        """The FeedMarket carrying live game state for a market ticker, or None
+        if the ticker isn't in the current discovery feed (e.g. a market whose
+        game-state poller isn't running). Same O(n) scan the events route uses;
+        the feed is ~240 rows."""
+        feed = self.market_discovery.get_feed()
+        for bucket in (feed.live, feed.upcoming, feed.recent):
+            for m in bucket:
+                if m.ticker == ticker:
+                    return m
+        return None
+
+    async def _capture_trade_snapshots(
+        self, fill: Fill, captures: list[tuple[int, str]]
+    ) -> None:
+        """Freeze the live run-of-play at this fill and write one trade_snapshot
+        per (bet_id, phase) the fill produced. Reads the SAME in-memory state
+        the events route serves so the frozen blob is byte-identical to what was
+        on screen. A pre-match fill (no live game in the feed) writes a snapshot
+        with null run-of-play and just the market mid — not an error.
+
+        Idempotent across replays/concurrent fills via on_conflict_do_nothing on
+        the unique (bet_id, phase) constraint: first fill wins, no read-modify.
+        """
+        ticker = fill.msg.ticker
+        fm = self._feed_market(ticker)
+        espn = fm.espn_event if fm is not None else None
+        rop = live_payload(espn)
+        clock = fm.espn_clock if fm is not None else None
+        score_home = espn.home_stats.score if espn is not None else None
+        score_away = espn.away_stats.score if espn is not None else None
+
+        book = self.live_state.books.get(ticker)
+        mid = (
+            _mark_price_cents(book, BetSide.YES)
+            if book is not None and not book.is_locked
+            else None
+        )
+        tape = [{"mid_cents": m} for _, m in self.price_history.series(ticker)]
+        captured_at = fill.msg.ts or datetime.now(timezone.utc)
+
+        rows = [
+            {
+                "bet_id": bet_id,
+                "phase": phase,
+                "captured_at": captured_at,
+                "game_clock": clock,
+                "score_home": score_home,
+                "score_away": score_away,
+                "run_of_play_json": rop,
+                "market_mid_cents": mid,
+                "price_history_json": tape or None,
+            }
+            for bet_id, phase in captures
+        ]
+        stmt = sqlite_insert(TradeSnapshot).on_conflict_do_nothing(
+            index_elements=["bet_id", "phase"]
+        )
+        factory = get_session_factory()
+        async with factory() as session:
+            await session.execute(stmt, rows)
+            await session.commit()
+        log.info(
+            "trade_snapshots_captured",
+            trade_id=fill.msg.trade_id,
+            ticker=ticker,
+            phases=[p for _, p in captures],
+            had_run_of_play=rop is not None,
+        )
 
     async def _on_position_synced(self) -> None:
         """Post-commit hook after a position reconciliation: tell browsers to

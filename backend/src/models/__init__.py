@@ -11,5 +11,15 @@ from src.models.game import Game
 from src.models.market import Market
 from src.models.position import Position
 from src.models.suggestion import Suggestion
+from src.models.trade_snapshot import TradeSnapshot
 
-__all__ = ["Bet", "BetFill", "ChatMessage", "Game", "Market", "Position", "Suggestion"]
+__all__ = [
+    "Bet",
+    "BetFill",
+    "ChatMessage",
+    "Game",
+    "Market",
+    "Position",
+    "Suggestion",
+    "TradeSnapshot",
+]

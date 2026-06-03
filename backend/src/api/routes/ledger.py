@@ -43,7 +43,7 @@ from src.core.types import (
     Timing,
     utc_iso,
 )
-from src.models import Bet, BetFill, Market
+from src.models import Bet, BetFill, Market, TradeSnapshot
 from src.services.bet_service import settle_bets_for_market
 from src.sports.soccer import league_display_name
 
@@ -394,6 +394,45 @@ async def list_bet_fills(
                 "created_time": utc_iso(f.created_time),
             }
             for f in rows
+        ],
+    }
+
+
+_SNAPSHOT_PHASE_ORDER = {"entry": 0, "exit_open": 1, "exit_close": 2}
+
+
+@router.get("/ledger/{bet_id}/snapshots")
+async def list_bet_snapshots(
+    bet_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Trade snapshots for one bet — the frozen run-of-play at entry and at
+    exit, for exit post-mortems. Ordered entry → exit_open → exit_close.
+
+    A closed bet that scaled out (sold part at 75', rest at 90') has distinct
+    exit_open and exit_close minutes; a clean single-sell exit has them equal;
+    a bet ridden to settlement has neither exit_* (it never sold). A pre-match
+    entry has a null run_of_play with just the market mid. The reader treats
+    missing phases as the finding, not an error."""
+    rows = (await session.execute(
+        select(TradeSnapshot).where(TradeSnapshot.bet_id == bet_id)
+    )).scalars().all()
+    ordered = sorted(rows, key=lambda s: _SNAPSHOT_PHASE_ORDER.get(s.phase, 99))
+    return {
+        "bet_id": bet_id,
+        "snapshots": [
+            {
+                "id": s.id,
+                "phase": s.phase,
+                "captured_at": utc_iso(s.captured_at),
+                "game_clock": s.game_clock,
+                "score_home": s.score_home,
+                "score_away": s.score_away,
+                "run_of_play": s.run_of_play_json,
+                "market_mid_cents": s.market_mid_cents,
+                "price_history": s.price_history_json,
+            }
+            for s in ordered
         ],
     }
 
