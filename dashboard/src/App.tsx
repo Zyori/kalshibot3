@@ -6,6 +6,7 @@ import EventView from './pages/EventView'
 import Futures from './pages/Futures'
 import SportPortal from './pages/SportPortal'
 import Ledger from './pages/Ledger'
+import Analysis from './pages/Analysis'
 import Settings from './pages/Settings'
 
 export default function App() {
@@ -22,6 +23,7 @@ export default function App() {
         <Route path="sport/:slug" element={<SportPortal />} />
         <Route path="futures" element={<Futures />} />
         <Route path="ledger" element={<Ledger />} />
+        <Route path="analysis" element={<Analysis />} />
         <Route path="settings" element={<Settings />} />
       </Route>
     </Routes>

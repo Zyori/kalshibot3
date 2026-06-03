@@ -23,6 +23,7 @@ export default function Layout() {
               <NavTab to="/sport/soccer" label="Soccer" />
               <NavTab to="/futures" label="World Cup" />
               <NavTab to="/ledger" label="Ledger" />
+              <NavTab to="/analysis" label="Analysis" />
               <NavTab to="/settings" label="Settings" />
             </nav>
           </div>
