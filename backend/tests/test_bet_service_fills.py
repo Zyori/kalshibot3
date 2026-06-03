@@ -25,6 +25,7 @@ from src.core.types import (
     BetSource,
     BetStatus,
     Confidence,
+    ExitType,
     MarketStatus,
     Sport,
     Strategy,
@@ -35,6 +36,7 @@ from src.models import Bet, BetFill, Market
 from src.services.bet_service import (
     record_fill,
     record_placed_order,
+    reprice_bet_for_amend,
     settle_bets_for_market,
 )
 
@@ -592,3 +594,63 @@ async def test_cross_opener_sell_write_time_fee_split(session: AsyncSession) -> 
     assert bet_a.exit_fees_cents + bet_b.exit_fees_cents == 13
     assert bet_a.exit_fees_cents == 4
     assert bet_b.exit_fees_cents == 9
+
+
+@pytest.mark.asyncio
+async def test_reprice_recovers_bet_cancelled_by_race(session: AsyncSession) -> None:
+    """Amend cancel-race: Kalshi emits user_order(canceled) for the OLD order_id,
+    which can flip the bet CANCELLED before reprice runs. Since the amend
+    succeeded (order rests at the new id), reprice must re-point AND restore the
+    bet to OPEN — not no-op and leave a live order with a dead bet."""
+    bet = await _open_bet(session, order_id="old-id", qty=100, price=40)
+    bet.status = BetStatus.CANCELLED  # the racing WS cancel landed first
+    bet.exit_type = ExitType.CLOSED_EARLY
+    await session.flush()
+
+    out = await reprice_bet_for_amend(
+        session, old_order_id="old-id", new_order_id="new-id",
+        new_price_cents=42, new_count=100,
+    )
+    assert out is not None
+    assert out.status == BetStatus.OPEN
+    assert out.exit_type is None
+    assert out.kalshi_order_id == "new-id"
+    assert out.entry_price_cents == 42
+
+
+@pytest.mark.asyncio
+async def test_reprice_refuses_settled_bet(session: AsyncSession) -> None:
+    """A WON/LOST bet is genuine settlement, never a cancel race — reprice must
+    refuse to resurrect it even if an amend arrives for its (stale) order_id."""
+    bet = await _open_bet(session, order_id="old-id", qty=100, price=40)
+    bet.status = BetStatus.WON
+    await session.flush()
+
+    out = await reprice_bet_for_amend(
+        session, old_order_id="old-id", new_order_id="new-id",
+        new_price_cents=42, new_count=100,
+    )
+    assert out is None
+    await session.refresh(bet)
+    assert bet.status == BetStatus.WON
+    assert bet.kalshi_order_id == "old-id"  # untouched
+
+
+@pytest.mark.asyncio
+async def test_reprice_skips_when_fills_exist(session: AsyncSession) -> None:
+    """Belt-and-suspenders: reprice never clobbers a bet that has fills, even if
+    it's somehow reached here (route guards first)."""
+    bet = await _open_bet(session, order_id="old-id", qty=100, price=40)
+    session.add(BetFill(
+        bet_id=bet.id, trade_id="f1", order_id="old-id", ticker=SOCCER_TICKER,
+        side="yes", action="buy", price_cents=40, quantity_centi=4000,
+    ))
+    await session.flush()
+
+    out = await reprice_bet_for_amend(
+        session, old_order_id="old-id", new_order_id="new-id",
+        new_price_cents=42, new_count=100,
+    )
+    assert out is None
+    await session.refresh(bet)
+    assert bet.kalshi_order_id == "old-id"  # untouched

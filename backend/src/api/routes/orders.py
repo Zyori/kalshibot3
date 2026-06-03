@@ -409,6 +409,20 @@ async def _resting_order_from_kalshi(
     return None
 
 
+def _order_partially_filled(order: dict[str, Any]) -> bool:
+    """True if Kalshi's own counts show the resting order has any fill —
+    remaining < initial. Prefers the fractional `_fp` fields (Kalshi splits a
+    contract across fee tiers), falls back to the whole-count fields. Authoritative
+    over local BetFill rows, which can lag a just-executed fill the WS hasn't
+    delivered. Conservative on missing data: if neither pair is present, returns
+    False and the local-fills check remains the backstop."""
+    initial = order.get("initial_count_fp", order.get("initial_count"))
+    remaining = order.get("remaining_count_fp", order.get("remaining_count"))
+    if initial is None or remaining is None:
+        return False
+    return bool(remaining < initial)
+
+
 @router.put("/orders/{order_id}")
 async def amend_order(
     order_id: str,
@@ -458,8 +472,23 @@ async def amend_order(
             raise HTTPException(status_code=400, detail={"reasons": sanity.reasons})
 
         # Refuse to amend a partially-filled order BEFORE touching Kalshi. Amend
-        # would overwrite the filled contracts' cost basis on the BET row. Check
-        # up front so we never amend on Kalshi and then fail the local reprice.
+        # would overwrite the filled contracts' cost basis on the BET row. Two
+        # signals, because either can lag the other:
+        #   1. Kalshi's own counts on the order dict we just fetched
+        #      (remaining < initial means it has filled) — authoritative, and
+        #      sees a fill the WS hasn't recorded locally yet (the TOCTOU the
+        #      local-fills count alone would miss).
+        #   2. Local BetFill rows — catches a fill recorded locally that a stale
+        #      Kalshi read might not show.
+        if _order_partially_filled(order):
+            raise HTTPException(
+                status_code=409,
+                detail={"reasons": [
+                    "This order has partially filled on Kalshi — cancel and "
+                    "re-place instead of editing (editing would lose the filled "
+                    "cost basis)."
+                ]},
+            )
         bet_id = await session.scalar(
             select(Bet.id).where(Bet.kalshi_order_id == order_id)
         )
@@ -487,26 +516,45 @@ async def amend_order(
             updated_client_order_id=updated_client_order_id,
         )
 
+        # Hold the ledger write lock across the Kalshi amend AND the local
+        # re-point. Kalshi retires the old order_id and emits a WS
+        # user_order(canceled) for it; the supervisor's _on_user_order grabs
+        # this same lock to mark the BET CANCELLED. Without serializing here,
+        # that WS cancel can land between the amend and the reprice, flip the
+        # bet terminal, and make reprice no-op — leaving a live order at the new
+        # id with a CANCELLED bet that no fill can match. The lock makes
+        # "amend on Kalshi -> re-point bet" atomic vs the cancel handler. Amend
+        # is deliberate and infrequent, so briefly holding the lock across one
+        # REST round-trip is acceptable (unlike the hot fill path).
+        supervisor = getattr(request.app.state, "supervisor", None)
+        lock = supervisor._ledger_write_lock if supervisor is not None else None
         try:
-            resp = await client.amend_order(order_id, req)
-        except PostOnlyRejected as e:  # amend of a resting order shouldn't cross, but be safe
-            log.info("amend_order_post_only_rejected", order_id=order_id)
-            raise HTTPException(status_code=422, detail={"reasons": [str(e)]})
-        except KalshiError as e:
-            log.warning("amend_order_kalshi_error", order_id=order_id, error=str(e))
-            raise HTTPException(status_code=502, detail=f"kalshi: {e}") from e
+            if lock is not None:
+                await lock.acquire()
+            try:
+                resp = await client.amend_order(order_id, req)
+            except PostOnlyRejected as e:  # resting amend shouldn't cross, but be safe
+                log.info("amend_order_post_only_rejected", order_id=order_id)
+                raise HTTPException(status_code=422, detail={"reasons": [str(e)]})
+            except KalshiError as e:
+                log.warning("amend_order_kalshi_error", order_id=order_id, error=str(e))
+                raise HTTPException(status_code=502, detail=f"kalshi: {e}") from e
 
-    # Re-point the BET row to the new order_id and update its price/count.
-    # Amend issues a new order_id; without this swap the BET row would track a
-    # retired order and a later cancel/fill couldn't match it.
-    await reprice_bet_for_amend(
-        session,
-        old_order_id=order_id,
-        new_order_id=resp.order.order_id,
-        new_price_cents=body.price_cents,
-        new_count=body.count,
-    )
-    await session.commit()
+            # Re-point the BET row to the new order_id and update its
+            # price/count. Amend issues a new order_id; without this swap the
+            # BET would track a retired order and a later cancel/fill couldn't
+            # match it. reprice tolerates a CANCELLED-by-race bet (see its docs).
+            await reprice_bet_for_amend(
+                session,
+                old_order_id=order_id,
+                new_order_id=resp.order.order_id,
+                new_price_cents=body.price_cents,
+                new_count=body.count,
+            )
+            await session.commit()
+        finally:
+            if lock is not None:
+                lock.release()
 
     return {
         "kalshi_order_id": resp.order.order_id,

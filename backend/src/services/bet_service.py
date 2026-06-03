@@ -627,11 +627,20 @@ async def reprice_bet_for_amend(
     destroy the filled contracts' cost basis. So this only ever runs on an
     untouched resting order. The fills==0 guard here is defense-in-depth; if it
     trips we skip the rewrite rather than corrupt cost basis.
+
+    Cancel-race tolerance: Kalshi emits a WS user_order(canceled) for the OLD
+    order_id on every amend (the old order is retired). The amend route holds
+    the ledger write lock across amend+reprice to serialize against that handler,
+    but a cancel done directly on kalshi.com could still have flipped the bet to
+    CANCELLED just before. Since the amend succeeded on Kalshi, the order still
+    rests at new_order_id — so a CANCELLED bet here is the spurious old-id cancel,
+    and we re-point it AND restore OPEN (the amend is authoritative). A WON/LOST
+    bet is genuine settlement, never overwritten.
     """
     bet = await session.scalar(
         select(Bet).where(Bet.kalshi_order_id == old_order_id)
     )
-    if bet is None or bet.status != BetStatus.OPEN:
+    if bet is None or bet.status in (BetStatus.WON, BetStatus.LOST):
         return None
     fills = await session.scalar(
         select(func.count(BetFill.id)).where(BetFill.bet_id == bet.id)
@@ -639,6 +648,10 @@ async def reprice_bet_for_amend(
     if fills:  # belt-and-suspenders: route already refused; never clobber fills
         log.warning("reprice_skipped_partial_fill", order_id=old_order_id, fills=fills)
         return None
+    if bet.status == BetStatus.CANCELLED:
+        log.info("reprice_recovered_cancel_race", old_order_id=old_order_id, bet_id=bet.id)
+    bet.status = BetStatus.OPEN
+    bet.exit_type = None
     bet.kalshi_order_id = new_order_id
     bet.entry_price_cents = new_price_cents
     bet.quantity = new_count

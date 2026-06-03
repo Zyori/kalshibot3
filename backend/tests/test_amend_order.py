@@ -114,6 +114,44 @@ async def test_amend_refused_when_partially_filled() -> None:
     client.amend_order.assert_not_awaited()  # never touched Kalshi
 
 
+async def test_amend_refused_when_kalshi_shows_partial_fill() -> None:
+    """The TOCTOU guard: Kalshi's own counts show the order has filled
+    (remaining < initial) even if no local BetFill row exists yet. Refused (409)
+    before touching Kalshi, so amend can't overwrite the filled cost basis."""
+    order = _resting("o", SOCCER)
+    order.update({"initial_count_fp": 1000, "remaining_count_fp": 400})  # 60% filled
+    client = _mock_client(resting_order=order)
+    session = _session(bet_id=None, fills=0)  # nothing recorded locally yet
+    with patch("src.api.routes.orders.KalshiRestClient", return_value=client):
+        with pytest.raises(HTTPException) as ei:
+            await amend_order("o", AmendBody(price_cents=45, count=8), _request(), session)  # type: ignore[arg-type]
+    assert ei.value.status_code == 409
+    assert "partially filled" in str(ei.value.detail).lower()
+    client.amend_order.assert_not_awaited()
+
+
+async def test_amend_holds_ledger_lock_when_supervisor_present() -> None:
+    """When a supervisor exists, the amend serializes its Kalshi-amend + reprice
+    under the ledger write lock (so a racing WS cancel can't interleave)."""
+    import asyncio
+
+    client = _mock_client(resting_order=_resting("old", SOCCER), new_order_id="new123")
+    session = _session()
+    lock = asyncio.Lock()
+    # Supervisor stub needs live_state.books (the sanity-check _book_snapshot
+    # reads it) plus the lock. Empty book → all-None snapshot, sanity passes.
+    supervisor = SimpleNamespace(
+        _ledger_write_lock=lock,
+        live_state=SimpleNamespace(books={}),
+    )
+    req = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(supervisor=supervisor)))
+    with patch("src.api.routes.orders.KalshiRestClient", return_value=client), \
+         patch("src.api.routes.orders.reprice_bet_for_amend", new=AsyncMock(return_value=None)):
+        out = await amend_order("old", AmendBody(price_cents=45, count=8), req, session)  # type: ignore[arg-type]
+    assert out["kalshi_order_id"] == "new123"
+    assert not lock.locked()  # released in finally
+
+
 def test_amend_body_rejects_bad_inputs() -> None:
     with pytest.raises(Exception):
         AmendBody(price_cents=45, count=0)   # ge=1
