@@ -27,8 +27,9 @@ The app runs locally. The backend is at **`http://127.0.0.1:8000`**, API under
    top of global).
 4. `docs/ai-context/strategy-glossary.md` — the user's exact tag/strategy
    vocabulary; use it verbatim in suggestions.
-5. `docs/ai-context/tournament-logbook.md` — the user's running scouting notes
-   per team (how they defend, who fades late, keeper/ref tendencies). Pull the
+5. `docs/ai-context/2026-wc-logbook.md` — the user's running 2026 World Cup
+   scouting notes per team (how they defend, who fades late, keeper/ref
+   tendencies). Pull the
    notes for the two teams in a game before your read. **Edit it only when the
    user asks** ("note that…") — add a dated bullet under that team's section;
    never write to it unprompted, never prune the user's notes. Scouting context

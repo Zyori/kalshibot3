@@ -1,6 +1,6 @@
-# Tournament Logbook
+# 2026 World Cup Logbook
 
-The user's running scouting notes on teams across the tournament — freeform
+The user's running scouting notes on teams across the 2026 World Cup — freeform
 intuition that no feed provides (how a side defends, who fades late, keeper
 tendencies, ref behavior). This is **the user's knowledge**, captured over time.
 
