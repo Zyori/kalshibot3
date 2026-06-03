@@ -72,7 +72,10 @@ function PartnerSection() {
           </ul>
           <p className="mt-2 text-[11px] text-text-muted">
             He also reads your strategy docs (global + soccer principles, the tag
-            glossary below) at the start of every session.
+            glossary below) at the start of every session — plus your{' '}
+            <span className="font-medium text-text">2026 World Cup logbook</span>,
+            your per-team scouting notes he reads before a game and updates when
+            you ask (“note that…”).
           </p>
         </div>
 
