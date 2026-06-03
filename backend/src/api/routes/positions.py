@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,15 +22,46 @@ from src.models import Position
 router = APIRouter()
 
 
+def _position_label(ticker: str, feed: Any) -> str | None:
+    """Human-readable outcome label for a position, sourced from the discovery
+    feed (single source of truth for market titles). "Nigeria WIN" for a team
+    side, "Poland - Nigeria DRAW" for the tie side. None when the ticker isn't
+    in the current feed (settled/aged out) — the UI falls back to the ticker.
+    """
+    if feed is None:
+        return None
+    row = next(
+        (
+            m
+            for bucket in (feed.live, feed.upcoming, feed.recent)
+            for m in bucket
+            if m.ticker == ticker
+        ),
+        None,
+    )
+    if row is None:
+        return None
+    sub = (row.yes_sub_title or "").strip()
+    if sub.lower() in ("tie", "draw"):
+        # Derive "Poland - Nigeria" from the event title ("Poland vs Nigeria").
+        return f"{row.event_title.replace(' vs ', ' - ')} DRAW"
+    return f"{sub} WIN" if sub else None
+
+
 @router.get("/positions")
-async def list_positions(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+async def list_positions(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
     """Every open position in our DB. position_sync filters to soccer only,
     so this is implicitly soccer-only too."""
+    supervisor = getattr(request.app.state, "supervisor", None)
+    feed = supervisor.market_discovery.get_feed() if supervisor is not None else None
     rows = (await session.execute(select(Position).order_by(Position.kalshi_ticker))).scalars().all()
     return {
         "positions": [
             {
                 "ticker": p.kalshi_ticker,
+                "label": _position_label(p.kalshi_ticker, feed),
                 "side": p.side,
                 "quantity": p.quantity,
                 "avg_entry_price_cents": p.avg_entry_price_cents,

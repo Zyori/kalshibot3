@@ -168,10 +168,20 @@ export function outcomeLabel(yes_sub_title: string | null | undefined): string {
  */
 export function formatET(
   iso: string | null | undefined,
-  opts: { dateOnly?: boolean; timeOnly?: boolean } = {},
+  opts: { dateOnly?: boolean; timeOnly?: boolean; clockNoMeridiem?: boolean } = {},
 ): string {
   if (!iso) return ''
   const d = new Date(iso)
+  if (opts.clockNoMeridiem) {
+    // Bare 24-hour clock (e.g. "14:45") for dense intra-match axes where the
+    // AM/PM suffix is noise. 24-hour so a bare "2:45" isn't ambiguous.
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: ET_TZ,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(d)
+  }
   if (opts.timeOnly) {
     // For intra-match axes where every point is the same day — show the
     // clock (e.g. "2:45 PM") instead of repeating "May 30" on every tick.

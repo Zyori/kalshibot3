@@ -38,6 +38,7 @@ type FeedResponse = { live: FeedMarket[] }
 
 type Position = {
   ticker: string
+  label: string | null
   side: 'yes' | 'no'
   quantity: number
   avg_entry_price_cents: number | null
@@ -221,8 +222,8 @@ function OpenPositionsTile() {
                   to={`/event/${encodeURIComponent(eventTickerOf(p.ticker))}?market=${encodeURIComponent(p.ticker)}`}
                   className="flex items-baseline justify-between gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-bg-hover"
                 >
-                  <span className="min-w-0 truncate font-mono text-text-muted">
-                    {p.ticker}
+                  <span className="min-w-0 truncate text-text">
+                    {p.label ?? p.ticker}
                   </span>
                   <span className="flex shrink-0 items-baseline gap-2 tabular-nums">
                     <span className="font-mono text-text">
