@@ -24,6 +24,12 @@ tendencies, ref behavior). This is **the user's knowledge**, captured over time.
   to lose — aggressive offense, flashy frontline. Good at finishing against a
   sleepy defense.
 
+## Netherlands
+- 2026-06-03 (vs Algeria): Strong side, control-focused — dominate possession and
+  territory but shoot a lot from distance. Volume of shots/corners overstates the
+  threat; many attempts are from outside the box. Read their pressure off clean
+  inside-box chances, not shot count or corners.
+
 <!-- Template — one section per team:
 ## Team Name
 - YYYY-MM-DD: short observation (context, e.g. opponent/minute)
