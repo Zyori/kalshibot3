@@ -222,22 +222,22 @@ function OpenPositionsTile() {
                   to={`/event/${encodeURIComponent(eventTickerOf(p.ticker))}?market=${encodeURIComponent(p.ticker)}`}
                   className="flex items-baseline justify-between gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-bg-hover"
                 >
-                  <span className="min-w-0 truncate text-text">
+                  <span className="min-w-0 flex-1 truncate text-text">
                     {p.label ?? p.ticker}
                   </span>
-                  <span className="flex shrink-0 items-baseline gap-2 tabular-nums">
-                    <span className="font-mono text-text">
-                      {p.side.toUpperCase()} {p.quantity} @{' '}
-                      {formatPriceCents(p.avg_entry_price ?? p.avg_entry_price_cents)}
-                    </span>
-                    <span className={`font-mono ${tone}`}>
-                      {pnl === null ? '—' : formatSignedDollars(pnl)}
-                      {pct !== null && (
-                        <span className="ml-1">
-                          ({pct >= 0 ? '+' : ''}{pct.toFixed(1)}%)
-                        </span>
-                      )}
-                    </span>
+                  {/* Entry detail can truncate when the row is tight; the P&L
+                      stays shrink-0 so it's never clipped off the right edge. */}
+                  <span className="min-w-0 truncate font-mono text-text tabular-nums">
+                    {p.side.toUpperCase()} {p.quantity} @{' '}
+                    {formatPriceCents(p.avg_entry_price ?? p.avg_entry_price_cents)}
+                  </span>
+                  <span className={`shrink-0 font-mono tabular-nums ${tone}`}>
+                    {pnl === null ? '—' : formatSignedDollars(pnl)}
+                    {pct !== null && (
+                      <span className="ml-1">
+                        ({pct >= 0 ? '+' : ''}{pct.toFixed(1)}%)
+                      </span>
+                    )}
                   </span>
                 </Link>
               </li>
