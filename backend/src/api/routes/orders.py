@@ -535,6 +535,27 @@ async def amend_order(
         try:
             if lock is not None:
                 await lock.acquire()
+
+            # Re-check fills INSIDE the lock, before touching Kalshi. The guards
+            # above ran before we held the lock; a fill could have landed in
+            # between (the WS fill handler commits its BetFill under this same
+            # lock). Without this re-check, that fill would: pass the stale
+            # pre-lock guard, the amend would issue a new order_id, and reprice
+            # would then see fills>0 and refuse the re-point — orphaning a live
+            # order at the new id with no bet tracking it. Refusing here keeps
+            # the order at its original id so the user can cancel-and-replace.
+            if bet_id is not None:
+                fills_now = await session.scalar(
+                    select(func.count(BetFill.id)).where(BetFill.bet_id == bet_id)
+                )
+                if fills_now:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"reasons": [
+                            f"This order filled ({fills_now} fill(s)) while the edit "
+                            f"was in flight — cancel and re-place instead of editing."
+                        ]},
+                    )
             try:
                 resp = await client.amend_order(order_id, req)
             except PostOnlyRejected as e:  # resting amend shouldn't cross, but be safe

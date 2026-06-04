@@ -43,11 +43,20 @@ def _resting(order_id: str, ticker: str, side: str = "yes", action: str = "buy")
             "status": "resting"}
 
 
-def _session(*, bet_id: int | None = 1, fills: int = 0) -> AsyncMock:
-    """A session whose scalar() answers the amend route's two pre-check queries
-    in order: (1) the BET id for this order, (2) the fill count for that bet."""
+def _session(
+    *, bet_id: int | None = 1, fills: int = 0, fills_in_lock: int | None = None
+) -> AsyncMock:
+    """A session whose scalar() answers the amend route's queries in order:
+    (1) the BET id for this order, (2) the pre-lock fill count, (3) the in-lock
+    fill re-check (only reached when bet_id is set and the pre-lock count is 0).
+    `fills_in_lock` defaults to `fills` (no race landed while we held the lock).
+    reprice_bet_for_amend issues its own scalar() calls but is patched out in the
+    tests that get that far, so the side_effect list only needs the route's own.
+    """
     session = AsyncMock()
-    session.scalar = AsyncMock(side_effect=[bet_id, fills])
+    in_lock = fills if fills_in_lock is None else fills_in_lock
+    session.scalar = AsyncMock(side_effect=[bet_id, fills, in_lock])
+    session.commit = AsyncMock()
     return session
 
 
@@ -147,6 +156,23 @@ async def test_amend_partial_fill_guard_at_digit_width_boundary() -> None:
             await amend_order("o", AmendBody(price_cents=45, count=8), _request(), session)  # type: ignore[arg-type]
     assert ei.value.status_code == 409
     client.amend_order.assert_not_awaited()
+
+
+async def test_amend_refused_when_fill_lands_inside_lock_window() -> None:
+    """Race: order is clean at the pre-lock guards (bet found, 0 fills, Kalshi
+    counts unfilled), but a WS fill commits its BetFill while we wait for the
+    ledger lock. The in-lock re-check must catch it and refuse (409) BEFORE the
+    Kalshi amend — otherwise the amend issues a new order_id that reprice then
+    refuses to re-point, orphaning a live order with no bet tracking it."""
+    client = _mock_client(resting_order=_resting("o", SOCCER))
+    # bet_id=5, pre-lock fills=0 (passes), in-lock re-check=1 (the race fill).
+    session = _session(bet_id=5, fills=0, fills_in_lock=1)
+    with patch("src.api.routes.orders.KalshiRestClient", return_value=client):
+        with pytest.raises(HTTPException) as ei:
+            await amend_order("o", AmendBody(price_cents=45, count=8), _request(), session)  # type: ignore[arg-type]
+    assert ei.value.status_code == 409
+    assert "in flight" in str(ei.value.detail).lower()
+    client.amend_order.assert_not_awaited()  # never touched Kalshi → no orphan
 
 
 async def test_amend_holds_ledger_lock_when_supervisor_present() -> None:
