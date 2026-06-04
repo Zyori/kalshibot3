@@ -117,9 +117,13 @@ async def test_amend_refused_when_partially_filled() -> None:
 async def test_amend_refused_when_kalshi_shows_partial_fill() -> None:
     """The TOCTOU guard: Kalshi's own counts show the order has filled
     (remaining < initial) even if no local BetFill row exists yet. Refused (409)
-    before touching Kalshi, so amend can't overwrite the filled cost basis."""
+    before touching Kalshi, so amend can't overwrite the filled cost basis.
+
+    Counts seeded as the float STRINGS Kalshi actually sends ("10.00"), not
+    ints — a raw `<` on the strings compares lexicographically and silently
+    misses the fill, which is the bug this guard was failing to catch."""
     order = _resting("o", SOCCER)
-    order.update({"initial_count_fp": 1000, "remaining_count_fp": 400})  # 60% filled
+    order.update({"initial_count_fp": "10.00", "remaining_count_fp": "4.00"})  # 60% filled
     client = _mock_client(resting_order=order)
     session = _session(bet_id=None, fills=0)  # nothing recorded locally yet
     with patch("src.api.routes.orders.KalshiRestClient", return_value=client):
@@ -127,6 +131,21 @@ async def test_amend_refused_when_kalshi_shows_partial_fill() -> None:
             await amend_order("o", AmendBody(price_cents=45, count=8), _request(), session)  # type: ignore[arg-type]
     assert ei.value.status_code == 409
     assert "partially filled" in str(ei.value.detail).lower()
+    client.amend_order.assert_not_awaited()
+
+
+async def test_amend_partial_fill_guard_at_digit_width_boundary() -> None:
+    """Regression: "4.00" < "10.00" is True numerically but False as strings
+    (lexicographic, since '4' > '1'). The guard must fire across a digit-width
+    boundary — the exact case a lexicographic compare let through."""
+    order = _resting("o", SOCCER)
+    order.update({"initial_count_fp": "10.00", "remaining_count_fp": "4.00"})
+    client = _mock_client(resting_order=order)
+    session = _session(bet_id=None, fills=0)
+    with patch("src.api.routes.orders.KalshiRestClient", return_value=client):
+        with pytest.raises(HTTPException) as ei:
+            await amend_order("o", AmendBody(price_cents=45, count=8), _request(), session)  # type: ignore[arg-type]
+    assert ei.value.status_code == 409
     client.amend_order.assert_not_awaited()
 
 

@@ -37,7 +37,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
+    """Downgrade schema.
+
+    Drop any `final` rows first: the batch rebuild copies via INSERT..SELECT into
+    a table carrying the re-narrowed CHECK, so a single `final` row would abort
+    the whole downgrade. Final snapshots are analytics-only (not ledger data), so
+    deleting them to go back is acceptable.
+    """
+    op.execute("DELETE FROM trade_snapshot WHERE phase = 'final'")
     with op.batch_alter_table('trade_snapshot', schema=None) as batch_op:
         batch_op.drop_constraint('ck_trade_snapshot_phase', type_='check')
         batch_op.create_check_constraint(

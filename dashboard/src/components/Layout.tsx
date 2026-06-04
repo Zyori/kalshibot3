@@ -23,7 +23,9 @@ export default function Layout() {
               <NavTab to="/sport/soccer" label="Soccer" />
               <NavTab to="/futures" label="World Cup" />
               <NavTab to="/ledger" label="Ledger" />
-              <NavTab to="/analysis" label="Analysis" />
+              {/* Analysis is a placeholder until the exit post-mortem UI ships;
+                  the /analysis route stays registered so it loads in dev. */}
+              {import.meta.env.DEV && <NavTab to="/analysis" label="Analysis" />}
               <NavTab to="/settings" label="Settings" />
             </nav>
           </div>

@@ -567,13 +567,13 @@ class EspnScoreboard:
         self._stopped = False
         self._task: asyncio.Task[None] | None = None
         self._burst_until: float = 0.0
+        """Monotonic deadline; while now < this, poll at the burst cadence.
+        Set by request_burst() when a watched market spikes."""
         self.on_game_end: Callable[[list[EspnEvent]], Awaitable[None]] | None = None
         """Set by the supervisor. Called with the events that flipped in->post
         this poll, while their final score/clock/status_detail are still fresh.
         The poller stays I/O-only — it detects the transition and hands it off;
         the supervisor does the DB write (final-phase trade snapshots)."""
-        """Monotonic deadline; while now < this, poll at the burst cadence.
-        Set by request_burst() when a watched market spikes."""
 
     def request_burst(self) -> None:
         """Tighten the poll cadence to ~10s for BURST_WINDOW_S. Called when a

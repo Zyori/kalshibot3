@@ -82,6 +82,18 @@ Numbers from this endpoint are byte-identical to what the site shows (it
 composes the same serializers). If the context says a position is +52%, the
 site says +52%.
 
+## Exit post-mortems — `GET /api/ledger/{bet_id}/snapshots`
+
+When the user asks "how was my exit on that trade," pull the bet's frozen
+run-of-play: `GET /api/ledger/<bet_id>/snapshots` returns the game state stapled
+to the bet at each lifecycle moment — `entry`, `exit_open`, `exit_close`, and
+`final` (the game's own ending: final score, clock, and FT/AET/Penalties). Each
+carries the score, ESPN clock, shot stream, and the market mid/price-tape at that
+instant — the same `live_payload` you read live, frozen. This is retrospective
+only (not in `/partner/context`); reach for it when reviewing a closed trade, not
+during a live read. Note the clock is a string (`"45+2:00"`), so parse the
+added-time format if you're checking whether an exit landed in a danger window.
+
 ## Staging a suggestion
 
 `POST /api/partner/suggestions` creates a pending amber card and pushes it to

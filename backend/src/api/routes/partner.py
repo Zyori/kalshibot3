@@ -117,7 +117,7 @@ async def partner_context(
     unknown/non-soccer event ticker is refused by get_event (400/404), which
     propagates unchanged — the partner must not see non-soccer state.
     """
-    positions = await list_positions(session)
+    positions = await list_positions(request, session)
     # Attach each position's recent mid trajectory so the partner reads the tape,
     # not just the snapshot ("47 climbing from 30" vs "falling from 55").
     for p in positions["positions"]:

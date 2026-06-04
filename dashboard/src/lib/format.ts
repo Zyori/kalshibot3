@@ -165,14 +165,15 @@ export function outcomeLabel(yes_sub_title: string | null | undefined): string {
  *   formatET(null)                          -> ""
  *
  * Pass { dateOnly: true } for "May 26" without the time.
+ * Pass { time24h: true } for "14:45" (24-hour, no AM/PM) on dense chart axes.
  */
 export function formatET(
   iso: string | null | undefined,
-  opts: { dateOnly?: boolean; timeOnly?: boolean; clockNoMeridiem?: boolean } = {},
+  opts: { dateOnly?: boolean; timeOnly?: boolean; time24h?: boolean } = {},
 ): string {
   if (!iso) return ''
   const d = new Date(iso)
-  if (opts.clockNoMeridiem) {
+  if (opts.time24h) {
     // Bare 24-hour clock (e.g. "14:45") for dense intra-match axes where the
     // AM/PM suffix is noise. 24-hour so a bare "2:45" isn't ambiguous.
     return new Intl.DateTimeFormat('en-US', {

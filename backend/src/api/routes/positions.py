@@ -16,17 +16,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
-from src.core.types import utc_iso
+from src.core.types import BetSide, utc_iso
+from src.ingestion.market_discovery import MarketFeed
 from src.models import Position
 
 router = APIRouter()
 
 
-def _position_label(ticker: str, feed: Any) -> str | None:
+def _position_label(ticker: str, side: BetSide, feed: MarketFeed | None) -> str | None:
     """Human-readable outcome label for a position, sourced from the discovery
-    feed (single source of truth for market titles). "Nigeria WIN" for a team
-    side, "Poland - Nigeria DRAW" for the tie side. None when the ticker isn't
-    in the current feed (settled/aged out) — the UI falls back to the ticker.
+    feed (single source of truth for market titles). The feed's yes_sub_title is
+    always the YES outcome, so the label flips with the held side: YES on Nigeria
+    is "Nigeria WIN", NO on Nigeria is "Nigeria NOT WIN" (a bet *against* it).
+    "Poland - Nigeria DRAW" / "... NOT DRAW" for the tie market. None when the
+    ticker isn't in the current feed (settled/aged out) — UI falls back to ticker.
     """
     if feed is None:
         return None
@@ -42,10 +45,14 @@ def _position_label(ticker: str, feed: Any) -> str | None:
     if row is None:
         return None
     sub = (row.yes_sub_title or "").strip()
+    negate = side == BetSide.NO
     if sub.lower() in ("tie", "draw"):
         # Derive "Poland - Nigeria" from the event title ("Poland vs Nigeria").
-        return f"{row.event_title.replace(' vs ', ' - ')} DRAW"
-    return f"{sub} WIN" if sub else None
+        base = f"{row.event_title.replace(' vs ', ' - ')} DRAW"
+        return f"{base.removesuffix(' DRAW')} NOT DRAW" if negate else base
+    if not sub:
+        return None
+    return f"{sub} NOT WIN" if negate else f"{sub} WIN"
 
 
 @router.get("/positions")
@@ -61,7 +68,7 @@ async def list_positions(
         "positions": [
             {
                 "ticker": p.kalshi_ticker,
-                "label": _position_label(p.kalshi_ticker, feed),
+                "label": _position_label(p.kalshi_ticker, p.side, feed),
                 "side": p.side,
                 "quantity": p.quantity,
                 "avg_entry_price_cents": p.avg_entry_price_cents,

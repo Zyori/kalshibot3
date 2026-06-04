@@ -420,7 +420,11 @@ def _order_partially_filled(order: dict[str, Any]) -> bool:
     remaining = order.get("remaining_count_fp", order.get("remaining_count"))
     if initial is None or remaining is None:
         return False
-    return bool(remaining < initial)
+    # The _fp fields arrive as float strings ("10.00"); the whole-count
+    # fallbacks are ints. Coerce both — a raw `<` on the strings compares
+    # lexicographically ("4.00" < "10.00" is False) and silently misses fills
+    # across a digit-width boundary.
+    return float(remaining) < float(initial)
 
 
 @router.put("/orders/{order_id}")

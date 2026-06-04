@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections.abc import Coroutine
 from typing import Any
 
 import websockets
@@ -221,7 +222,7 @@ class Supervisor:
         if self.app_state is not None:
             self.app_state._balance_refreshed_at_mono = 0.0
 
-    def _spawn(self, coro: "Any") -> None:
+    def _spawn(self, coro: Coroutine[Any, Any, None]) -> None:
         """Run a fire-and-forget coroutine, holding a strong reference until it
         finishes so it isn't GC'd mid-flight, then self-discarding."""
         task = asyncio.create_task(coro)
@@ -341,8 +342,11 @@ class Supervisor:
                     # nothing to anchor a bet to. Rare; logged, not stamped.
                     log.info("game_end_no_feed_markets", espn_id=ev.espn_id)
                     continue
-                # Bets that filled (have an `entry` snapshot) on these tickers and
-                # don't yet have a `final`. One query per game; games are few.
+                # Bets that filled (have an `entry` snapshot) on these tickers.
+                # One query per game; games are few. We don't filter out bets
+                # that already have a `final` — the on_conflict_do_nothing on
+                # (bet_id, phase) below is the idempotency guard, so a re-seen
+                # post-state poll just no-ops rather than needing a pre-check.
                 entry_q = (
                     select(Bet.id)
                     .join(Market, Market.id == Bet.market_id)
@@ -350,12 +354,7 @@ class Supervisor:
                     .where(Market.kalshi_ticker.in_(tickers))
                     .where(TradeSnapshot.phase == SnapshotPhase.ENTRY.value)
                 )
-                final_q = select(TradeSnapshot.bet_id).where(
-                    TradeSnapshot.phase == SnapshotPhase.FINAL.value
-                )
-                bet_ids = set((await session.execute(entry_q)).scalars().all()) - set(
-                    (await session.execute(final_q)).scalars().all()
-                )
+                bet_ids = set((await session.execute(entry_q)).scalars().all())
                 rop = live_payload(ev)
                 for bet_id in bet_ids:
                     rows.append({

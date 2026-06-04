@@ -133,7 +133,7 @@ export default function CombinedPriceChart({ markets }: { markets: ChildMarket[]
                 dataKey="ts"
                 stroke="#71717a"
                 tick={{ fontSize: 10 }}
-                tickFormatter={(ts: string) => formatET(ts, { clockNoMeridiem: true })}
+                tickFormatter={(ts: string) => formatET(ts, { time24h: true })}
               />
               <YAxis
                 stroke="#71717a"
