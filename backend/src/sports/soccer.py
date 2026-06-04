@@ -103,7 +103,6 @@ SOCCER_GAME_SERIES: tuple[str, ...] = tuple(SOCCER_GAME_SERIES_NAMES.keys())
 # here — likely KXWCGAME → KX<something>; confirm the real series name first.
 SOCCER_TOTAL_SERIES: dict[str, str] = {
     "KXINTLFRIENDLYGAME": "KXINTLFRIENDLYTOTAL",
-    # "KXWCGAME": "KX...",  # TODO: add when WC per-game totals are listed
 }
 
 # Tuple of total-series prefixes, for cross-market isolation. These are soccer

@@ -23,7 +23,10 @@ export default function App() {
         <Route path="sport/:slug" element={<SportPortal />} />
         <Route path="futures" element={<Futures />} />
         <Route path="ledger" element={<Ledger />} />
-        <Route path="analysis" element={<Analysis />} />
+        {/* Analysis is a dev-only placeholder until the exit post-mortem UI
+            ships — gated to match its nav tab so the dead route doesn't reach
+            production. */}
+        {import.meta.env.DEV && <Route path="analysis" element={<Analysis />} />}
         <Route path="settings" element={<Settings />} />
       </Route>
     </Routes>

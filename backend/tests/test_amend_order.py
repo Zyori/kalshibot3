@@ -175,6 +175,31 @@ async def test_amend_refused_when_fill_lands_inside_lock_window() -> None:
     client.amend_order.assert_not_awaited()  # never touched Kalshi → no orphan
 
 
+async def test_amend_refused_when_kalshi_shows_fill_only_inside_lock() -> None:
+    """Race the local-fills re-check can't see: the WS fill handler that would
+    write the BetFill is itself BLOCKED on the ledger lock this amend holds, so
+    no local row appears in-lock. Only a fresh Kalshi read reveals the fill that
+    landed during the pre-lock window. Pre-lock Kalshi shows the order unfilled
+    (passes), in-lock Kalshi shows remaining<initial → refuse (409) before the
+    amend. Kalshi accepts amends on partially-filled orders ('max fillable is
+    remaining+fill'), so without this the amend would succeed and orphan the fill."""
+    clean = _resting("o", SOCCER)
+    clean.update({"initial_count_fp": "10.00", "remaining_count_fp": "10.00"})
+    filled = _resting("o", SOCCER)
+    filled.update({"initial_count_fp": "10.00", "remaining_count_fp": "4.00"})
+    client = _mock_client(resting_order=clean)
+    # Pre-lock get_orders → clean; in-lock get_orders → filled (the race).
+    client.get_orders = AsyncMock(side_effect=[{"orders": [clean]}, {"orders": [filled]}])
+    # bet_id=5, pre-lock local fills=0 (passes); the in-lock LOCAL re-check would
+    # also be 0 — only the Kalshi re-read catches this one.
+    session = _session(bet_id=5, fills=0, fills_in_lock=0)
+    with patch("src.api.routes.orders.KalshiRestClient", return_value=client):
+        with pytest.raises(HTTPException) as ei:
+            await amend_order("o", AmendBody(price_cents=45, count=8), _request(), session)  # type: ignore[arg-type]
+    assert ei.value.status_code == 409
+    client.amend_order.assert_not_awaited()  # never touched Kalshi → no orphan
+
+
 async def test_amend_holds_ledger_lock_when_supervisor_present() -> None:
     """When a supervisor exists, the amend serializes its Kalshi-amend + reprice
     under the ledger write lock (so a racing WS cancel can't interleave)."""

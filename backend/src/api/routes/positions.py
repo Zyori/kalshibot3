@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
-from src.core.types import BetSide, utc_iso
+from src.core.types import BetSide, position_avg_entry_price, utc_iso
 from src.ingestion.market_discovery import MarketFeed
 from src.models import Position
 
@@ -72,15 +72,9 @@ async def list_positions(
                 "side": p.side,
                 "quantity": p.quantity,
                 "avg_entry_price_cents": p.avg_entry_price_cents,
-                # Exact fractional avg entry matching kalshi.com (e.g. 57.71):
-                # (cost_basis + fees) / quantity. Kalshi's position avg-price
-                # is fee-inclusive — cost alone reads ~0.17¢ low per contract.
-                # Falls back to the clamped whole-cent value until the next
-                # sync backfills cost_basis_cents.
-                "avg_entry_price": (
-                    round((p.cost_basis_cents + (p.fees_paid_cents or 0)) / p.quantity, 2)
-                    if p.cost_basis_cents is not None and p.quantity > 0
-                    else p.avg_entry_price_cents
+                "avg_entry_price": position_avg_entry_price(
+                    p.cost_basis_cents, p.fees_paid_cents, p.quantity,
+                    p.avg_entry_price_cents,
                 ),
                 "cost_basis_cents": p.cost_basis_cents,
                 "current_price_cents": p.current_price_cents,

@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
 from src.core.logging import get_logger
-from src.core.types import utc_iso
+from src.core.types import position_avg_entry_price, utc_iso
 from src.kalshi.rest import KalshiRestClient
 from src.models import Market, Position
 from src.sports.run_of_play import live_payload
@@ -233,13 +233,9 @@ async def get_event(
                     "side": held.side,
                     "quantity": held.quantity,
                     "avg_entry_price_cents": held.avg_entry_price_cents,
-                    # Fee-inclusive exact avg entry matching kalshi.com (e.g.
-                    # 57.71): (cost_basis + fees) / quantity. Falls back to the
-                    # floored whole-cent value pre-backfill.
-                    "avg_entry_price": (
-                        round((held.cost_basis_cents + (held.fees_paid_cents or 0)) / held.quantity, 2)
-                        if held.cost_basis_cents is not None and held.quantity > 0
-                        else held.avg_entry_price_cents
+                    "avg_entry_price": position_avg_entry_price(
+                        held.cost_basis_cents, held.fees_paid_cents, held.quantity,
+                        held.avg_entry_price_cents,
                     ),
                     "cost_basis_cents": held.cost_basis_cents,
                     "current_price_cents": held.current_price_cents,

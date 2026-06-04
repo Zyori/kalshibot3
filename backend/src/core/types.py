@@ -58,6 +58,25 @@ def dollars_str_to_cents(s: str) -> int:
     cents everywhere past this point — this is the one place dollars exist."""
     return int(round(float(s) * 100))
 
+
+def position_avg_entry_price(
+    cost_basis_cents: int | None,
+    fees_paid_cents: int | None,
+    quantity: int,
+    fallback: float | None,
+) -> float | None:
+    """Exact fractional avg entry matching kalshi.com's fee-INCLUSIVE display:
+    (cost_basis + fees) / quantity. Kalshi's position avg-price includes fees —
+    cost alone reads ~0.17¢ low per contract (verified: Arsenal 57.73 vs kalshi
+    57.71, residual is Kalshi's own fee-tier rounding). Do not drop the fees term
+    — that re-introduces the bug commit 25fa868 fixed.
+
+    Falls back to the clamped whole-cent value until the next sync backfills
+    cost_basis_cents. Single source for the positions + events routes."""
+    if cost_basis_cents is not None and quantity > 0:
+        return round((cost_basis_cents + (fees_paid_cents or 0)) / quantity, 2)
+    return fallback
+
 BasisPoints = NewType("BasisPoints", int)
 """Hundredths of a percent. 10000 = 100%, 25 = 0.25%."""
 

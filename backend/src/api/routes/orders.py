@@ -29,7 +29,7 @@ from src.core.exceptions import KalshiError, PostOnlyRejected
 from src.core.logging import get_logger
 from src.kalshi.rest import KalshiRestClient, new_client_order_id
 from src.kalshi.schemas import AmendOrderRequest, PlaceOrderRequest
-from src.core.types import BetStatus, ExitType
+from src.core.types import BetStatus, dollars_str_to_cents
 from src.models import Bet, BetFill, Market, Position
 from src.services.bet_service import (
     mark_bet_terminal_by_order_id,
@@ -320,10 +320,14 @@ async def list_orders(
 
 
 def _normalize_price_cents(raw: Any) -> int | None:
+    """A Kalshi order price is either a dollar string ('0.66', from the
+    `*_dollars` fields) or already integer cents (the plain `yes_price`/
+    `no_price` fields). Route the string through the single canonical
+    dollar→cents converter; the int branch is already cents, not a conversion."""
     if raw is None:
         return None
     if isinstance(raw, str):
-        return int(round(float(raw) * 100))
+        return dollars_str_to_cents(raw)
     return int(raw)
 
 
@@ -538,12 +542,28 @@ async def amend_order(
 
             # Re-check fills INSIDE the lock, before touching Kalshi. The guards
             # above ran before we held the lock; a fill could have landed in
-            # between (the WS fill handler commits its BetFill under this same
-            # lock). Without this re-check, that fill would: pass the stale
-            # pre-lock guard, the amend would issue a new order_id, and reprice
-            # would then see fills>0 and refuse the re-point — orphaning a live
-            # order at the new id with no bet tracking it. Refusing here keeps
-            # the order at its original id so the user can cancel-and-replace.
+            # between. Kalshi accepts an amend on a partially-filled order ("max
+            # fillable is remaining_count + fill_count"), so the amend would
+            # succeed, issue a new order_id, and reprice would then see fills>0
+            # and refuse the re-point — orphaning a live order at the new id with
+            # no bet tracking it. Refusing here keeps the order at its original id
+            # so the user can cancel-and-replace.
+            #
+            # Two signals, mirroring the pre-lock guard, because either can lag:
+            #   1. Kalshi's authoritative counts, re-read now. The WS fill handler
+            #      that would write the local BetFill is blocked on THIS lock, so
+            #      its row isn't visible yet — only a fresh Kalshi read sees a fill
+            #      that landed during the pre-lock window.
+            #   2. Local BetFill rows — catches a fill recorded before we acquired.
+            order_now = await _resting_order_from_kalshi(client, order_id)
+            if order_now is None or _order_partially_filled(order_now):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"reasons": [
+                        "This order filled (or stopped resting) while the edit "
+                        "was in flight — cancel and re-place instead of editing."
+                    ]},
+                )
             if bet_id is not None:
                 fills_now = await session.scalar(
                     select(func.count(BetFill.id)).where(BetFill.bet_id == bet_id)
