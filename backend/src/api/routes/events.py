@@ -40,6 +40,46 @@ router = APIRouter()
 log = get_logger(__name__)
 
 
+def _position_payload(held: Position | None) -> dict[str, Any] | None:
+    """The position block attached to a market dict (moneyline child or
+    total-goals rung). Single source for this shape so both readers stay in
+    sync. None when nothing is held on either side of the ticker."""
+    if held is None:
+        return None
+    return {
+        "side": held.side,
+        "quantity": held.quantity,
+        "avg_entry_price_cents": held.avg_entry_price_cents,
+        "avg_entry_price": position_avg_entry_price(
+            held.cost_basis_cents, held.fees_paid_cents, held.quantity,
+            held.avg_entry_price_cents,
+        ),
+        "cost_basis_cents": held.cost_basis_cents,
+        "current_price_cents": held.current_price_cents,
+        "unrealized_pnl_cents": held.unrealized_pnl_cents,
+        "realized_pnl_cents": held.realized_pnl_cents,
+        "fees_paid_cents": held.fees_paid_cents,
+    }
+
+
+async def _positions_by_ticker_side(
+    session: AsyncSession, tickers: list[str]
+) -> dict[tuple[str, str], Position]:
+    """Bulk-load held positions for a set of Kalshi tickers in one query, keyed
+    by (ticker, side). Only one side is ever held per ticker (position_sync nets
+    them), but we key by side to surface whichever exists."""
+    if not tickers:
+        return {}
+    rows = (
+        await session.execute(
+            select(Position, Market.kalshi_ticker)
+            .join(Market, Market.id == Position.market_id)
+            .where(Market.kalshi_ticker.in_(tickers))
+        )
+    ).all()
+    return {(ticker, p.side): p for p, ticker in rows}
+
+
 def _total_goals_event_ticker(game_event_ticker: str) -> str | None:
     """Derive the total-goals event_ticker for a game event_ticker, or None when
     we don't have a total series for this league. Same {date}{matchup} suffix,
@@ -54,7 +94,7 @@ def _total_goals_event_ticker(game_event_ticker: str) -> str | None:
 
 
 async def _fetch_total_goals(
-    request: Request, game_event_ticker: str
+    request: Request, session: AsyncSession, game_event_ticker: str
 ) -> list[dict[str, Any]]:
     """The per-game Over/Under ladder for a game, as its own list (separate from
     the moneyline `markets`, so it never lands on the price chart). WS-subscribed
@@ -101,10 +141,14 @@ async def _fetch_total_goals(
         return_exceptions=True,
     )
 
+    pos_by_ticker_side = await _positions_by_ticker_side(session, tickers)
     live_state = supervisor.live_state
     out: list[dict[str, Any]] = []
     for m in markets:
         book = live_state.books.get(m.ticker)
+        held = pos_by_ticker_side.get((m.ticker, "yes")) or pos_by_ticker_side.get(
+            (m.ticker, "no")
+        )
         out.append({
             "ticker": m.ticker,
             "threshold": total_goals_threshold(m.ticker),  # 1.5 / 2.5 / 3.5 / 4.5
@@ -114,6 +158,7 @@ async def _fetch_total_goals(
             "yes_ask_cents": book.yes_best_ask if book else None,
             "no_bid_cents": book.no_best_bid if book else None,
             "no_ask_cents": book.no_best_ask if book else None,
+            "position": _position_payload(held),
         })
     out.sort(key=lambda d: d["threshold"])
     return out
@@ -196,27 +241,14 @@ async def get_event(
         if isinstance(result, Exception):
             log.warning("event_book_seed_failed", ticker=t, error=str(result)[:120])
 
-    # Bulk-load positions for these tickers in one query.
-    rows = (
-        await session.execute(
-            select(Position, Market.kalshi_ticker)
-            .join(Market, Market.id == Position.market_id)
-            .where(Market.kalshi_ticker.in_(child_tickers))
-        )
-    ).all()
-    pos_by_ticker_side: dict[tuple[str, str], Position] = {
-        (ticker, p.side): p for p, ticker in rows
-    }
-
+    pos_by_ticker_side = await _positions_by_ticker_side(session, child_tickers)
     live_state = supervisor.live_state
 
     def child_dict(m: Any) -> dict[str, Any]:
         book = live_state.books.get(m.ticker)
-        yes_pos = pos_by_ticker_side.get((m.ticker, "yes"))
-        no_pos = pos_by_ticker_side.get((m.ticker, "no"))
-        # Only one side can be held at a time (position_sync nets them) but
-        # surface whichever exists for completeness.
-        held = yes_pos or no_pos
+        held = pos_by_ticker_side.get((m.ticker, "yes")) or pos_by_ticker_side.get(
+            (m.ticker, "no")
+        )
         return {
             "ticker": m.ticker,
             "yes_sub_title": m.yes_sub_title,
@@ -226,24 +258,7 @@ async def get_event(
             "yes_ask_cents": book.yes_best_ask if book else None,
             "no_bid_cents": book.no_best_bid if book else None,
             "no_ask_cents": book.no_best_ask if book else None,
-            "position": (
-                None
-                if held is None
-                else {
-                    "side": held.side,
-                    "quantity": held.quantity,
-                    "avg_entry_price_cents": held.avg_entry_price_cents,
-                    "avg_entry_price": position_avg_entry_price(
-                        held.cost_basis_cents, held.fees_paid_cents, held.quantity,
-                        held.avg_entry_price_cents,
-                    ),
-                    "cost_basis_cents": held.cost_basis_cents,
-                    "current_price_cents": held.current_price_cents,
-                    "unrealized_pnl_cents": held.unrealized_pnl_cents,
-                    "realized_pnl_cents": held.realized_pnl_cents,
-                    "fees_paid_cents": held.fees_paid_cents,
-                }
-            ),
+            "position": _position_payload(held),
         }
 
     # Sort children by ticker suffix so the tab order is stable across
@@ -253,7 +268,7 @@ async def get_event(
 
     # Per-game Over/Under ladder — fetched on-demand, kept in its OWN array so it
     # never enters `markets` (and therefore never the price chart). Best-effort.
-    total_goals = await _fetch_total_goals(request, event_ticker)
+    total_goals = await _fetch_total_goals(request, session, event_ticker)
 
     return {
         "event_ticker": event_ticker,

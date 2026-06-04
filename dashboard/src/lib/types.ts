@@ -163,6 +163,7 @@ export type TotalGoal = {
   yes_ask_cents: number | null
   no_bid_cents: number | null
   no_ask_cents: number | null
+  position: ChildPosition | null
 }
 
 export type EventDetail = {

@@ -14,7 +14,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { MarketBook } from '../../contexts/WebSocketProvider'
 import type { TotalGoal } from '../../lib/types'
 import { bestAsk, bestBid } from '../../lib/book'
+import OpenOrdersCard from '../trading/OpenOrdersCard'
 import OrderPanel from '../trading/OrderPanel'
+import PositionPill from '../trading/PositionPill'
 
 export default function TotalGoalsCard({ totals }: { totals: TotalGoal[] }) {
   // Only show rungs that are still tradeable (active). A finalized/closed rung
@@ -44,10 +46,13 @@ function TotalGoalRow({ total: t }: { total: TotalGoal }) {
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center justify-between px-3 py-2 text-left text-xs hover:bg-bg-hover"
+        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-xs hover:bg-bg-hover"
       >
-        <span className="font-medium text-text">Over {t.threshold.toFixed(1)} goals</span>
-        <span className="flex items-center gap-3">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="font-medium text-text">Over {t.threshold.toFixed(1)} goals</span>
+          {t.position && <PositionPill position={t.position} />}
+        </span>
+        <span className="flex shrink-0 items-center gap-3">
           <TotalQuote total={t} />
           <span className="text-[10px] text-text-muted">{expanded ? '−' : '+'}</span>
         </span>
@@ -94,8 +99,9 @@ function TotalGoalBody({ ticker, snapshot }: { ticker: string; snapshot: TotalGo
     })
   }
   return (
-    <div className="border-t border-border p-3">
+    <div className="grid gap-3 border-t border-border p-3 lg:grid-cols-2">
       <OrderPanel ticker={ticker} book={book} />
+      <OpenOrdersCard ticker={ticker} />
     </div>
   )
 }

@@ -16,12 +16,13 @@ import DepthLadder from '../trading/DepthLadder'
 import OpenOrdersCard from '../trading/OpenOrdersCard'
 import OrderPanel from '../trading/OrderPanel'
 import type { OrderPrefill } from '../trading/OrderPanel'
+import PositionPill from '../trading/PositionPill'
 import SuggestionCard from '../trading/SuggestionCard'
 import TopOfBook from '../trading/TopOfBook'
 import type { MarketBook } from '../../contexts/WebSocketProvider'
 import { useSuggestions } from '../../hooks/useSuggestions'
 import { bestAsk, bestBid } from '../../lib/book'
-import { formatPriceCents, outcomeLabel } from '../../lib/format'
+import { outcomeLabel } from '../../lib/format'
 import type { ChildMarket, Suggestion } from '../../lib/types'
 
 // Match CombinedPriceChart.COLORS — green / red / blue / amber / purple / cyan.
@@ -53,7 +54,7 @@ export default function MarketCard({
             className={`h-2.5 w-2.5 rounded-full ${COLOR_DOTS[colorIndex % COLOR_DOTS.length]}`}
           />
           <span className="truncate text-sm font-medium text-text">{label}</span>
-          {market.position && <PositionPill market={market} />}
+          {market.position && <PositionPill position={market.position} />}
         </div>
         <div className="flex shrink-0 items-center gap-3 text-xs">
           <Quote market={market} />
@@ -66,37 +67,6 @@ export default function MarketCard({
         <ExpandedBody ticker={market.ticker} heldQuantity={market.position?.quantity ?? 0} />
       )}
     </section>
-  )
-}
-
-function PositionPill({ market }: { market: ChildMarket }) {
-  const p = market.position!
-  const pnl = p.unrealized_pnl_cents
-  const tone =
-    pnl === null ? 'text-text-muted' : pnl >= 0 ? 'text-gain' : 'text-loss'
-  // avg_entry_price is the fee-inclusive all-in cost basis (matches kalshi.com):
-  // (cost + Kalshi fees) / quantity. It runs ~1-2¢ above the raw fill price on
-  // taker fills, so we label it "all-in" and show the raw fill price + the
-  // fee-inclusive basis on hover — otherwise a clean 31¢ fill reads as 32.4¢
-  // and looks like a bad fill when it's just the taker fee folded in.
-  const allIn = p.avg_entry_price ?? p.avg_entry_price_cents
-  const rawFill = p.avg_entry_price_cents
-  const feeNote =
-    p.avg_entry_price != null && rawFill != null
-      ? `Fill ${formatPriceCents(rawFill)} + Kalshi fee = ${formatPriceCents(p.avg_entry_price)} all-in`
-      : undefined
-  return (
-    <span className="flex items-center gap-2 rounded-full bg-action/10 px-2 py-0.5 text-[11px] text-action">
-      <span className="font-mono tabular-nums" title={feeNote}>
-        {p.side.toUpperCase()} {p.quantity} @ {formatPriceCents(allIn)}
-        <span className="ml-0.5 text-[9px] text-text-muted">all-in</span>
-      </span>
-      {pnl !== null && (
-        <span className={`font-mono tabular-nums ${tone}`}>
-          {pnl >= 0 ? '+' : ''}${(pnl / 100).toFixed(2)}
-        </span>
-      )}
-    </span>
   )
 }
 
