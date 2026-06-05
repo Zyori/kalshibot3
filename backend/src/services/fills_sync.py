@@ -34,7 +34,7 @@ from src.kalshi.rest import KalshiRestClient
 from src.kalshi.schemas import Fill as RestFill
 from src.models import Bet, BetFill
 from src.services.bet_service import recompute_bet_from_fills
-from src.sports.soccer import is_soccer_ticker
+from src.sports.tradeable import is_tradeable_ticker
 
 log = get_logger(__name__)
 
@@ -55,7 +55,7 @@ async def _ingest_rest_fill(
     We split that fee across the synthetic rows by quantity_centi so each
     bet's exit_fees_cents reflects its share of the actual cost.
     """
-    if not is_soccer_ticker(rest_fill.ticker):
+    if not is_tradeable_ticker(rest_fill.ticker):
         return set()
 
     # Match the canonical row plus any cross-opener splits.

@@ -8,8 +8,9 @@ feedback_cross_market_isolation.
 
 The sync loop:
   1. Fetch every page of /portfolio/positions from Kalshi.
-  2. Filter to soccer tickers (is_soccer_ticker) BEFORE any further work.
-  3. UPSERT each soccer position into our POSITION table.
+  2. Filter to tracked tickers (is_tradeable_ticker — soccer + combos) BEFORE
+     any further work.
+  3. UPSERT each tracked position into our POSITION table.
   4. Mark any soccer positions we have that Kalshi doesn't as zeroed.
        (User closed it on kalshi.com — bet_service still has the BET row,
         but the position is gone.)
@@ -33,7 +34,7 @@ from src.kalshi.live_state import LiveState, MarketBook
 from src.kalshi.rest import KalshiRestClient
 from src.kalshi.schemas import PortfolioPosition
 from src.models import Bet, Market, Position
-from src.sports.soccer import is_soccer_ticker
+from src.sports.tradeable import is_tradeable_ticker
 
 log = get_logger(__name__)
 
@@ -223,7 +224,7 @@ async def sync_positions_once(live_state: LiveState | None = None) -> dict[str, 
     book midpoint and derive unrealized PnL. None during tests / cold start —
     positions still sync, just without a live mark.
     """
-    soccer_positions: list[PortfolioPosition] = []
+    tracked_positions: list[PortfolioPosition] = []
     other_count = 0
 
     async with KalshiRestClient() as client:
@@ -232,8 +233,9 @@ async def sync_positions_once(live_state: LiveState | None = None) -> dict[str, 
             resp = await client.get_positions(cursor=cursor)
             for p in resp.market_positions:
                 # Cross-market isolation: filter at the top, before any work.
-                if is_soccer_ticker(p.ticker):
-                    soccer_positions.append(p)
+                # Tracked = soccer markets we follow + combo (MVE) markets.
+                if is_tradeable_ticker(p.ticker):
+                    tracked_positions.append(p)
                 else:
                     other_count += 1
             cursor = resp.cursor
@@ -252,7 +254,7 @@ async def sync_positions_once(live_state: LiveState | None = None) -> dict[str, 
         }
 
         seen_tickers: set[str] = set()
-        for p in soccer_positions:
+        for p in tracked_positions:
             side, qty = _signed_position_to_side_and_qty(p.position)
             # Mark to the live book midpoint; unrealized = (mark - entry)·qty.
             # entry comes from Kalshi's exact cost basis, not the floored
@@ -295,13 +297,13 @@ async def sync_positions_once(live_state: LiveState | None = None) -> dict[str, 
 
     log.info(
         "position_sync_complete",
-        soccer=len(soccer_positions),
-        non_soccer_skipped=other_count,
+        tracked=len(tracked_positions),
+        untracked_skipped=other_count,
         closed_with_open_bet=len(closed_with_open_bet),
     )
     return {
-        "soccer": len(soccer_positions),
-        "non_soccer_skipped": other_count,
+        "tracked": len(tracked_positions),
+        "untracked_skipped": other_count,
         "closed_with_open_bet": closed_with_open_bet,
     }
 

@@ -33,7 +33,7 @@ from src.core.types import BetStatus
 from src.kalshi.rest import KalshiRestClient
 from src.models import Bet, Market
 from src.services.bet_service import settle_bets_for_market
-from src.sports.soccer import is_soccer_ticker
+from src.sports.tradeable import is_tradeable_ticker
 
 log = get_logger(__name__)
 
@@ -59,7 +59,7 @@ async def sweep_settlements_once() -> dict[str, int]:
             )
         ).scalars().all()
 
-    open_tickers = [t for t in open_tickers if is_soccer_ticker(t)]
+    open_tickers = [t for t in open_tickers if is_tradeable_ticker(t)]
     if not open_tickers:
         return {"checked": 0, "settled": 0}
 

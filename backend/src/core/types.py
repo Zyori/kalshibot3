@@ -86,6 +86,10 @@ BasisPoints = NewType("BasisPoints", int)
 class Sport(StrEnum):
     SOCCER = "soccer"
     NFL = "nfl"
+    COMBO = "combo"
+    """Multivariate-event (parlay) markets. Their own category, not a real
+    sport — a combo bundles legs across sports/markets and settles as one
+    binary contract. Kept distinct so combos never pollute soccer-only stats."""
 
 
 # === Bet ===

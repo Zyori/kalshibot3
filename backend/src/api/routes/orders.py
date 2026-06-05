@@ -10,8 +10,10 @@ the user types, without burning a Kalshi rate-limit slot per keystroke.
 Place runs the same sanity check server-side as defense-in-depth — the
 frontend's check is convenience, the server's is policy.
 
-Cross-market isolation: every endpoint checks is_soccer_ticker(ticker)
-before doing anything. A request to place a politics order returns 400.
+Cross-market isolation: every endpoint checks the ticker before doing
+anything. Order management (list/cancel/amend) uses is_tradeable_ticker
+(soccer + combos); preview/place stay soccer-only until combo placement
+ships (Phase 2). A request to touch a politics order returns 400.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from src.services.bet_service import (
 )
 from src.services.order_sanity import SanityInput, Verdict, check_order
 from src.sports.soccer import is_soccer_ticker
+from src.sports.tradeable import is_tradeable_ticker
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -297,7 +300,7 @@ async def list_orders(
     out: list[dict[str, Any]] = []
     for o in raw.get("orders", []) or []:
         t = o.get("ticker") or o.get("market_ticker") or ""
-        if not is_soccer_ticker(t):
+        if not is_tradeable_ticker(t):
             continue
         yes_price_raw = o.get("yes_price_dollars") or o.get("yes_price")
         no_price_raw = o.get("no_price_dollars") or o.get("no_price")
@@ -365,9 +368,9 @@ async def cancel_order(
                 detail="no such resting order — it may have already filled or been cancelled",
             )
         ticker = order.get("ticker") or order.get("market_ticker") or ""
-        if not is_soccer_ticker(ticker):
-            log.warning("cancel_order_non_soccer", order_id=order_id, ticker=ticker)
-            raise HTTPException(status_code=400, detail=f"{ticker} is not a soccer market")
+        if not is_tradeable_ticker(ticker):
+            log.warning("cancel_order_not_tradeable", order_id=order_id, ticker=ticker)
+            raise HTTPException(status_code=400, detail=f"{ticker} is not a market we manage")
 
         try:
             resp = await client.cancel_order(order_id)
@@ -461,9 +464,9 @@ async def amend_order(
         ticker = order.get("ticker") or order.get("market_ticker") or ""
         order_side = order.get("side")
         order_action = order.get("action")
-        if not is_soccer_ticker(ticker):
-            log.warning("amend_order_non_soccer", order_id=order_id, ticker=ticker)
-            raise HTTPException(status_code=400, detail=f"{ticker} is not a soccer market")
+        if not is_tradeable_ticker(ticker):
+            log.warning("amend_order_not_tradeable", order_id=order_id, ticker=ticker)
+            raise HTTPException(status_code=400, detail=f"{ticker} is not a market we manage")
         if order_side not in ("yes", "no") or order_action not in ("buy", "sell"):
             raise HTTPException(
                 status_code=502,

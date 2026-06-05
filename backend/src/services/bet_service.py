@@ -18,7 +18,7 @@ Fees: bet_fill.fee_cents is populated by the periodic fills-sync sweep
 (WS fills don't carry fees). Bet-level entry_fees_cents and exit_fees_cents
 are recomputed from bet_fill sums whenever fees arrive.
 
-Cross-market isolation: every write checks is_soccer_ticker first.
+Cross-market isolation: every write checks is_tradeable_ticker first.
 """
 
 from __future__ import annotations
@@ -46,14 +46,20 @@ from src.core.types import (
 from src.kalshi.schemas import Order
 from src.kalshi.ws_wire import Fill
 from src.models import Bet, BetFill, Market
-from src.sports.soccer import is_soccer_ticker, parse_market_ticker
+from src.sports.combo import is_combo_ticker
+from src.sports.soccer import parse_market_ticker
+from src.sports.tradeable import is_tradeable_ticker
 
 log = get_logger(__name__)
 
 
 def _ticker_to_sport(ticker: str) -> Sport:
-    """Best-effort sport classifier. Today: soccer-or-bust."""
-    return Sport.SOCCER  # soccer is the only sport this app handles today
+    """Classify a ticker's sport for the bet/market row. Combos (MVE markets)
+    are their own category — never soccer — so they don't pollute soccer-only
+    ledger stats. Everything else we handle today is soccer."""
+    if is_combo_ticker(ticker):
+        return Sport.COMBO
+    return Sport.SOCCER
 
 
 def _materialize_bet_fill(
@@ -202,8 +208,8 @@ async def record_placed_order(
     Idempotent on (kalshi_order_id) for buys — repeated route calls return
     the existing row.
     """
-    if not is_soccer_ticker(order.ticker):
-        raise ValueError(f"refusing to record non-soccer ticker {order.ticker}")
+    if not is_tradeable_ticker(order.ticker):
+        raise ValueError(f"refusing to record untracked ticker {order.ticker}")
 
     if action == "sell":
         # Sells don't create a bet row. Return the opener for the API echo.
@@ -328,8 +334,8 @@ async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, Snap
     we emit on every qualifying fill and the DB dedupes.
     """
     ticker = fill.msg.ticker
-    if not is_soccer_ticker(ticker):
-        log.warning("fill_dropped_non_soccer_ticker", ticker=ticker)
+    if not is_tradeable_ticker(ticker):
+        log.warning("fill_dropped_untracked_ticker", ticker=ticker)
         return []
 
     new_centi = fill.msg.count_centi
@@ -730,8 +736,8 @@ async def settle_bets_for_market(
     Idempotent: bets already in a terminal state are skipped. Safe to call
     from both the WS market_lifecycle handler and a periodic sweep.
     """
-    if not is_soccer_ticker(ticker):
-        log.warning("settle_dropped_non_soccer_ticker", ticker=ticker)
+    if not is_tradeable_ticker(ticker):
+        log.warning("settle_dropped_untracked_ticker", ticker=ticker)
         return 0
 
     market = await session.scalar(select(Market).where(Market.kalshi_ticker == ticker))
