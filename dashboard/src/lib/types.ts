@@ -7,6 +7,7 @@ export type Bet = {
   sport: string
   ticker: string | null
   market_label: string
+  leg_count: number
   market_status: 'open' | 'closed' | 'settled' | null
   market_id: number
   kalshi_order_id: string | null
@@ -77,6 +78,17 @@ export type BetFill = {
 }
 
 export type BetFillsResponse = { bet_id: number; fills: BetFill[] }
+
+export type ComboLeg = {
+  leg_index: number
+  title: string | null
+  ticker: string | null
+  event_ticker: string | null
+  side: 'yes' | 'no' | null
+  result: 'yes' | 'no' | null
+}
+
+export type BetLegsResponse = { bet_id: number; legs: ComboLeg[] }
 
 // === Event API (one page per game) ===
 

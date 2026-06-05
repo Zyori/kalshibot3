@@ -7,7 +7,7 @@ import StrategyBreakdown from '../components/charts/StrategyBreakdown'
 import BetMetadataForm from '../components/ledger/BetMetadataForm'
 import { SportBadge, KNOWN_SPORTS } from '../components/ledger/SportBadge'
 import { formatET, formatDollars, formatFee, formatPriceCents, formatSignedDollars } from '../lib/format'
-import type { Bet, BetFillsResponse, LedgerStats as Stats } from '../lib/types'
+import type { Bet, BetFillsResponse, BetLegsResponse, LedgerStats as Stats } from '../lib/types'
 
 type LedgerResponse = { bets: Bet[]; next_cursor: number | null }
 
@@ -478,6 +478,16 @@ function BetDetail({
     },
     refetchInterval: 30_000,
   })
+  const isCombo = bet.sport === 'combo'
+  const legs = useQuery<BetLegsResponse>({
+    queryKey: ['ledger_legs', bet.id],
+    queryFn: async () => {
+      const res = await fetch(`/api/ledger/${bet.id}/legs`)
+      if (!res.ok) throw new Error(`/api/ledger/${bet.id}/legs: ${res.status}`)
+      return res.json()
+    },
+    enabled: isCombo,
+  })
   return (
     <tr className="border-b border-border bg-bg last:border-b-0">
       <td colSpan={10} className="px-3 py-3">
@@ -531,7 +541,7 @@ function BetDetail({
               )}
             </dl>
           )}
-          <FillsList query={fills} />
+          {isCombo ? <LegsList query={legs} /> : <FillsList query={fills} />}
         </div>
       </td>
     </tr>
@@ -667,6 +677,68 @@ function FillsList({
                   : f.fee_cents === 0
                   ? '$0.00 fee'
                   : `${formatFee(f.fee_cents)} fee`}
+              </span>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+function LegsList({
+  query,
+}: {
+  query: ReturnType<typeof useQuery<BetLegsResponse>>
+}) {
+  if (query.isPending) {
+    return <div className="h-24 animate-pulse rounded-md border border-border bg-bg-card" />
+  }
+  if (query.isError || !query.data) {
+    return (
+      <div className="rounded-md border border-border bg-bg-card p-3 text-xs text-text-muted">
+        Couldn't load legs.
+      </div>
+    )
+  }
+  const legs = query.data.legs
+  if (legs.length === 0) {
+    return (
+      <div className="rounded-md border border-border bg-bg-card p-3 text-xs text-text-muted">
+        No legs recorded.
+      </div>
+    )
+  }
+  return (
+    <div className="rounded-md border border-border bg-bg-card">
+      <div className="border-b border-border px-3 py-2 text-xs uppercase tracking-wide text-text-muted">
+        Parlay legs ({legs.length}) — all must hit
+      </div>
+      <ul className="divide-y divide-border">
+        {legs.map((leg) => {
+          // Per-leg outcome tone: green if it resolved the picked side, red if
+          // against, muted while pending. result is the leg's own yes/no.
+          const tone =
+            leg.result === null
+              ? 'text-text-muted'
+              : leg.result === leg.side
+              ? 'text-gain'
+              : 'text-loss'
+          return (
+            <li
+              key={leg.leg_index}
+              className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-1.5 text-xs"
+            >
+              <span className="text-text" title={leg.ticker ?? undefined}>
+                {leg.title ?? leg.ticker ?? `Leg ${leg.leg_index + 1}`}
+              </span>
+              <span className={`font-mono uppercase ${tone}`}>
+                {leg.side ?? '—'}
+                {leg.result && (
+                  <span className="ml-2 text-[10px]">
+                    {leg.result === leg.side ? '✓' : '✗'}
+                  </span>
+                )}
               </span>
             </li>
           )

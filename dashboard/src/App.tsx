@@ -6,6 +6,7 @@ import EventView from './pages/EventView'
 import Futures from './pages/Futures'
 import SportPortal from './pages/SportPortal'
 import Ledger from './pages/Ledger'
+import Combos from './pages/Combos'
 import Analysis from './pages/Analysis'
 import Settings from './pages/Settings'
 
@@ -23,6 +24,7 @@ export default function App() {
         <Route path="sport/:slug" element={<SportPortal />} />
         <Route path="futures" element={<Futures />} />
         <Route path="ledger" element={<Ledger />} />
+        <Route path="combos" element={<Combos />} />
         {/* Analysis is a dev-only placeholder until the exit post-mortem UI
             ships — gated to match its nav tab so the dead route doesn't reach
             production. */}

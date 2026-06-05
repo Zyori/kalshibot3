@@ -22,6 +22,7 @@ export default function Layout() {
               <NavTab to="/" label="Overview" end />
               <NavTab to="/sport/soccer" label="Soccer" />
               <NavTab to="/futures" label="World Cup" />
+              <NavTab to="/combos" label="Combos" />
               <NavTab to="/ledger" label="Ledger" />
               {/* Analysis is a placeholder until the exit post-mortem UI ships;
                   the /analysis route stays registered so it loads in dev. */}
