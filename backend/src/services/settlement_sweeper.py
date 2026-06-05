@@ -26,13 +26,16 @@ import asyncio
 import time
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session_factory
 from src.core.logging import get_logger
-from src.core.types import BetStatus
+from src.core.types import BetStatus, Sport
 from src.kalshi.rest import KalshiRestClient
-from src.models import Bet, Market
+from src.models import Bet, ComboLeg, Market
 from src.services.bet_service import settle_bets_for_market
+from src.services.combo_leg_resolver import resolve_combo_legs
+from src.sports.combo import is_combo_ticker
 from src.sports.tradeable import is_tradeable_ticker
 
 log = get_logger(__name__)
@@ -61,6 +64,10 @@ async def sweep_settlements_once() -> dict[str, int]:
 
     open_tickers = [t for t in open_tickers if is_tradeable_ticker(t)]
     if not open_tickers:
+        # Even with nothing open, settled combos may have legs still pending
+        # (the combo settled early — one leg failed — while other legs' games
+        # were still in progress). Re-resolve those as their games finish.
+        await _reresolve_pending_combo_legs()
         return {"checked": 0, "settled": 0}
 
     settled_count = 0
@@ -91,6 +98,11 @@ async def sweep_settlements_once() -> dict[str, int]:
                         )
                         if n > 0:
                             settled_count += n
+                        # A settled combo: resolve which legs hit/missed for the
+                        # ledger drill-down. Network-touching, so it lives here
+                        # (client open) not in the pure-DB settle path.
+                        if n > 0 and is_combo_ticker(row.ticker):
+                            await _resolve_legs_for_market(session, client, row.ticker)
                         await session.commit()
                     except Exception:  # noqa: BLE001
                         log.exception(
@@ -98,12 +110,66 @@ async def sweep_settlements_once() -> dict[str, int]:
                             ticker=row.ticker,
                         )
 
+    # Fill in any combo legs whose games have since finished.
+    await _reresolve_pending_combo_legs()
+
     if settled_count:
         log.info(
             "settlement_sweep_complete",
             checked=len(open_tickers), settled=settled_count,
         )
     return {"checked": len(open_tickers), "settled": settled_count}
+
+
+async def _reresolve_pending_combo_legs() -> None:
+    """Re-resolve legs of already-settled combos that are still pending.
+
+    A combo can settle before all its legs' games finish (one leg failing
+    settles the parlay immediately). Those legs resolve over the next hours as
+    their games end; this catches them. resolve_combo_legs is idempotent and
+    skips already-resolved legs, so this only does work when a pending leg's
+    game has actually finished. No-op (and no network) when nothing is pending.
+    """
+    factory = get_session_factory()
+    async with factory() as session:
+        pending_bet_ids = (await session.execute(
+            select(ComboLeg.bet_id)
+            .where(ComboLeg.result.is_(None))
+            .distinct()
+        )).scalars().all()
+        if not pending_bet_ids:
+            return
+        bets = (await session.execute(
+            select(Bet)
+            .where(Bet.id.in_(pending_bet_ids))
+            .where(Bet.status.in_((BetStatus.WON, BetStatus.LOST)))
+        )).scalars().all()
+    if not bets:
+        return
+    async with KalshiRestClient() as client:
+        for bet in bets:
+            async with factory() as session:
+                fresh = await session.get(Bet, bet.id)
+                if fresh is not None:
+                    await resolve_combo_legs(session, client, bet=fresh)
+                    await session.commit()
+
+
+async def _resolve_legs_for_market(
+    session: AsyncSession, client: KalshiRestClient, ticker: str
+) -> None:
+    """Resolve per-leg results for every combo bet just settled on `ticker`."""
+    market = await session.scalar(select(Market).where(Market.kalshi_ticker == ticker))
+    if market is None:
+        return
+    combo_bets = (await session.execute(
+        select(Bet)
+        .where(Bet.market_id == market.id)
+        .where(Bet.sport == Sport.COMBO)
+        .where(Bet.status.in_((BetStatus.WON, BetStatus.LOST)))
+    )).scalars().all()
+    for bet in combo_bets:
+        await resolve_combo_legs(session, client, bet=bet)
 
 
 class SettlementSweeper:
