@@ -41,23 +41,11 @@ export type SlipLeg = {
   price_cents: number | null
 }
 
-/** The materialized combo market returned by POST /api/combos/materialize. */
-export type Materialized = {
-  ticker: string
-  event_ticker: string
-  subtitle: string | null
-  yes_bid_cents: number | null
-  yes_ask_cents: number | null
-  no_bid_cents: number | null
-  no_ask_cents: number | null
-  leg_count: number
-}
-
 /** A market maker's quote on a combo RFQ (GET /api/combos/rfq/{id}/quotes). */
 export type Quote = {
   quote_id: string
   rfq_id: string
-  status: string
+  status: 'open' | 'accepted' | 'confirmed' | 'cancelled' | 'expired'
   yes_bid_cents: number
   no_bid_cents: number
   yes_contracts: number

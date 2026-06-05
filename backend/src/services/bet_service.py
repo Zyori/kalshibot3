@@ -47,7 +47,7 @@ from src.core.types import (
 )
 from src.kalshi.schemas import Order
 from src.kalshi.ws_wire import Fill
-from src.models import Bet, BetFill, ComboLeg, Market
+from src.models import Bet, BetFill, ComboLeg, Market, PendingCombo
 from src.sports.combo import is_combo_ticker
 from src.sports.soccer import parse_market_ticker
 from src.sports.tradeable import is_tradeable_ticker
@@ -507,6 +507,100 @@ async def record_external_combo(
     return bet
 
 
+async def _create_combo_bet_from_pending(
+    session: AsyncSession,
+    *,
+    ticker: str,
+    order_id: str,
+    side: BetSide,
+    price_cents: int,
+) -> Bet | None:
+    """Create the combo bet for an RFQ fill, using the legs stashed in
+    pending_combo at accept time. Returns the bet (so record_fill's buy path
+    attaches the fill and refines entry/stake from it), or None if no pending
+    row matches the ticker (then record_fill drops the fill as today).
+
+    The bet is keyed by the fill's real order_id (the rfq_creator_order_id) so
+    the standard fill/fee reconciliation applies. source=HUMAN, verified=True —
+    this was placed through the app, not logged from kalshi.com. The pending
+    row is deleted once consumed.
+    """
+    pending = await session.scalar(
+        select(PendingCombo).where(PendingCombo.combo_ticker == ticker)
+    )
+    if pending is None:
+        return None
+
+    market_id = await _get_or_create_market(
+        session, ticker=ticker, market_type="combo"
+    )
+    quantity = pending.count
+    bet = Bet(
+        sport=Sport.COMBO,
+        market_id=market_id,
+        suggestion_id=None,
+        parent_bet_id=None,
+        kalshi_order_id=order_id,
+        client_order_id=None,
+        side=side,
+        entry_price_cents=price_cents,  # refined from buy fills by the caller
+        exit_price_cents=None,
+        quantity=quantity,
+        remaining_quantity=quantity,
+        remaining_quantity_centi=quantity * 100,
+        stake_cents=quantity * price_cents,  # refined from buy fills by the caller
+        pnl_cents=None,
+        realized_pnl_cents=None,
+        entry_fees_cents=0,
+        exit_fees_cents=0,
+        status=BetStatus.OPEN,
+        exit_type=None,
+        source=BetSource.HUMAN,
+        strategy=Strategy(pending.strategy),
+        confidence=Confidence(pending.confidence),
+        kelly_fraction_bps=None,
+        ai_probability_pct=None,
+        human_override_sizing=False,
+        human_override_direction=False,
+        human_reasoning=pending.human_reasoning,
+        ai_reasoning=None,
+        timing=Timing(pending.timing),
+        game_period=None,
+        game_clock=None,
+        tags=pending.tags_json,
+        event_series=None,
+        home_code=None,
+        away_code=None,
+        home_name=None,
+        away_name=None,
+        selection_code=None,
+        verified=True,
+        version=1,
+        placed_at=datetime.now(timezone.utc),
+        settled_at=None,
+    )
+    session.add(bet)
+    await session.flush()
+
+    for i, leg in enumerate(pending.legs_json):
+        session.add(ComboLeg(
+            bet_id=bet.id,
+            leg_index=i,
+            leg_ticker=leg.get("leg_ticker"),
+            leg_event_ticker=leg.get("leg_event_ticker"),
+            leg_title=leg.get("leg_title"),
+            side=leg.get("side"),
+            result=None,
+        ))
+    await session.delete(pending)
+    await session.flush()
+    log.info(
+        "combo_bet_created_from_fill",
+        bet_id=bet.id, ticker=ticker, order_id=order_id, legs=len(pending.legs_json),
+    )
+    return bet
+
+
 async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, SnapshotPhase]]:
     """Apply a WS fill event.
 
@@ -568,6 +662,16 @@ async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, Snap
         bet = await session.scalar(
             select(Bet).where(Bet.kalshi_order_id == fill.msg.order_id)
         )
+        if bet is None and is_combo_ticker(ticker):
+            # A combo fills via RFQ async: we accepted a quote (no order_id) and
+            # stashed the legs in pending_combo. The fill is the FIRST time we
+            # see the real order_id, so the bet is created HERE, keyed to it,
+            # with the fill's real price/centi. The standard reconciliation
+            # below (and fills_sync fees) then applies unchanged.
+            bet = await _create_combo_bet_from_pending(
+                session, ticker=ticker, order_id=fill.msg.order_id,
+                side=BetSide(fill.msg.side), price_cents=new_price,
+            )
         if bet is None:
             # WS arrived before the orders route committed the Bet. Don't
             # persist a phantom external row — fills_sync will record this

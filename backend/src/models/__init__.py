@@ -10,6 +10,7 @@ from src.models.chat import ChatMessage
 from src.models.combo_leg import ComboLeg
 from src.models.game import Game
 from src.models.market import Market
+from src.models.pending_combo import PendingCombo
 from src.models.position import Position
 from src.models.suggestion import Suggestion
 from src.models.trade_snapshot import TradeSnapshot
@@ -21,6 +22,7 @@ __all__ = [
     "ComboLeg",
     "Game",
     "Market",
+    "PendingCombo",
     "Position",
     "Suggestion",
     "TradeSnapshot",

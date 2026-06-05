@@ -151,3 +151,15 @@ class TestQuoteWire:
         assert q.yes_bid_cents == 39
         assert q.no_bid_cents == 0
         assert q.no_contracts == 0
+
+    def test_quote_null_side_does_not_crash(self) -> None:
+        # The real failure mode: the unquoted side arrives as null (not "0.00").
+        # float(None) used to throw and 500 the whole quotes page.
+        q = Quote.model_validate({
+            "id": "q3", "rfq_id": "r1", "market_ticker": "X", "status": "open",
+            "yes_bid_dollars": "0.4500", "no_bid_dollars": None,
+            "yes_contracts_fp": "10.00", "no_contracts_fp": None,
+        })
+        assert q.yes_bid_cents == 45
+        assert q.no_bid_cents == 0
+        assert q.no_contracts == 0

@@ -39,6 +39,7 @@ from src.kalshi.schemas import (
     CreateRfqRequest,
     CreateRfqResponse,
     EventsResponse,
+    Quote,
     QuotesResponse,
     FillsResponse,
     MarketsResponse,
@@ -412,14 +413,27 @@ class KalshiRestClient:
         )
         return CreateRfqResponse.model_validate(data)
 
-    async def get_my_quotes(self, *, user_id: str, limit: int = 50) -> QuotesResponse:
+    async def get_my_quotes(
+        self, *, user_id: str, limit: int = 100, max_pages: int = 5
+    ) -> QuotesResponse:
         """Quotes makers have offered on MY RFQs. The rfq_creator_user_id filter
-        is required by Kalshi (a bare call 403s)."""
-        data = await self._request(
-            "GET", "/communications/quotes",
-            params={"rfq_creator_user_id": user_id, "limit": limit},
-        )
-        return QuotesResponse.model_validate(data)
+        is required by Kalshi (a bare call 403s). Follows the cursor up to
+        max_pages so a target RFQ's quotes aren't silently truncated as quotes
+        accumulate (the caller filters by rfq_id client-side)."""
+        all_quotes: list[Quote] = []
+        cursor: str | None = None
+        for _ in range(max_pages):
+            params: dict[str, Any] = {"rfq_creator_user_id": user_id, "limit": limit}
+            if cursor:
+                params["cursor"] = cursor
+            page = QuotesResponse.model_validate(
+                await self._request("GET", "/communications/quotes", params=params)
+            )
+            all_quotes.extend(page.quotes)
+            cursor = page.cursor or None
+            if not cursor:
+                break
+        return QuotesResponse(quotes=all_quotes, cursor=None)
 
     async def accept_quote(self, quote_id: str) -> dict[str, Any]:
         """Accept a maker's quote. This requires the maker to then confirm; the
@@ -442,19 +456,24 @@ class KalshiRestClient:
 
     async def get_account_user_id(self) -> str:
         """Our account user_id — required (and the ONLY accepted value) for the
-        quote filter rfq_creator_user_id. Note this is NOT the communications_id
-        from /communications/id (that's a different identifier Kalshi rejects
-        here). Kalshi has no dedicated user-id endpoint, so we read it off any
-        order; it's stable per account, so cache it for the process."""
+        quote filter rfq_creator_user_id. NOT the communications_id from
+        /communications/id (a different identifier Kalshi rejects here). Kalshi
+        has no dedicated user-id endpoint, so we read it off any order or fill;
+        it's stable per account, so cache it for the process.
+
+        Raises only when the account has NEITHER an order NOR a fill to read it
+        from (a brand-new account before its first trade). The caller treats
+        that as 'no quotes possible yet' rather than hammering this every poll."""
         global _ACCOUNT_USER_ID
         if _ACCOUNT_USER_ID:
             return _ACCOUNT_USER_ID
-        data = await self._request("GET", "/portfolio/orders", params={"limit": 1})
-        orders = data.get("orders") or []
-        if orders and orders[0].get("user_id"):
-            _ACCOUNT_USER_ID = orders[0]["user_id"]
-            return _ACCOUNT_USER_ID
-        raise KalshiError("could not determine account user_id (no orders to read it from)")
+        for path, key in (("/portfolio/orders", "orders"), ("/portfolio/fills", "fills")):
+            data = await self._request("GET", path, params={"limit": 1})
+            rows = data.get(key) or []
+            if rows and rows[0].get("user_id"):
+                _ACCOUNT_USER_ID = rows[0]["user_id"]
+                return _ACCOUNT_USER_ID
+        raise KalshiError("account has no orders or fills yet — user_id unavailable")
 
     # === Orders ===
 

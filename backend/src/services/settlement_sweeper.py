@@ -33,7 +33,7 @@ from src.core.db import get_session_factory
 from src.core.logging import get_logger
 from src.core.types import BetStatus, Sport
 from src.kalshi.rest import KalshiRestClient
-from src.models import Bet, ComboLeg, Market
+from src.models import Bet, ComboLeg, Market, PendingCombo
 from src.services.bet_service import settle_bets_for_market
 from src.services.combo_leg_resolver import resolve_combo_legs
 from src.sports.combo import is_combo_ticker
@@ -188,6 +188,30 @@ async def _resolve_legs_for_market(
         await resolve_combo_legs(session, client, bet=bet)
 
 
+# An accepted RFQ combo whose fill never arrived (maker didn't confirm, or the
+# execution timer lapsed) leaves a pending_combo row that will never be consumed.
+# Sweep rows older than this so the stash doesn't accumulate. No bet was ever
+# created from them, so deleting is clean.
+_PENDING_COMBO_TTL = timedelta(hours=1)
+
+
+async def sweep_stale_pending_combos() -> int:
+    """Delete pending_combo rows older than the TTL (accepted but never filled).
+    Returns the count deleted."""
+    cutoff = datetime.now(timezone.utc) - _PENDING_COMBO_TTL
+    factory = get_session_factory()
+    async with factory() as session:
+        stale = (await session.execute(
+            select(PendingCombo).where(PendingCombo.created_at < cutoff)
+        )).scalars().all()
+        for row in stale:
+            await session.delete(row)
+        if stale:
+            await session.commit()
+            log.info("pending_combo_swept", count=len(stale))
+    return len(stale)
+
+
 class SettlementSweeper:
     """Long-running poller. Lives on the supervisor.
 
@@ -215,6 +239,7 @@ class SettlementSweeper:
     async def _tick(self) -> None:
         try:
             await sweep_settlements_once()
+            await sweep_stale_pending_combos()
             self._last_run_at = time.monotonic()
         except Exception:  # noqa: BLE001
             log.exception("settlement_sweep_failed")

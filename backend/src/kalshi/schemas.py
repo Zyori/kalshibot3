@@ -546,12 +546,18 @@ class CreateMultivariateMarketResponse(WireModelLoose):
 class CreateRfqRequest(WireModel):
     """Body for POST /communications/rfqs. For a combo, carry the materialized
     market_ticker plus the collection + legs so makers can price it. Size is
-    either `contracts` or a `target_cost_dollars` budget (one of the two)."""
+    either `contracts` or a `target_cost_dollars` budget — exactly one."""
     market_ticker: str
     mve_collection_ticker: str
     mve_selected_legs: list[SelectedMarket]
     target_cost_dollars: str | None = None
     contracts: int | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_size(self) -> "CreateRfqRequest":
+        if (self.contracts is None) == (self.target_cost_dollars is None):
+            raise ValueError("provide exactly one of contracts or target_cost_dollars")
+        return self
 
 
 class CreateRfqResponse(WireModelLoose):
@@ -583,15 +589,37 @@ class Quote(WireModelLoose):
         if not isinstance(data, dict):
             return data
         out = dict(data)
-        if "yes_bid_cents" not in out and "yes_bid_dollars" in out:
-            out["yes_bid_cents"] = _dollar_str_to_cents(out["yes_bid_dollars"])
-        if "no_bid_cents" not in out and "no_bid_dollars" in out:
-            out["no_bid_cents"] = _dollar_str_to_cents(out["no_bid_dollars"])
+
+        def _bid(key: str) -> int:
+            # A maker may quote only one side; the other dollar field can be
+            # absent OR null. Guard like Fill._coerce_wire — never crash the
+            # whole quotes page on a one-sided quote (the normal illiquid case).
+            v = out.get(key)
+            if v is None:
+                return 0
+            try:
+                return _dollar_str_to_cents(v)
+            except (TypeError, ValueError):
+                return 0
+
+        def _ct(key: str) -> int:
+            v = out.get(key)
+            if v is None:
+                return 0
+            try:
+                return int(float(v))
+            except (TypeError, ValueError):
+                return 0
+
+        if "yes_bid_cents" not in out:
+            out["yes_bid_cents"] = _bid("yes_bid_dollars")
+        if "no_bid_cents" not in out:
+            out["no_bid_cents"] = _bid("no_bid_dollars")
         # *_contracts_fp are fractional-contract strings ("71.00"); floor to whole.
-        if "yes_contracts" not in out and "yes_contracts_fp" in out:
-            out["yes_contracts"] = int(float(out["yes_contracts_fp"]))
-        if "no_contracts" not in out and "no_contracts_fp" in out:
-            out["no_contracts"] = int(float(out["no_contracts_fp"]))
+        if "yes_contracts" not in out:
+            out["yes_contracts"] = _ct("yes_contracts_fp")
+        if "no_contracts" not in out:
+            out["no_contracts"] = _ct("no_contracts_fp")
         return out
 
 

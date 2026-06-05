@@ -51,7 +51,7 @@ export default function ComboSlip({
   onAccept: (quote: Quote, side: 'yes' | 'no') => void
   accepting: boolean
   acceptError: string | null
-  accepted: { bet_id: number; quantity: number; entry_price_cents: number; stake_cents: number } | null
+  accepted: { accepted: boolean; side: 'yes' | 'no'; count: number; note: string } | null
 }) {
   const estPrice = estimateComboPriceCents(legs.map((l) => l.price_cents))
   const countN = Number(count)
@@ -148,8 +148,7 @@ export default function ComboSlip({
         {acceptError && <ErrBox>{acceptError}</ErrBox>}
         {accepted && (
           <div className="rounded border border-gain/40 bg-gain/5 px-3 py-2 text-xs text-gain">
-            Placed — bet #{accepted.bet_id}: {accepted.quantity} ×{' '}
-            {accepted.entry_price_cents}¢, stake {formatDollars(accepted.stake_cents)}
+            Accepted {accepted.count} {accepted.side.toUpperCase()}. {accepted.note}
           </div>
         )}
       </div>

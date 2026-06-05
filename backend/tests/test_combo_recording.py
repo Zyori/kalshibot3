@@ -22,15 +22,32 @@ from sqlalchemy.pool import StaticPool
 from src.core.db import Base
 from src.core.types import BetSide, BetSource, BetStatus, Sport, Strategy
 from src.kalshi.schemas import Order
-from src.models import Bet, BetFill, ComboLeg, Market
+from src.kalshi.ws_wire import Fill, FillPayload
+from src.models import Bet, BetFill, ComboLeg, Market, PendingCombo
 from src.services.bet_service import (
     ComboLegInput,
     record_external_combo,
+    record_fill,
     record_placed_order,
     settle_bets_for_market,
 )
 
+
 COMBO_TICKER = "KXMVESPORTSMULTIGAMEEXTENDED-S202662EADA40D40-43319250880"
+
+
+def _combo_fill(*, order_id: str, price_cents: int, qty: int, ticker: str = COMBO_TICKER) -> Fill:
+    """A WS buy fill on a combo ticker (the async RFQ fill)."""
+    yes_p = price_cents
+    return Fill(
+        type="fill", sid=1,
+        msg=FillPayload(
+            trade_id=f"t-{order_id}", order_id=order_id, ticker=ticker,
+            side="yes", action="buy", count_centi=qty * 100,
+            yes_price_cents=yes_p, no_price_cents=100 - yes_p,
+            is_taker=True, ts=datetime.now(timezone.utc),
+        ),
+    )
 
 
 @pytest_asyncio.fixture
@@ -298,3 +315,77 @@ async def test_combo_settles_from_a_real_settlement_row(session: AsyncSession):
     await session.refresh(bet)
     assert bet.status == BetStatus.WON
     assert bet.pnl_cents == (100 - 17) * 95
+
+
+# === RFQ fill-driven recording: the combo bet is created when the async fill
+# lands, using legs stashed in pending_combo at accept time. ===
+
+
+async def _stash_pending(session: AsyncSession, *, count: int = 10) -> None:
+    session.add(PendingCombo(
+        combo_ticker=COMBO_TICKER, side="yes", count=count,
+        legs_json=[
+            {"leg_ticker": "KXINTLFRIENDLYGAME-26JUN05CANIRL-CAN",
+             "leg_event_ticker": "KXINTLFRIENDLYGAME-26JUN05CANIRL",
+             "leg_title": None, "side": "yes"},
+            {"leg_ticker": "KXINTLFRIENDLYGAME-26JUN05GEOBHR-GEO",
+             "leg_event_ticker": "KXINTLFRIENDLYGAME-26JUN05GEOBHR",
+             "leg_title": None, "side": "yes"},
+        ],
+        strategy="lock_parlay", confidence="medium", timing="pre_match",
+        tags_json=["rfq"], human_reasoning="test parlay",
+    ))
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_rfq_fill_creates_combo_bet_from_pending(session: AsyncSession):
+    """A combo buy fill with a matching pending_combo creates the bet keyed to
+    the fill's real order_id, source=HUMAN/verified, legs from the stash, and
+    consumes (deletes) the pending row."""
+    await _stash_pending(session, count=10)
+
+    captures = await record_fill(session, _combo_fill(order_id="ord-rfq", price_cents=18, qty=10))
+    await session.flush()
+
+    bet = (await session.execute(
+        select(Bet).where(Bet.kalshi_order_id == "ord-rfq")
+    )).scalar_one()
+    assert bet.sport == Sport.COMBO
+    assert bet.source == BetSource.HUMAN  # placed through the app, not external
+    assert bet.verified is True
+    assert bet.side == BetSide.YES
+    assert bet.entry_price_cents == 18  # from the fill
+    assert bet.strategy == Strategy.LOCK_PARLAY
+    assert bet.tags == ["rfq"]
+    # The fill attached + entry recorded.
+    from src.core.types import SnapshotPhase
+    assert captures == [(bet.id, SnapshotPhase.ENTRY)]
+    legs = (await session.execute(
+        select(ComboLeg).where(ComboLeg.bet_id == bet.id)
+    )).scalars().all()
+    assert len(legs) == 2
+    # Pending row consumed.
+    assert await session.scalar(select(func.count(PendingCombo.id))) == 0
+
+
+@pytest.mark.asyncio
+async def test_combo_fill_without_pending_is_dropped(session: AsyncSession):
+    """A combo buy fill with NO pending_combo (and no existing bet) is dropped —
+    we never invent a bet for a combo we didn't accept (isolation invariant)."""
+    captures = await record_fill(session, _combo_fill(order_id="ord-x", price_cents=18, qty=10))
+    assert captures == []
+    assert await session.scalar(select(func.count(Bet.id))) == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_combo_idempotent_on_replayed_fill(session: AsyncSession):
+    """The same fill replayed (WS reconnect) doesn't create a second bet."""
+    await _stash_pending(session, count=10)
+    fill = _combo_fill(order_id="ord-rfq", price_cents=18, qty=10)
+    await record_fill(session, fill)
+    await session.flush()
+    # Replay the identical fill — dedup on trade_id should no-op.
+    await record_fill(session, fill)
+    await session.flush()
+    assert await session.scalar(select(func.count(Bet.id))) == 1

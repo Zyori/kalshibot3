@@ -23,9 +23,11 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
+from src.models import PendingCombo
 from src.core.logging import get_logger
 from src.core.types import BetSide, BetSource, Confidence, Strategy, Timing, utc_iso
 from src.core.exceptions import KalshiError
@@ -354,24 +356,20 @@ async def request_quote(body: RequestQuoteBody) -> dict[str, Any]:
     (and, later, a WS push). No money moves — quotes are just offers until the
     user accepts one."""
     collection = await _discover_collection(body.legs)
+    selected = [
+        SelectedMarket(
+            market_ticker=l.market_ticker, event_ticker=l.event_ticker, side=l.side,
+        ) for l in body.legs
+    ]
     async with KalshiRestClient() as client:
         try:
             mk = await client.create_multivariate_market(
-                collection_ticker=collection,
-                legs=[SelectedMarket(
-                    market_ticker=l.market_ticker,
-                    event_ticker=l.event_ticker,
-                    side=l.side,
-                ) for l in body.legs],
+                collection_ticker=collection, legs=selected,
             )
             rfq = await client.create_rfq(CreateRfqRequest(
                 market_ticker=mk.market_ticker,
                 mve_collection_ticker=collection,
-                mve_selected_legs=[SelectedMarket(
-                    market_ticker=l.market_ticker,
-                    event_ticker=l.event_ticker,
-                    side=l.side,
-                ) for l in body.legs],
+                mve_selected_legs=selected,
                 contracts=body.contracts,
             ))
         except KalshiError as e:
@@ -410,6 +408,20 @@ async def get_quotes(rfq_id: str) -> dict[str, Any]:
     return {"rfq_id": rfq_id, "quotes": quotes}
 
 
+@router.delete("/combos/rfq/{rfq_id}")
+async def cancel_rfq(rfq_id: str) -> dict[str, Any]:
+    """Cancel an open RFQ the user abandoned (changed legs, navigated away).
+    Keeps us under Kalshi's open-RFQ cap and gives makers a clean close. Best
+    effort — a Kalshi error here isn't fatal (the RFQ expires on its own)."""
+    async with KalshiRestClient() as client:
+        try:
+            await client.delete_rfq(rfq_id)
+        except KalshiError as e:
+            log.info("combo_rfq_cancel_failed", rfq_id=rfq_id, error=str(e)[:120])
+            return {"cancelled": False}
+    return {"cancelled": True}
+
+
 class AcceptQuoteBody(BaseModel):
     quote_id: str
     side: Literal["yes", "no"]
@@ -435,66 +447,80 @@ async def accept_quote(
     body: AcceptQuoteBody,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Accept a maker's quote — this is the order. Human-confirmed (no
-    autonomous trading): refused unless acknowledged. Accept then confirm starts
-    the execution timer; the resulting fill flows through the normal WS fill
-    path. We record the combo bet here from the accepted quote so the ledger has
-    it immediately; the fill's fee/exact price reconcile in via fills_sync, the
-    same as every other bet."""
+    """Accept a maker's quote — the human-confirmed order (refused unless
+    acknowledged). We call accept ONLY: the MAKER confirms next, then Kalshi's
+    execution timer fills the order async on the WS fill channel.
+
+    No bet is recorded here (accept returns no order_id, and the fill may never
+    happen if the maker doesn't confirm). Instead we stash the legs + metadata
+    in pending_combo; when the real fill lands, record_fill creates the combo
+    bet keyed to the fill's order_id with the real price/fees. This keeps the
+    money record server-authoritative and avoids phantom bets."""
     if not body.acknowledged:
         raise HTTPException(
             409, detail={"reasons": ["Accepting a quote must be confirmed by you."]}
         )
     if not is_combo_ticker(body.ticker):
         raise HTTPException(400, f"{body.ticker} is not a combo ticker")
+    # Per-leg isolation on the money path — same guard as /rfq and /place.
+    _validate_sports_legs(body.legs)
 
     async with KalshiRestClient() as client:
         try:
             await client.accept_quote(body.quote_id)
-            await client.confirm_quote(body.quote_id)
         except KalshiError as e:
             log.warning("combo_accept_kalshi_error", quote_id=body.quote_id, error=str(e))
             raise HTTPException(502, f"kalshi: {str(e)[:160]}") from e
 
-    bet = await record_external_combo(
-        session,
-        ticker=body.ticker,
-        side=BetSide(body.side),
-        entry_price_cents=body.price_cents,
-        quantity=body.count,
-        legs=[ComboLegInput(
-            leg_ticker=l.market_ticker, leg_event_ticker=l.event_ticker,
-            leg_title=None, side=l.side,
-        ) for l in body.legs],
-        placed_at=datetime.now(timezone.utc),
-        strategy=body.strategy,
-        confidence=body.confidence,
-        timing=body.timing,
-        human_reasoning=body.human_reasoning,
-        tags=body.tags,
+    # Stash the legs for the async fill. Upsert on the unique combo_ticker so a
+    # re-accept of the same combo updates rather than violating the constraint.
+    existing = await session.scalar(
+        select(PendingCombo).where(PendingCombo.combo_ticker == body.ticker)
     )
+    legs_json = [
+        {"leg_ticker": l.market_ticker, "leg_event_ticker": l.event_ticker,
+         "leg_title": None, "side": l.side}
+        for l in body.legs
+    ]
+    if existing is not None:
+        existing.side = body.side
+        existing.count = body.count
+        existing.legs_json = legs_json
+        existing.strategy = body.strategy.value
+        existing.confidence = body.confidence.value
+        existing.timing = body.timing.value
+        existing.tags_json = body.tags
+        existing.human_reasoning = body.human_reasoning
+    else:
+        session.add(PendingCombo(
+            combo_ticker=body.ticker,
+            side=body.side,
+            count=body.count,
+            legs_json=legs_json,
+            strategy=body.strategy.value,
+            confidence=body.confidence.value,
+            timing=body.timing.value,
+            tags_json=body.tags,
+            human_reasoning=body.human_reasoning,
+        ))
     await session.commit()
     return {
-        "bet_id": bet.id,
+        "accepted": True,
         "ticker": body.ticker,
-        "side": bet.side,
-        "entry_price_cents": bet.entry_price_cents,
-        "quantity": bet.quantity,
-        "stake_cents": bet.stake_cents,
+        "side": body.side,
+        "count": body.count,
         "leg_count": len(body.legs),
+        "note": "Quote accepted. The order fills once the maker confirms; it "
+                "appears in your ledger when it fills.",
     }
 
 
-async def _discover_collection(legs: list[LegInput]) -> str:
-    """Validate every leg is an in-scope sports market, then find the
-    multivariate collection that hosts them (by the first leg's event).
-
-    Per-leg isolation (defense in depth): the order only ever lands on the
-    combo ticker, but we refuse a combo whose legs aren't all sports markets
-    app-side rather than trusting Kalshi — a crafted out-of-scope leg
-    (politics/weather/crypto) must never reach the place path. Raises 422 if
-    a leg is out of scope or no sports collection contains the first leg.
-    """
+def _validate_sports_legs(legs: list[LegInput]) -> None:
+    """Per-leg cross-market isolation (defense in depth): refuse a combo whose
+    legs aren't all sports markets app-side rather than trusting Kalshi — a
+    crafted out-of-scope leg (politics/weather/crypto) must never reach a path
+    that places an order. Used by every combo write path (rfq, place, accept).
+    Raises 422 if any leg is out of scope."""
     for leg in legs:
         if not (is_soccer_ticker(leg.market_ticker)
                 or is_sports_leg_ticker(leg.market_ticker)):
@@ -503,6 +529,14 @@ async def _discover_collection(legs: list[LegInput]) -> str:
                 f"leg {leg.market_ticker} is not a sports market — combos may "
                 "only bundle sports legs (soccer, NBA, NFL, NHL, MLB, UFC).",
             )
+
+
+async def _discover_collection(legs: list[LegInput]) -> str:
+    """Validate every leg is an in-scope sports market, then find the
+    multivariate collection that hosts them (by the first leg's event). Raises
+    422 if a leg is out of scope or no sports collection contains the first leg.
+    """
+    _validate_sports_legs(legs)
     async with KalshiRestClient() as client:
         try:
             collection = await client.find_collection_for_event(legs[0].event_ticker)
