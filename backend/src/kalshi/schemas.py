@@ -338,7 +338,13 @@ class Settlement(WireModelLoose):
     """
 
     ticker: str
-    market_result: Literal["yes", "no", ""] = ""
+    market_result: Literal["yes", "no", "scalar", ""] = ""
+    """Kalshi sends `scalar` for markets it didn't resolve to a clean yes/no
+    (3-way moneylines, and combo/MVE markets). The field MUST accept it: one
+    scalar row used to fail validation for the whole settlements page, killing
+    the settlement sweep for every ticker in that batch. `settlement_value_cents`
+    maps it to None, and the sweeper skips None and retries — the value comes
+    from the position going to zero, not from this field."""
     yes_count: int = Field(default=0, ge=0)
     no_count: int = Field(default=0, ge=0)
     revenue: int = Field(default=0)
