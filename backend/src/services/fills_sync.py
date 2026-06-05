@@ -75,6 +75,7 @@ async def _ingest_rest_fill(
         # committed the Bet was dropped from the WS path; but if a row
         # somehow exists with bet_id=NULL and a Bet now matches order_id,
         # bind it so the bet's aggregates pick up the fill.
+        newly_bound: set[int] = set()
         for row in rows:
             if row.bet_id is None and row.action == "buy":
                 bet = await session.scalar(
@@ -82,6 +83,12 @@ async def _ingest_rest_fill(
                 )
                 if bet is not None:
                     row.bet_id = bet.id
+                    # Force a fee recompute for this bet even if the fee value
+                    # below is unchanged: binding the row to the bet is itself
+                    # the change the bet's aggregate must pick up. Without this,
+                    # an already-fee'd fill that gets back-linked leaves
+                    # bet.entry_fees_cents stale at 0.
+                    newly_bound.add(bet.id)
 
         # Pro-rate the fee. Use largest-remainder rounding so cents sum
         # back to the original fee exactly (no off-by-one drift).
@@ -96,7 +103,7 @@ async def _ingest_rest_fill(
         # Distribute the leftover cents to rows with the highest remainder.
         leftover = rest_fill.fee_cents - running
         allocations.sort(key=lambda x: x[2], reverse=True)
-        affected: set[int] = set()
+        affected: set[int] = set(newly_bound)
         synced_at = datetime.now(timezone.utc)
         for idx, (row, base, _) in enumerate(allocations):
             new_fee = base + (1 if idx < leftover else 0)
