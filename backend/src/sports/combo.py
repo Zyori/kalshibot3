@@ -28,7 +28,11 @@ from __future__ import annotations
 _COMBO_FAMILY_STEM = "KXMVE"
 
 
-_CROSS_CATEGORY_PREFIX = "KXMVECROSSCATEGORY"
+# The ONLY MVE series we place orders on: the multi-game sports parlay. Every
+# leg of it is a sports market, so per-leg isolation is guaranteed. Any other
+# MVE series (KXMVECROSSCATEGORY, or a future family member) can bundle a
+# non-sports leg, so it's recognized as a combo but never placeable.
+_PLACEABLE_SPORTS_SERIES = "KXMVESPORTSMULTIGAMEEXTENDED"
 
 
 def is_combo_ticker(ticker: str) -> bool:
@@ -42,14 +46,14 @@ def is_combo_ticker(ticker: str) -> bool:
     return ticker.startswith(_COMBO_FAMILY_STEM)
 
 
-def is_cross_category_ticker(ticker: str) -> bool:
-    """True for a KXMVECROSSCATEGORY combo — one that can bundle legs across
-    categories (a sports leg + a politics/weather leg). The PLACE path refuses
-    these: we can't guarantee per-leg isolation when the client supplies the
-    legs and a non-sports leg may be hidden in the materialized market. (We
-    still RECOGNIZE them as combos for the ledger/firewall — recognition is not
-    permission to place.)"""
-    return ticker.startswith(_CROSS_CATEGORY_PREFIX)
+def is_placeable_sports_combo(ticker: str) -> bool:
+    """True only for the sports multi-game parlay series — the one MVE family
+    whose every leg is a sports market. The PLACE/ACCEPT path requires this: an
+    ALLOWLIST, not a blocklist, so a new MVE series that could bundle a
+    non-sports leg is refused by default rather than slipping through. (Combos
+    are still RECOGNIZED via is_combo_ticker for the ledger/firewall —
+    recognition is not permission to place.)"""
+    return ticker.startswith(_PLACEABLE_SPORTS_SERIES)
 
 
 # Sports series that may appear as combo LEGS. A leg is a single-game/prop

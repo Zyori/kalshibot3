@@ -20,7 +20,15 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import StaticPool
 
 from src.core.db import Base
-from src.core.types import BetSide, BetSource, BetStatus, Sport, Strategy
+from src.core.types import (
+    BetSide,
+    BetSource,
+    BetStatus,
+    Confidence,
+    Sport,
+    Strategy,
+    Timing,
+)
 from src.kalshi.schemas import Order
 from src.kalshi.ws_wire import Fill, FillPayload
 from src.models import Bet, BetFill, ComboLeg, Market, PendingCombo
@@ -29,6 +37,7 @@ from src.services.bet_service import (
     record_external_combo,
     record_fill,
     record_placed_order,
+    recompute_bet_from_fills,
     settle_bets_for_market,
 )
 
@@ -451,3 +460,104 @@ async def test_bad_enum_in_pending_defaults_not_drops(session: AsyncSession):
     assert bet.strategy == Strategy.MANUAL  # safe default, not a crash
     assert bet.quantity == 10
     assert captures  # the fill was recorded, not lost
+
+
+@pytest.mark.asyncio
+async def test_partial_fill_survives_recompute(session: AsyncSession):
+    """The self-revert bug: record_fill set quantity from the fill, but a later
+    recompute_bet_from_fills (run by fills_sync seconds after every fill) used
+    quantity*100 for remaining_centi — re-inflating a partial fill. Both must
+    now agree via _ordered_centi. Fill 62 of 75, then recompute, assert 62."""
+    await _stash_pending(session, count=75)
+    await record_fill(session, _combo_fill(order_id="ord-rc", price_cents=18, qty=62))
+    await session.flush()
+    bet = (await session.execute(
+        select(Bet).where(Bet.kalshi_order_id == "ord-rc")
+    )).scalar_one()
+    assert bet.quantity == 62 and bet.remaining_quantity_centi == 6200
+
+    # fills_sync back-links/fees → calls recompute. Must NOT re-inflate to 75.
+    await recompute_bet_from_fills(session, bet=bet)
+    await session.flush()
+    assert bet.quantity == 62
+    assert bet.remaining_quantity_centi == 6200
+    assert bet.remaining_quantity == 62
+
+
+@pytest.mark.asyncio
+async def test_fractional_centi_fill_not_floored_away(session: AsyncSession):
+    """A sub-contract fee-tier split (e.g. 6297 centi = 62.97 contracts) must
+    keep its exact centi through a recompute, not round to a whole-contract
+    quantity*100 that loses the fraction."""
+    await _stash_pending(session, count=75)
+    f = _combo_fill(order_id="ord-frac", price_cents=18, qty=63)
+    f.msg.count_centi = 6297  # 62.97 contracts
+    await record_fill(session, f)
+    await session.flush()
+    bet = (await session.execute(
+        select(Bet).where(Bet.kalshi_order_id == "ord-frac")
+    )).scalar_one()
+    await recompute_bet_from_fills(session, bet=bet)
+    await session.flush()
+    # Exact centi preserved; not re-derived from a floored quantity*100.
+    assert bet.remaining_quantity_centi == 6297
+
+
+@pytest.mark.asyncio
+async def test_placed_limit_combo_quantity_not_shrunk_by_partial_fill(session: AsyncSession):
+    """A /combos/place resting-LIMIT combo (has a client_order_id) fills its
+    remainder later — its quantity must stay the ORDERED count, not shrink to a
+    partial fill. _is_rfq_combo must exclude it (client_order_id is not None)."""
+    market = Market(
+        sport=Sport.COMBO, game_id=None, kalshi_ticker=COMBO_TICKER,
+        market_type="combo", title=COMBO_TICKER, yes_price_cents=None,
+        no_price_cents=None, volume=None, close_time=None, status="active",
+        settlement=None, settlement_detected_at=None,
+    )
+    session.add(market)
+    await session.flush()
+    # Placed limit combo: real client_order_id, kalshi_order_id, ordered 100.
+    bet = Bet(
+        sport=Sport.COMBO, market_id=market.id, side=BetSide.YES,
+        kalshi_order_id="ord-limit", client_order_id="cid-limit",
+        entry_price_cents=18, quantity=100, remaining_quantity=100,
+        remaining_quantity_centi=10000, stake_cents=1800, status=BetStatus.OPEN,
+        source=BetSource.HUMAN, strategy=Strategy.LOCK_PARLAY,
+        confidence=Confidence.MEDIUM, timing=Timing.PRE_MATCH, verified=True,
+        version=1, placed_at=datetime.now(timezone.utc),
+    )
+    session.add(bet)
+    await session.flush()
+    # Only 30 fill so far; remainder rests.
+    session.add(BetFill(
+        bet_id=bet.id, trade_id="t-lim", order_id="ord-limit",
+        ticker=COMBO_TICKER, side="yes", action="buy",
+        price_cents=18, quantity_centi=3000, fee_cents=0,
+    ))
+    await session.flush()
+    await recompute_bet_from_fills(session, bet=bet)
+    await session.flush()
+    # Ordered quantity preserved (NOT shrunk to 30) — the 70 resting contracts
+    # are still tracked.
+    assert bet.quantity == 100
+    assert bet.remaining_quantity_centi == 10000
+
+
+def test_placeable_combo_allowlist():
+    """Only the sports multi-game parlay series is placeable; every other MVE
+    family (cross-category, hypothetical new series) is refused on the money
+    path — allowlist, not blocklist."""
+    from src.sports.combo import is_combo_ticker, is_placeable_sports_combo
+
+    sports = "KXMVESPORTSMULTIGAMEEXTENDED-S2026X-Y"
+    cross = "KXMVECROSSCATEGORY-S2026X-Y"
+    future = "KXMVESOMETHINGNEW-S2026X-Y"
+
+    # All three are recognized as combos (firewall/ledger).
+    assert is_combo_ticker(sports)
+    assert is_combo_ticker(cross)
+    assert is_combo_ticker(future)
+    # But only the sports series is placeable.
+    assert is_placeable_sports_combo(sports)
+    assert not is_placeable_sports_combo(cross)
+    assert not is_placeable_sports_combo(future)

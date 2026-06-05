@@ -46,7 +46,7 @@ from src.services.bet_service import (
 )
 from src.sports.combo import (
     is_combo_ticker,
-    is_cross_category_ticker,
+    is_placeable_sports_combo,
     is_sports_leg_ticker,
 )
 from src.sports.soccer import is_soccer_ticker
@@ -478,13 +478,14 @@ async def accept_quote(
         )
     if not is_combo_ticker(body.ticker):
         raise HTTPException(400, f"{body.ticker} is not a combo ticker")
-    if is_cross_category_ticker(body.ticker):
-        # Cross-category combos can bundle a non-sports leg Kalshi tracks but the
-        # client may omit from body.legs — validating body.legs wouldn't catch
-        # it. Refuse the whole class on the money path (isolation).
+    if not is_placeable_sports_combo(body.ticker):
+        # Allowlist: only the sports multi-game parlay series is placeable. Any
+        # other MVE family (cross-category, or a new series) can bundle a
+        # non-sports leg the client may omit from body.legs — validating
+        # body.legs wouldn't catch it. Refuse on the money path (isolation).
         raise HTTPException(
-            422, f"{body.ticker} is a cross-category combo — not supported "
-                 "(may bundle non-sports legs). Build a sports-only combo.",
+            422, f"{body.ticker} is not a sports parlay — only "
+                 "KXMVESPORTSMULTIGAMEEXTENDED combos can be placed here.",
         )
     # Per-leg isolation on the money path — same guard as /rfq and /place.
     _validate_sports_legs(body.legs)
@@ -524,19 +525,22 @@ async def accept_quote(
         ))
     await session.commit()
 
-    # 2) Now accept on Kalshi. If it fails, the order never placed — delete the
-    # stash so a later unrelated fill on this ticker can't bind to it.
+    # 2) Now accept on Kalshi. On failure we deliberately LEAVE the stash, not
+    # delete it: a failure here is ambiguous — the client wraps a network
+    # timeout as KalshiError, and Kalshi may have accepted the quote even though
+    # we didn't get the response. Deleting the stash in that case would drop the
+    # real fill from the ledger (the exact loss we're guarding against). Leaving
+    # it is safe: if the order truly didn't place, the TTL sweep removes the
+    # stash within the window (no fill ever binds); if it did place, the fill
+    # binds correctly. The only cost is a stale stash lingering up to the TTL.
     async with KalshiRestClient() as client:
         try:
             await client.accept_quote(body.quote_id)
         except KalshiError as e:
-            log.warning("combo_accept_kalshi_error", quote_id=body.quote_id, error=str(e))
-            stash = await session.scalar(
-                select(PendingCombo).where(PendingCombo.combo_ticker == body.ticker)
+            log.warning(
+                "combo_accept_kalshi_error",
+                quote_id=body.quote_id, ticker=body.ticker, error=str(e),
             )
-            if stash is not None:
-                await session.delete(stash)
-                await session.commit()
             raise HTTPException(502, f"kalshi: {str(e)[:160]}") from e
 
     return {
