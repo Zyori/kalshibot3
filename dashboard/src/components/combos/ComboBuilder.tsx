@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { formatDollars } from '../../lib/format'
-import { COMBO_STRATEGIES, Field, Segmented, SIDES } from './ComboFields'
+import { COMBO_STRATEGIES, errorMessage, Field, Segmented, SIDES } from './ComboFields'
 
 type LegDraft = { market_ticker: string; event_ticker: string; side: 'yes' | 'no' }
 
@@ -10,10 +10,10 @@ type Materialized = {
   ticker: string
   event_ticker: string
   subtitle: string | null
-  yes_bid: number | null
-  yes_ask: number | null
-  no_bid: number | null
-  no_ask: number | null
+  yes_bid_cents: number | null
+  yes_ask_cents: number | null
+  no_bid_cents: number | null
+  no_ask_cents: number | null
   leg_count: number
 }
 
@@ -57,7 +57,7 @@ export default function ComboBuilder() {
       })
       if (!res.ok) {
         const d = await res.json().catch(() => null)
-        throw new Error(d?.detail ?? `Stage failed (${res.status})`)
+        throw new Error(errorMessage(d?.detail, `Stage failed (${res.status})`))
       }
       return res.json()
     },
@@ -81,8 +81,7 @@ export default function ComboBuilder() {
       })
       if (!res.ok) {
         const d = await res.json().catch(() => null)
-        const reason = d?.detail?.reasons?.[0] ?? d?.detail ?? `Place failed (${res.status})`
-        throw new Error(reason)
+        throw new Error(errorMessage(d?.detail, `Place failed (${res.status})`))
       }
       return res.json()
     },
@@ -194,9 +193,9 @@ export default function ComboBuilder() {
             <div className="mt-1 text-sm text-text">{staged.subtitle ?? staged.ticker}</div>
             <div className="mt-1 font-mono text-[11px] text-text-muted">{staged.ticker}</div>
             <div className="mt-1 font-mono text-xs text-text-muted">
-              book: yes {staged.yes_bid ?? '—'}/{staged.yes_ask ?? '—'} · no{' '}
-              {staged.no_bid ?? '—'}/{staged.no_ask ?? '—'}
-              {staged.yes_bid === null && staged.yes_ask === null && (
+              book: yes {staged.yes_bid_cents ?? '—'}/{staged.yes_ask_cents ?? '—'} · no{' '}
+              {staged.no_bid_cents ?? '—'}/{staged.no_ask_cents ?? '—'}
+              {staged.yes_bid_cents === null && staged.yes_ask_cents === null && (
                 <span className="ml-2 text-action">(no book yet — set a limit)</span>
               )}
             </div>

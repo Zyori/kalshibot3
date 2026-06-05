@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { formatDollars } from '../../lib/format'
-import { COMBO_STRATEGIES, Field, Segmented, SIDES } from './ComboFields'
+import { COMBO_STRATEGIES, errorMessage, Field, Segmented, SIDES } from './ComboFields'
 
 type ComboLogResult = {
   bet_id: number
@@ -43,8 +43,8 @@ export default function ComboLogForm() {
         }),
       })
       if (!res.ok) {
-        const detail = await res.json().catch(() => null)
-        throw new Error(detail?.detail ?? `Failed (${res.status})`)
+        const d = await res.json().catch(() => null)
+        throw new Error(errorMessage(d?.detail, `Failed (${res.status})`))
       }
       return res.json()
     },

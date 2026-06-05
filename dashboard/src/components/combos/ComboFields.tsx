@@ -48,3 +48,24 @@ export function Segmented({
 
 export const COMBO_STRATEGIES = ['lock_parlay', 'moon_parlay'] as const
 export const SIDES = ['yes', 'no'] as const
+
+/**
+ * Pull a human-readable message out of a FastAPI `detail`, which may be a
+ * string, a {reasons:[...]} object, a {error:"..."} object, or a 422 validation
+ * array [{msg,...}]. Never returns "[object Object]".
+ */
+export function errorMessage(detail: unknown, fallback: string): string {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    const first = detail[0]
+    if (first && typeof first.msg === 'string') return first.msg
+    return fallback
+  }
+  if (detail && typeof detail === 'object') {
+    const d = detail as Record<string, unknown>
+    const reason = Array.isArray(d.reasons) ? d.reasons[0] : undefined
+    if (typeof reason === 'string') return reason
+    if (typeof d.error === 'string') return d.error
+  }
+  return fallback
+}

@@ -34,7 +34,16 @@ from src.kalshi.live_state import LiveState, MarketBook
 from src.kalshi.rest import KalshiRestClient
 from src.kalshi.schemas import PortfolioPosition
 from src.models import Bet, Market, Position
+from src.sports.combo import is_combo_ticker
 from src.sports.tradeable import is_tradeable_ticker
+
+
+def _ticker_sport(ticker: str) -> Sport:
+    """Sport for a tracked ticker. Combos are their own category; everything
+    else this app tracks is soccer. Mirrors bet_service._ticker_to_sport so a
+    combo position never gets mislabeled soccer (which would pollute the
+    soccer-only stats Sport.COMBO exists to keep clean)."""
+    return Sport.COMBO if is_combo_ticker(ticker) else Sport.SOCCER
 
 log = get_logger(__name__)
 
@@ -49,10 +58,10 @@ async def _get_or_create_market_id(session: AsyncSession, *, ticker: str) -> int
         return existing.id
 
     m = Market(
-        sport=Sport.SOCCER,
+        sport=_ticker_sport(ticker),
         game_id=None,
         kalshi_ticker=ticker,
-        market_type="match_result",
+        market_type="combo" if is_combo_ticker(ticker) else "match_result",
         title=ticker,
         yes_price_cents=None,
         no_price_cents=None,
@@ -147,7 +156,7 @@ async def _upsert_position(
     cost_basis = abs(p.market_exposure)
     if existing is None:
         new_row = Position(
-            sport=Sport.SOCCER,
+            sport=_ticker_sport(p.ticker),
             kalshi_ticker=p.ticker,
             market_id=market_id,
             side=side,

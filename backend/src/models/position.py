@@ -67,7 +67,7 @@ class Position(Base):
     __table_args__ = (
         # Single canonical row per (market, side) — UPSERT against this constraint.
         UniqueConstraint("market_id", "side", name="uq_position_market_side"),
-        CheckConstraint("sport IN ('soccer', 'nfl')", name="ck_position_sport"),
+        CheckConstraint("sport IN ('soccer', 'nfl', 'combo')", name="ck_position_sport"),
         CheckConstraint("quantity >= 0", name="ck_position_quantity_nonneg"),
         CheckConstraint(
             "avg_entry_price_cents >= 1 AND avg_entry_price_cents <= 99",

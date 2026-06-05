@@ -50,6 +50,13 @@ from src.kalshi.schemas import (
 
 log = get_logger(__name__)
 
+# event_ticker -> (collection_ticker, expiry_monotonic). Caches the combo
+# collection lookup so the full ~1400-collection scan doesn't run on every
+# materialize AND place. Collections change on Kalshi's weekly schedule, so a
+# 1h TTL is safe and an event's collection is stable within a session.
+_COLLECTION_CACHE: dict[str, tuple[str, float]] = {}
+_COLLECTION_TTL_S = 3600.0
+
 
 class TokenBucket:
     """Async token bucket. Drains at `rate` tokens/sec, capped at `capacity`.
@@ -332,7 +339,15 @@ class KalshiRestClient:
         against each collection's associated_event_tickers. Sports combos live
         under the KXMVESPORTSMULTIGAMEEXTENDED-* collections; we filter to those
         to bound the scan.
+
+        Cached per event_ticker with a 1h TTL so the ~1400-collection scan runs
+        at most once per event per hour — the materialize-then-place flow would
+        otherwise scan twice per combo.
         """
+        cached = _COLLECTION_CACHE.get(event_ticker)
+        if cached is not None and cached[1] > time.monotonic():
+            return cached[0]
+
         cursor: str | None = None
         while True:
             params: dict[str, Any] = {"limit": 200}
@@ -346,6 +361,9 @@ class KalshiRestClient:
                 if not ct.startswith("KXMVESPORTSMULTIGAMEEXTENDED"):
                     continue
                 if event_ticker in (c.get("associated_event_tickers") or []):
+                    _COLLECTION_CACHE[event_ticker] = (
+                        ct, time.monotonic() + _COLLECTION_TTL_S
+                    )
                     return ct
             cursor = data.get("cursor")
             if not cursor:

@@ -154,6 +154,15 @@ async def log_combo(
             "no fills found for this combo on your account; pass entry_price_cents "
             "and quantity explicitly to log it anyway",
         )
+    # A sub-contract fill (centi < 100) floor-divides to quantity 0; the Bet
+    # CHECK requires >= 1. Refuse with a clean 422 instead of letting the
+    # IntegrityError bubble up as a 500.
+    if quantity < 1:
+        raise HTTPException(
+            422,
+            f"combo resolved to {quantity} whole contracts (sub-contract fill); "
+            "pass quantity explicitly to log it.",
+        )
 
     bet = await record_external_combo(
         session,
@@ -215,10 +224,11 @@ async def materialize_combo(body: MaterializeBody) -> dict[str, Any]:
         "ticker": mk.market_ticker,
         "event_ticker": mk.event_ticker,
         "subtitle": m.yes_sub_title if m else None,
-        "yes_bid": m.yes_bid if m else None,
-        "yes_ask": m.yes_ask if m else None,
-        "no_bid": m.no_bid if m else None,
-        "no_ask": m.no_ask if m else None,
+        # _cents suffix per the project-wide price-field convention.
+        "yes_bid_cents": m.yes_bid if m else None,
+        "yes_ask_cents": m.yes_ask if m else None,
+        "no_bid_cents": m.no_bid if m else None,
+        "no_ask_cents": m.no_ask if m else None,
         "leg_count": len(body.legs),
     }
 
@@ -283,8 +293,14 @@ async def place_combo(
         try:
             resp = await client.place_order(req)
         except KalshiError as e:
+            # Include the materialized ticker so the user can recover (re-stage
+            # or log it) — the combo market exists on Kalshi even though the
+            # order didn't land. Materialize is idempotent, so retrying is safe.
             log.warning("combo_place_kalshi_error", ticker=mk.market_ticker, error=str(e))
-            raise HTTPException(502, f"kalshi: {str(e)[:160]}") from e
+            raise HTTPException(
+                502,
+                detail={"error": f"kalshi: {str(e)[:160]}", "combo_ticker": mk.market_ticker},
+            ) from e
 
     bet = await record_placed_order(
         session,
@@ -335,7 +351,11 @@ async def _discover_collection(legs: list[LegInput]) -> str:
                 "only bundle sports legs (soccer, NBA, NFL, NHL, MLB, UFC).",
             )
     async with KalshiRestClient() as client:
-        collection = await client.find_collection_for_event(legs[0].event_ticker)
+        try:
+            collection = await client.find_collection_for_event(legs[0].event_ticker)
+        except KalshiError as e:
+            # Surface as 502 like the rest of the route, not an unhandled 500.
+            raise HTTPException(502, f"collection lookup failed: {str(e)[:160]}") from e
     if collection is None:
         raise HTTPException(
             422,
