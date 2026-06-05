@@ -2,9 +2,31 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { formatDollars } from '../../lib/format'
-import { COMBO_STRATEGIES, errorMessage, Field, Segmented, SIDES } from './ComboFields'
+import {
+  COMBO_STRATEGIES,
+  type ComboStrategy,
+  errorMessage,
+  Field,
+  Segmented,
+  type Side,
+  SIDES,
+} from './ComboFields'
 
-type LegDraft = { market_ticker: string; event_ticker: string; side: 'yes' | 'no' }
+type LegDraft = {
+  id: string
+  market_ticker: string
+  event_ticker: string
+  side: Side
+}
+
+function emptyLeg(): LegDraft {
+  return { id: crypto.randomUUID(), market_ticker: '', event_ticker: '', side: 'yes' }
+}
+
+// The leg shape the API expects — LegDraft minus the client-only `id`.
+function toApiLeg(l: LegDraft) {
+  return { market_ticker: l.market_ticker, event_ticker: l.event_ticker, side: l.side }
+}
 
 type Materialized = {
   ticker: string
@@ -20,14 +42,11 @@ type Materialized = {
 type PlaceResult = {
   bet_id: number
   ticker: string
-  side: 'yes' | 'no'
+  side: Side
   entry_price_cents: number
   quantity: number
   stake_cents: number
-  leg_count: number
 }
-
-const EMPTY_LEG: LegDraft = { market_ticker: '', event_ticker: '', side: 'yes' }
 
 /**
  * Build a combo from legs and place it on Kalshi. Two steps, mirroring every
@@ -37,9 +56,9 @@ const EMPTY_LEG: LegDraft = { market_ticker: '', event_ticker: '', side: 'yes' }
  */
 export default function ComboBuilder() {
   const qc = useQueryClient()
-  const [legs, setLegs] = useState<LegDraft[]>([{ ...EMPTY_LEG }, { ...EMPTY_LEG }])
-  const [side, setSide] = useState<'yes' | 'no'>('yes')
-  const [strategy, setStrategy] = useState<string>('lock_parlay')
+  const [legs, setLegs] = useState<LegDraft[]>([emptyLeg(), emptyLeg()])
+  const [side, setSide] = useState<Side>('yes')
+  const [strategy, setStrategy] = useState<ComboStrategy>('lock_parlay')
   const [price, setPrice] = useState('')
   const [count, setCount] = useState('')
   const [why, setWhy] = useState('')
@@ -47,13 +66,14 @@ export default function ComboBuilder() {
 
   const filledLegs = legs.filter((l) => l.market_ticker.trim() && l.event_ticker.trim())
   const canStage = filledLegs.length >= 2
+  const apiLegs = filledLegs.map(toApiLeg)
 
   const stage = useMutation<Materialized, Error>({
     mutationFn: async () => {
       const res = await fetch('/api/combos/materialize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ legs: filledLegs }),
+        body: JSON.stringify({ legs: apiLegs }),
       })
       if (!res.ok) {
         const d = await res.json().catch(() => null)
@@ -70,7 +90,7 @@ export default function ComboBuilder() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          legs: filledLegs,
+          legs: apiLegs,
           side,
           price_cents: Number(price),
           count: Number(count),
@@ -90,7 +110,7 @@ export default function ComboBuilder() {
       qc.invalidateQueries({ queryKey: ['ledger_stats'] })
       qc.invalidateQueries({ queryKey: ['positions'] })
       setStaged(null)
-      setLegs([{ ...EMPTY_LEG }, { ...EMPTY_LEG }])
+      setLegs([emptyLeg(), emptyLeg()])
       setPrice('')
       setCount('')
       setWhy('')
@@ -119,7 +139,7 @@ export default function ComboBuilder() {
           Legs ({filledLegs.length})
         </div>
         {legs.map((leg, i) => (
-          <div key={i} className="grid grid-cols-[1fr_1fr_auto_auto] items-end gap-2">
+          <div key={leg.id} className="grid grid-cols-[1fr_1fr_auto_auto] items-end gap-2">
             <Field label={i === 0 ? 'Market ticker' : ''}>
               <input
                 value={leg.market_ticker}
@@ -140,9 +160,9 @@ export default function ComboBuilder() {
             </Field>
             <div className="w-20">
               <Segmented
-                options={SIDES as readonly string[]}
+                options={SIDES}
                 value={leg.side}
-                onChange={(v) => updateLeg(i, { side: v as 'yes' | 'no' })}
+                onChange={(v) => updateLeg(i, { side: v })}
               />
             </div>
             <button
@@ -162,7 +182,7 @@ export default function ComboBuilder() {
         {legs.length < 8 && (
           <button
             type="button"
-            onClick={() => setLegs((prev) => [...prev, { ...EMPTY_LEG }])}
+            onClick={() => setLegs((prev) => [...prev, emptyLeg()])}
             className="text-xs text-action hover:underline"
           >
             + Add leg
@@ -203,15 +223,11 @@ export default function ComboBuilder() {
 
           <div className="grid grid-cols-2 gap-4">
             <Field label="Side">
-              <Segmented
-                options={SIDES as readonly string[]}
-                value={side}
-                onChange={(v) => setSide(v as 'yes' | 'no')}
-              />
+              <Segmented options={SIDES} value={side} onChange={setSide} />
             </Field>
             <Field label="Strategy">
               <Segmented
-                options={COMBO_STRATEGIES as readonly string[]}
+                options={COMBO_STRATEGIES}
                 value={strategy}
                 onChange={setStrategy}
               />

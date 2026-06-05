@@ -17,14 +17,14 @@ export function Field({
   )
 }
 
-export function Segmented({
+export function Segmented<T extends string>({
   options,
   value,
   onChange,
 }: {
-  options: readonly string[]
-  value: string
-  onChange: (v: string) => void
+  options: readonly T[]
+  value: T
+  onChange: (v: T) => void
 }) {
   return (
     <div className="flex gap-1">
@@ -48,6 +48,9 @@ export function Segmented({
 
 export const COMBO_STRATEGIES = ['lock_parlay', 'moon_parlay'] as const
 export const SIDES = ['yes', 'no'] as const
+
+export type ComboStrategy = (typeof COMBO_STRATEGIES)[number]
+export type Side = (typeof SIDES)[number]
 
 /**
  * Pull a human-readable message out of a FastAPI `detail`, which may be a

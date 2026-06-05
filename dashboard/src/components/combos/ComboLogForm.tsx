@@ -2,7 +2,15 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { formatDollars } from '../../lib/format'
-import { COMBO_STRATEGIES, errorMessage, Field, Segmented, SIDES } from './ComboFields'
+import {
+  COMBO_STRATEGIES,
+  type ComboStrategy,
+  errorMessage,
+  Field,
+  Segmented,
+  type Side,
+  SIDES,
+} from './ComboFields'
 
 type ComboLogResult = {
   bet_id: number
@@ -24,8 +32,8 @@ type ComboLogResult = {
 export default function ComboLogForm() {
   const qc = useQueryClient()
   const [ticker, setTicker] = useState('')
-  const [side, setSide] = useState<'yes' | 'no'>('yes')
-  const [strategy, setStrategy] = useState<string>('lock_parlay')
+  const [side, setSide] = useState<Side>('yes')
+  const [strategy, setStrategy] = useState<ComboStrategy>('lock_parlay')
   const [tags, setTags] = useState('')
   const [why, setWhy] = useState('')
 
@@ -83,15 +91,11 @@ export default function ComboLogForm() {
 
         <div className="grid grid-cols-2 gap-4">
           <Field label="Side">
-            <Segmented
-              options={SIDES as readonly string[]}
-              value={side}
-              onChange={(v) => setSide(v as 'yes' | 'no')}
-            />
+            <Segmented options={SIDES} value={side} onChange={setSide} />
           </Field>
           <Field label="Strategy">
             <Segmented
-              options={COMBO_STRATEGIES as readonly string[]}
+              options={COMBO_STRATEGIES}
               value={strategy}
               onChange={setStrategy}
             />

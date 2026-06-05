@@ -270,6 +270,27 @@ async def ledger_stats(
     )
 
 
+# Literal sub-path — declared before the /ledger/{bet_id}/... routes so it can
+# never be shadowed if a bare /ledger/{bet_id} route is ever added.
+@router.get("/ledger/tags")
+async def list_tags(
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, list[str]]:
+    """Distinct tag strings across all bets — autocomplete source for the
+    edit panel. Tags live inside a JSON column, so we flatten in Python
+    rather than reach for a DB-specific JSON operator."""
+    rows = (await session.execute(select(Bet.tags))).scalars().all()
+    seen: set[str] = set()
+    for row in rows:
+        if not row:
+            continue
+        # row is the JSON column value — a list[str], or None when unset.
+        for t in row:
+            if t and t.strip():
+                seen.add(t.strip())
+    return {"tags": sorted(seen)}
+
+
 async def compute_ledger_stats(
     session: AsyncSession,
     *,
@@ -614,20 +635,3 @@ async def edit_bet_metadata(
     )
 
 
-@router.get("/ledger/tags")
-async def list_tags(
-    session: AsyncSession = Depends(get_session),
-) -> dict[str, list[str]]:
-    """Distinct tag strings across all bets — autocomplete source for the
-    edit panel. Tags live inside a JSON column, so we flatten in Python
-    rather than reach for a DB-specific JSON operator."""
-    rows = (await session.execute(select(Bet.tags))).scalars().all()
-    seen: set[str] = set()
-    for row in rows:
-        if not row:
-            continue
-        # row is the JSON column value — a list[str], or None when unset.
-        for t in row:
-            if t and t.strip():
-                seen.add(t.strip())
-    return {"tags": sorted(seen)}

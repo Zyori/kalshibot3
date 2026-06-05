@@ -48,36 +48,50 @@ log = get_logger(__name__)
 
 
 class LegInput(BaseModel):
-    """One leg the builder selected: a single market + the side, with an
-    optional human label for the ledger (the builder knows it from the market)."""
+    """One leg the builder selected: a single market + the side."""
     market_ticker: str
     event_ticker: str
     side: Literal["yes", "no"]
-    title: str | None = None
+
+
+def _subtitle_titles(yes_sub_title: str | None, expected_count: int) -> list[str | None]:
+    """Decode a combo's yes_sub_title ("yes Canada,yes Georgia,…") into per-leg
+    human labels, in leg order.
+
+    Kalshi joins the labels with commas, so a label that itself contains a comma
+    would split into too many segments and misalign every following leg. We
+    guard against that: if the segment count doesn't match the leg count, we
+    return all-None rather than mislabel — the leg_ticker is always correct, so
+    a missing title degrades to showing the ticker, never the WRONG team.
+    """
+    if not yes_sub_title:
+        return [None] * expected_count
+    segs = [
+        seg.strip().removeprefix("yes ").removeprefix("no ").strip()
+        for seg in yes_sub_title.split(",")
+        if seg.strip()
+    ]
+    if len(segs) != expected_count:
+        return [None] * expected_count
+    return list(segs)
 
 
 def _materialized_legs(
     legs: list[LegInput], materialized: CreateMultivariateMarketResponse
 ) -> list[ComboLegInput]:
-    """Build combo_leg inputs from the builder's legs, preferring the human
-    labels Kalshi echoes back in yes_sub_title (same order as the legs) over the
-    builder-supplied titles."""
-    titles: list[str] = []
-    if materialized.market and materialized.market.yes_sub_title:
-        titles = [
-            seg.strip().removeprefix("yes ").removeprefix("no ").strip()
-            for seg in materialized.market.yes_sub_title.split(",")
-            if seg.strip()
-        ]
-    out: list[ComboLegInput] = []
-    for i, leg in enumerate(legs):
-        out.append(ComboLegInput(
+    """Build combo_leg inputs from the builder's legs, with the human labels
+    Kalshi echoes back in yes_sub_title (same order as the legs)."""
+    sub = materialized.market.yes_sub_title if materialized.market else None
+    titles = _subtitle_titles(sub, len(legs))
+    return [
+        ComboLegInput(
             leg_ticker=leg.market_ticker,
             leg_event_ticker=leg.event_ticker,
-            leg_title=(titles[i] if i < len(titles) else leg.title),
+            leg_title=titles[i],
             side=leg.side,
-        ))
-    return out
+        )
+        for i, leg in enumerate(legs)
+    ]
 
 
 class LogComboBody(BaseModel):
@@ -98,25 +112,18 @@ class LogComboBody(BaseModel):
 
 def _parse_legs(market: dict[str, Any]) -> list[ComboLegInput]:
     """Build leg inputs from a combo market payload: structured leg refs from
-    `mve_selected_legs`, human labels zipped from `yes_sub_title` (which lists
-    the legs in the same order, e.g. "yes Canada,yes Georgia,...")."""
+    `mve_selected_legs`, human labels from `yes_sub_title` (same leg order)."""
     raw_legs = market.get("mve_selected_legs") or []
-    sub = market.get("yes_sub_title") or ""
-    # "yes Canada,yes Georgia" -> ["Canada", "Georgia"]; drop the side prefix.
-    titles = [
-        seg.strip().removeprefix("yes ").removeprefix("no ").strip()
-        for seg in sub.split(",")
-        if seg.strip()
-    ]
-    legs: list[ComboLegInput] = []
-    for i, leg in enumerate(raw_legs):
-        legs.append(ComboLegInput(
+    titles = _subtitle_titles(market.get("yes_sub_title"), len(raw_legs))
+    return [
+        ComboLegInput(
             leg_ticker=leg.get("market_ticker"),
             leg_event_ticker=leg.get("event_ticker"),
-            leg_title=titles[i] if i < len(titles) else None,
+            leg_title=titles[i],
             side=leg.get("side"),
-        ))
-    return legs
+        )
+        for i, leg in enumerate(raw_legs)
+    ]
 
 
 @router.post("/combos")

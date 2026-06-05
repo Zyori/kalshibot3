@@ -128,6 +128,22 @@ async def test_relog_same_ticker_no_order_id_returns_same_bet(session: AsyncSess
     assert first.client_order_id == f"external-combo:{COMBO_TICKER}"
 
 
+def test_subtitle_titles_normal_and_comma_guard():
+    """yes_sub_title → per-leg labels; a comma inside a label must NOT misalign
+    the rest — it falls back to all-None (ticker shown) rather than wrong names."""
+    from src.api.routes.combos import _subtitle_titles
+
+    # Normal: 3 clean segments for 3 legs.
+    assert _subtitle_titles("yes Canada,yes Georgia,no Brazil", 3) == [
+        "Canada", "Georgia", "Brazil",
+    ]
+    # Count mismatch (a label with a comma would do this) → all None, never wrong.
+    assert _subtitle_titles("yes Trinidad, Tobago,yes Georgia", 2) == [None, None]
+    # Missing subtitle → all None of the right length.
+    assert _subtitle_titles(None, 2) == [None, None]
+    assert _subtitle_titles("", 3) == [None, None, None]
+
+
 def test_sports_leg_recognition():
     """Per-leg isolation guard: sports legs pass, out-of-scope legs don't."""
     from src.sports.combo import is_sports_leg_ticker
