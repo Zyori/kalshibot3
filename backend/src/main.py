@@ -26,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api import ws as ws_endpoint
 from src.api.routes import (
+    combos,
     events,
     futures,
     health,
@@ -166,6 +167,7 @@ app.include_router(markets.router, prefix="/api")
 app.include_router(orders.router, prefix="/api")
 app.include_router(positions.router, prefix="/api")
 app.include_router(ledger.router, prefix="/api")
+app.include_router(combos.router, prefix="/api")
 app.include_router(events.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
 app.include_router(partner.router, prefix="/api")

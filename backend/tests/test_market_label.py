@@ -4,10 +4,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from src.api.routes.ledger import _market_label
+from src.core.types import Sport
 
 
 def _bet(**kw) -> SimpleNamespace:
     base = dict(
+        sport=Sport.SOCCER,
         home_code="AUT", away_code="TUN", home_name="Austria", away_name="Tunisia",
         event_series="KXINTLFRIENDLYGAME", selection_code="AUT",
     )
@@ -47,3 +49,15 @@ def test_falls_back_to_ticker_when_no_codes():
 def test_no_codes_and_no_ticker_is_dash():
     b = _bet(home_code=None, away_code=None, event_series=None, selection_code=None)
     assert _market_label(b, None) == "—"
+
+
+def test_combo_renders_as_parlay_with_leg_count():
+    b = _bet(sport=Sport.COMBO, home_code=None, away_code=None,
+             event_series=None, selection_code=None)
+    assert _market_label(b, "KXMVE-RAW", leg_count=5) == "Parlay (5 legs)"
+
+
+def test_combo_without_legs_falls_back_to_ticker():
+    b = _bet(sport=Sport.COMBO, home_code=None, away_code=None,
+             event_series=None, selection_code=None)
+    assert _market_label(b, "KXMVE-RAW", leg_count=0) == "KXMVE-RAW"

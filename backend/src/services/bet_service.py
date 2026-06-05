@@ -23,6 +23,7 @@ Cross-market isolation: every write checks is_tradeable_ticker first.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -45,7 +46,7 @@ from src.core.types import (
 )
 from src.kalshi.schemas import Order
 from src.kalshi.ws_wire import Fill
-from src.models import Bet, BetFill, Market
+from src.models import Bet, BetFill, ComboLeg, Market
 from src.sports.combo import is_combo_ticker
 from src.sports.soccer import parse_market_ticker
 from src.sports.tradeable import is_tradeable_ticker
@@ -297,6 +298,137 @@ async def record_placed_order(
         side=order.side,
         count=requested_count,
         price_cents=entry_price,
+    )
+    return bet
+
+
+@dataclass(frozen=True)
+class ComboLegInput:
+    """One leg of a combo, as hydrated from Kalshi's mve_selected_legs +
+    yes_sub_title. Descriptive only — carries no money."""
+
+    leg_ticker: str | None
+    leg_event_ticker: str | None
+    leg_title: str | None
+    side: str | None
+
+
+async def record_external_combo(
+    session: AsyncSession,
+    *,
+    ticker: str,
+    side: BetSide,
+    entry_price_cents: int,
+    quantity: int,
+    legs: list[ComboLegInput],
+    placed_at: datetime,
+    strategy: Strategy = Strategy.LOCK_PARLAY,
+    confidence: Confidence = Confidence.MEDIUM,
+    timing: Timing = Timing.PRE_MATCH,
+    human_reasoning: str | None = None,
+    tags: list[str] | None = None,
+) -> Bet:
+    """Record a combo (multivariate / parlay) bet placed directly on kalshi.com.
+
+    A deliberate, user-initiated log entry — NOT auto-import. The user chose to
+    record this bet (see feedback_no_external_fill_reconciliation: the app never
+    silently pulls kalshi.com fills, but a logbook records what the user asks it
+    to). Marked source=EXTERNAL, verified=False.
+
+    The combo is one binary market, so the Bet carries all the money exactly
+    like any other bet; the legs are descriptive child rows. No bet_fill rows
+    are created — there's no WS fill to attach, and the entry/fees come from the
+    caller (hydrated from Kalshi's fills endpoint). Settlement flows through the
+    normal sweeper once the market resolves.
+
+    Idempotent on ticker: a combo already logged returns the existing bet
+    rather than duplicating it (combos have no client_order_id to dedupe on).
+    """
+    if not is_combo_ticker(ticker):
+        raise ValueError(f"not a combo ticker: {ticker}")
+
+    existing = await session.scalar(
+        select(Bet)
+        .where(Bet.market_id == select(Market.id).where(
+            Market.kalshi_ticker == ticker).scalar_subquery())
+        .where(Bet.source == BetSource.EXTERNAL)
+    )
+    if existing is not None:
+        log.info("combo_record_skipped_duplicate", ticker=ticker, bet_id=existing.id)
+        return existing
+
+    market_id = await _get_or_create_market(
+        session, ticker=ticker, market_type="combo"
+    )
+    bet = Bet(
+        sport=Sport.COMBO,
+        market_id=market_id,
+        suggestion_id=None,
+        parent_bet_id=None,
+        kalshi_order_id=None,
+        client_order_id=None,
+        side=side,
+        entry_price_cents=entry_price_cents,
+        exit_price_cents=None,
+        quantity=quantity,
+        remaining_quantity=quantity,
+        remaining_quantity_centi=quantity * 100,
+        stake_cents=quantity * entry_price_cents,
+        pnl_cents=None,
+        realized_pnl_cents=None,
+        entry_fees_cents=0,
+        exit_fees_cents=0,
+        status=BetStatus.OPEN,
+        exit_type=None,
+        source=BetSource.EXTERNAL,
+        strategy=strategy,
+        confidence=confidence,
+        kelly_fraction_bps=None,
+        ai_probability_pct=None,
+        human_override_sizing=False,
+        human_override_direction=False,
+        human_reasoning=human_reasoning,
+        ai_reasoning=None,
+        timing=timing,
+        game_period=None,
+        game_clock=None,
+        tags=tags,
+        # No per-game codes for a combo — parse_market_ticker returns None and
+        # the ledger falls back to a "Parlay (N legs)" label.
+        event_series=None,
+        home_code=None,
+        away_code=None,
+        home_name=None,
+        away_name=None,
+        selection_code=None,
+        verified=False,
+        version=1,
+        placed_at=placed_at,
+        settled_at=None,
+    )
+    session.add(bet)
+    await session.flush()
+
+    for i, leg in enumerate(legs):
+        session.add(ComboLeg(
+            bet_id=bet.id,
+            leg_index=i,
+            leg_ticker=leg.leg_ticker,
+            leg_event_ticker=leg.leg_event_ticker,
+            leg_title=leg.leg_title,
+            side=leg.side,
+            result=None,
+        ))
+    await session.flush()
+
+    log.info(
+        "combo_recorded",
+        bet_id=bet.id,
+        ticker=ticker,
+        side=side,
+        entry_price_cents=entry_price_cents,
+        quantity=quantity,
+        leg_count=len(legs),
     )
     return bet
 
@@ -830,13 +962,18 @@ async def settle_bets_for_market(
     return transitioned
 
 
-async def _get_or_create_market(session: AsyncSession, *, ticker: str) -> int:
+async def _get_or_create_market(
+    session: AsyncSession, *, ticker: str, market_type: str = "match_result"
+) -> int:
     """Return market_id for a ticker, inserting a minimal row if absent.
 
     BET.market_id is NOT NULL. If the discovery poller hasn't created this
     market's row yet (because we're hitting Kalshi directly via paste-box),
     insert a placeholder so the FK constraint is satisfied. The discovery
     cycle will UPDATE the row with prices and metadata when it next runs.
+
+    `market_type` defaults to "match_result" (the per-game case); combo
+    recording passes "combo" since a multivariate market isn't a match result.
     """
     from src.core.types import MarketStatus
     from src.models import Market
@@ -849,7 +986,7 @@ async def _get_or_create_market(session: AsyncSession, *, ticker: str) -> int:
         sport=_ticker_to_sport(ticker),
         game_id=None,
         kalshi_ticker=ticker,
-        market_type="match_result",
+        market_type=market_type,
         title=ticker,  # better title is filled in by the discovery poller
         yes_price_cents=None,
         no_price_cents=None,

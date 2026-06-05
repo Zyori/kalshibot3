@@ -40,23 +40,29 @@ from src.core.types import (
     BetStatus,
     Confidence,
     SnapshotPhase,
+    Sport,
     Strategy,
     Timing,
     utc_iso,
 )
-from src.models import Bet, BetFill, Market, TradeSnapshot
+from src.models import Bet, BetFill, ComboLeg, Market, TradeSnapshot
 from src.services.bet_service import settle_bets_for_market
 from src.sports.soccer import league_display_name
 
 router = APIRouter()
 
 
-def _market_label(b: Bet, ticker: str | None) -> str:
+def _market_label(b: Bet, ticker: str | None, leg_count: int = 0) -> str:
     """Human-readable market: 'League — Home v Away — Selection'. Prefers full
     team names (captured from ESPN at placement), falls back to the 3-letter
     codes (always present for a per-game bet), then to the raw ticker when the
     bet predates these fields or isn't a per-game market. The SIDE (yes/no)
-    is rendered separately by the frontend."""
+    is rendered separately by the frontend.
+
+    Combos have no per-game codes; they render as 'Parlay (N legs)' (or the
+    raw ticker if we somehow have no legs)."""
+    if b.sport == Sport.COMBO:
+        return f"Parlay ({leg_count} legs)" if leg_count else (ticker or "Parlay")
     if b.home_code is None or b.away_code is None:
         return ticker or "—"
     league = league_display_name(b.event_series) or b.event_series or "Soccer"
@@ -79,6 +85,7 @@ def _bet_to_dict(
     b: Bet,
     ticker: str | None,
     market_status: str | None = None,
+    leg_count: int = 0,
 ) -> dict[str, Any]:
     fees_cents = (b.entry_fees_cents or 0) + (b.exit_fees_cents or 0)
     # Show running net PnL on partial closes. pnl_cents is None while the
@@ -90,7 +97,8 @@ def _bet_to_dict(
         "id": b.id,
         "sport": b.sport,
         "ticker": ticker,
-        "market_label": _market_label(b, ticker),
+        "market_label": _market_label(b, ticker, leg_count),
+        "leg_count": leg_count,
         "market_status": market_status,
         "market_id": b.market_id,
         "kalshi_order_id": b.kalshi_order_id,
@@ -212,7 +220,21 @@ async def list_bets(
     rows = (await session.execute(stmt)).all()
     has_more = len(rows) > limit
     rows = rows[:limit]
-    out = [_bet_to_dict(b, ticker, market_status) for b, ticker, market_status in rows]
+    # Batch leg counts for the combo bets on this page (avoid N+1). Non-combo
+    # bets aren't in the map and default to 0.
+    combo_ids = [b.id for b, _t, _s in rows if b.sport == Sport.COMBO]
+    leg_counts: dict[int, int] = {}
+    if combo_ids:
+        count_rows = (await session.execute(
+            select(ComboLeg.bet_id, func.count(ComboLeg.id))
+            .where(ComboLeg.bet_id.in_(combo_ids))
+            .group_by(ComboLeg.bet_id)
+        )).all()
+        leg_counts = {bid: n for bid, n in count_rows}
+    out = [
+        _bet_to_dict(b, ticker, market_status, leg_counts.get(b.id, 0))
+        for b, ticker, market_status in rows
+    ]
     next_cursor = rows[-1][0].id if has_more and rows else None
     return {"bets": out, "next_cursor": next_cursor}
 
@@ -359,6 +381,34 @@ async def compute_ledger_stats(
         "roi": roi,
         "net_roi": net_roi,
         "by_strategy": by_strategy,
+    }
+
+
+@router.get("/ledger/{bet_id}/legs")
+async def list_bet_legs(
+    bet_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Per-leg drill-down for a combo bet, in Kalshi's leg order. Empty for a
+    non-combo bet (no legs attached)."""
+    rows = (await session.execute(
+        select(ComboLeg)
+        .where(ComboLeg.bet_id == bet_id)
+        .order_by(ComboLeg.leg_index.asc())
+    )).scalars().all()
+    return {
+        "bet_id": bet_id,
+        "legs": [
+            {
+                "leg_index": leg.leg_index,
+                "title": leg.leg_title,
+                "ticker": leg.leg_ticker,
+                "event_ticker": leg.leg_event_ticker,
+                "side": leg.side,
+                "result": leg.result,
+            }
+            for leg in rows
+        ],
     }
 
 
@@ -551,10 +601,16 @@ async def edit_bet_metadata(
     market = await session.get(Market, bet.market_id)
     await session.commit()
     await session.refresh(bet)
+    leg_count = 0
+    if bet.sport == Sport.COMBO:
+        leg_count = await session.scalar(
+            select(func.count(ComboLeg.id)).where(ComboLeg.bet_id == bet.id)
+        ) or 0
     return _bet_to_dict(
         bet,
         market.kalshi_ticker if market else None,
         market.status if market else None,
+        leg_count,
     )
 
 
