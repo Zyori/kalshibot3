@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { errorMessage, type ComboStrategy } from './ComboFields'
 import ComboSlip from './ComboSlip'
 import MarketBrowser from './MarketBrowser'
-import type { Materialized, SlipLeg } from './types'
+import type { Quote, SlipLeg } from './types'
 
-type PlaceResult = {
+type AcceptResult = {
   bet_id: number
   quantity: number
   entry_price_cents: number
@@ -19,71 +19,86 @@ function toApiLeg(l: SlipLeg) {
 }
 
 /**
- * Build a combo by browsing markets and clicking outcomes into a sticky slip.
- * The slip shows a live estimate as the parlay grows; Stage materializes the
- * real Kalshi combo, then Confirm places a limit order. Mirrors every order's
- * human-confirmed flow.
+ * Build a combo by browsing markets and clicking outcomes into a sticky slip,
+ * then place it via Kalshi's RFQ flow: Request a quote → market makers respond
+ * with live quotes → accept the best one (the human confirm). Combos fill
+ * through RFQ, not a resting order book.
  */
 export default function ComboBuilder() {
   const qc = useQueryClient()
   const [legs, setLegs] = useState<SlipLeg[]>([])
   const [strategy, setStrategy] = useState<ComboStrategy>('lock_parlay')
-  const [price, setPrice] = useState('')
   const [count, setCount] = useState('')
   const [why, setWhy] = useState('')
-  const [staged, setStaged] = useState<Materialized | null>(null)
+  // The open RFQ: its id + the combo ticker, set when the user requests a quote.
+  const [rfq, setRfq] = useState<{ id: string; ticker: string } | null>(null)
 
   const apiLegs = legs.map(toApiLeg)
 
-  // Clicking an outcome toggles it: add if absent, remove if already picked.
   function toggleLeg(leg: SlipLeg) {
     setLegs((prev) =>
       prev.some((l) => l.market_ticker === leg.market_ticker)
         ? prev.filter((l) => l.market_ticker !== leg.market_ticker)
         : [...prev, leg],
     )
-    setStaged(null) // changing legs invalidates the staged combo
+    setRfq(null) // changing legs invalidates any open RFQ
   }
-  // The slip's × button removes a specific leg.
   function removeLeg(marketTicker: string) {
     setLegs((prev) => prev.filter((l) => l.market_ticker !== marketTicker))
-    setStaged(null)
+    setRfq(null)
   }
 
-  const stage = useMutation<Materialized, Error>({
+  // 1) Request a quote: materialize + create the RFQ.
+  const requestQuote = useMutation<{ rfq_id: string; ticker: string }, Error>({
     mutationFn: async () => {
-      const res = await fetch('/api/combos/materialize', {
+      const res = await fetch('/api/combos/rfq', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ legs: apiLegs }),
+        body: JSON.stringify({ legs: apiLegs, contracts: Number(count) }),
       })
       if (!res.ok) {
         const d = await res.json().catch(() => null)
-        throw new Error(errorMessage(d?.detail, `Stage failed (${res.status})`))
+        throw new Error(errorMessage(d?.detail, `Quote request failed (${res.status})`))
       }
       return res.json()
     },
-    onSuccess: (m) => setStaged(m),
+    onSuccess: (r) => setRfq({ id: r.rfq_id, ticker: r.ticker }),
   })
 
-  const place = useMutation<PlaceResult, Error>({
-    mutationFn: async () => {
-      const res = await fetch('/api/combos/place', {
+  // 2) Poll quotes for the open RFQ (makers respond within seconds).
+  const quotes = useQuery<{ quotes: Quote[] }>({
+    queryKey: ['combo_quotes', rfq?.id],
+    queryFn: async () => {
+      const res = await fetch(`/api/combos/rfq/${rfq!.id}/quotes`)
+      if (!res.ok) throw new Error(`quotes: ${res.status}`)
+      return res.json()
+    },
+    enabled: !!rfq,
+    refetchInterval: 1500, // makers quote in real time
+  })
+
+  // 3) Accept a quote — the human-confirmed action that places the order.
+  const accept = useMutation<AcceptResult, Error, { quote: Quote; side: 'yes' | 'no' }>({
+    mutationFn: async ({ quote, side }) => {
+      const price = side === 'yes' ? quote.yes_bid_cents : quote.no_bid_cents
+      const res = await fetch('/api/combos/accept', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          legs: apiLegs,
-          side: 'yes',
-          price_cents: Number(price),
+          quote_id: quote.quote_id,
+          side,
+          price_cents: price,
           count: Number(count),
+          legs: apiLegs,
+          ticker: rfq!.ticker,
           strategy,
           human_reasoning: why.trim() || null,
-          acknowledged: true, // this mutation IS the confirm action
+          acknowledged: true, // accepting IS the confirm
         }),
       })
       if (!res.ok) {
         const d = await res.json().catch(() => null)
-        throw new Error(errorMessage(d?.detail, `Place failed (${res.status})`))
+        throw new Error(errorMessage(d?.detail, `Accept failed (${res.status})`))
       }
       return res.json()
     },
@@ -91,27 +106,22 @@ export default function ComboBuilder() {
       qc.invalidateQueries({ queryKey: ['ledger'] })
       qc.invalidateQueries({ queryKey: ['ledger_stats'] })
       qc.invalidateQueries({ queryKey: ['positions'] })
-      setStaged(null)
+      setRfq(null)
       setLegs([])
-      setPrice('')
       setCount('')
       setWhy('')
     },
   })
 
-  // Stable identity so MarketBrowser only re-evaluates when legs change, not on
-  // every price/count keystroke.
   const selected = useMemo(() => new Set(legs.map((l) => l.market_ticker)), [legs])
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-      {/* Market list fills its column fully — LIVE and UPCOMING are the same
-          full width. The slip sits in the right column right next to it. */}
       <div className="min-w-0">
         <p className="mb-3 text-sm text-text-muted">
-          Click outcomes to build your parlay — the slip on the right shows the
-          running estimate. Click a picked outcome again to remove it. Stage to
-          see the real Kalshi price, then confirm.
+          Click outcomes to build your parlay — the slip shows the running
+          estimate. Click a picked outcome again to remove it. Request a quote,
+          then accept the best one market makers offer.
         </p>
         <MarketBrowser selected={selected} onToggleLeg={toggleLeg} />
       </div>
@@ -120,20 +130,20 @@ export default function ComboBuilder() {
         onRemove={removeLeg}
         strategy={strategy}
         setStrategy={setStrategy}
-        price={price}
-        setPrice={setPrice}
         count={count}
         setCount={setCount}
         why={why}
         setWhy={setWhy}
-        staged={staged}
-        onStage={() => stage.mutate()}
-        staging={stage.isPending}
-        stageError={stage.isError ? stage.error.message : null}
-        onPlace={() => place.mutate()}
-        placing={place.isPending}
-        placeError={place.isError ? place.error.message : null}
-        placed={place.isSuccess ? place.data : null}
+        rfqOpen={!!rfq}
+        onRequestQuote={() => requestQuote.mutate()}
+        requesting={requestQuote.isPending}
+        requestError={requestQuote.isError ? requestQuote.error.message : null}
+        quotes={rfq ? quotes.data?.quotes ?? [] : []}
+        quotesLoading={!!rfq && quotes.isPending}
+        onAccept={(quote, side) => accept.mutate({ quote, side })}
+        accepting={accept.isPending}
+        acceptError={accept.isError ? accept.error.message : null}
+        accepted={accept.isSuccess ? accept.data : null}
       />
     </div>
   )

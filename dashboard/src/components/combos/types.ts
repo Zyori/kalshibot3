@@ -52,3 +52,14 @@ export type Materialized = {
   no_ask_cents: number | null
   leg_count: number
 }
+
+/** A market maker's quote on a combo RFQ (GET /api/combos/rfq/{id}/quotes). */
+export type Quote = {
+  quote_id: string
+  rfq_id: string
+  status: string
+  yes_bid_cents: number
+  no_bid_cents: number
+  yes_contracts: number
+  no_contracts: number
+}
