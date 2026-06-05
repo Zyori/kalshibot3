@@ -32,6 +32,7 @@ from src.core.exceptions import KalshiError
 from src.kalshi.rest import KalshiRestClient, new_client_order_id
 from src.kalshi.schemas import (
     CreateMultivariateMarketResponse,
+    CreateRfqRequest,
     PlaceOrderRequest,
     SelectedMarket,
 )
@@ -331,6 +332,151 @@ async def place_combo(
     return {
         "bet_id": bet.id,
         "ticker": mk.market_ticker,
+        "side": bet.side,
+        "entry_price_cents": bet.entry_price_cents,
+        "quantity": bet.quantity,
+        "stake_cents": bet.stake_cents,
+        "leg_count": len(body.legs),
+    }
+
+
+class RequestQuoteBody(BaseModel):
+    legs: list[LegInput] = Field(min_length=2, max_length=8)
+    contracts: int = Field(ge=1)
+    """How many combo contracts to request a quote for."""
+
+
+@router.post("/combos/rfq")
+async def request_quote(body: RequestQuoteBody) -> dict[str, Any]:
+    """Request a quote on a combo. Combos fill via RFQ, not a resting order:
+    this materializes the combo, sends an RFQ, and returns the rfq_id. Market
+    makers respond with quotes the UI then reads via /combos/rfq/{id}/quotes
+    (and, later, a WS push). No money moves — quotes are just offers until the
+    user accepts one."""
+    collection = await _discover_collection(body.legs)
+    async with KalshiRestClient() as client:
+        try:
+            mk = await client.create_multivariate_market(
+                collection_ticker=collection,
+                legs=[SelectedMarket(
+                    market_ticker=l.market_ticker,
+                    event_ticker=l.event_ticker,
+                    side=l.side,
+                ) for l in body.legs],
+            )
+            rfq = await client.create_rfq(CreateRfqRequest(
+                market_ticker=mk.market_ticker,
+                mve_collection_ticker=collection,
+                mve_selected_legs=[SelectedMarket(
+                    market_ticker=l.market_ticker,
+                    event_ticker=l.event_ticker,
+                    side=l.side,
+                ) for l in body.legs],
+                contracts=body.contracts,
+            ))
+        except KalshiError as e:
+            raise HTTPException(502, f"could not request quote: {str(e)[:160]}")
+    return {
+        "rfq_id": rfq.id,
+        "ticker": mk.market_ticker,
+        "leg_count": len(body.legs),
+        "subtitle": mk.market.yes_sub_title if mk.market else None,
+    }
+
+
+@router.get("/combos/rfq/{rfq_id}/quotes")
+async def get_quotes(rfq_id: str) -> dict[str, Any]:
+    """Live quotes makers have offered on this RFQ. The UI polls this (until WS
+    push lands) and shows the user the best one to accept."""
+    async with KalshiRestClient() as client:
+        try:
+            uid = await client.get_account_user_id()
+            resp = await client.get_my_quotes(user_id=uid)
+        except KalshiError as e:
+            raise HTTPException(502, f"could not fetch quotes: {str(e)[:160]}")
+    quotes = [
+        {
+            "quote_id": q.id,
+            "rfq_id": q.rfq_id,
+            "status": q.status,
+            "yes_bid_cents": q.yes_bid_cents,
+            "no_bid_cents": q.no_bid_cents,
+            "yes_contracts": q.yes_contracts,
+            "no_contracts": q.no_contracts,
+        }
+        for q in resp.quotes
+        if q.rfq_id == rfq_id and q.status == "open"
+    ]
+    return {"rfq_id": rfq_id, "quotes": quotes}
+
+
+class AcceptQuoteBody(BaseModel):
+    quote_id: str
+    side: Literal["yes", "no"]
+    """Which side of the quote to take (a maker may quote both)."""
+    price_cents: int = Field(ge=1, le=99)
+    """The quote's bid for the chosen side, echoed back for the ledger record."""
+    count: int = Field(ge=1)
+    legs: list[LegInput] = Field(min_length=2, max_length=8)
+    ticker: str
+    """The combo market_ticker from the RFQ."""
+    strategy: Strategy = Strategy.LOCK_PARLAY
+    confidence: Confidence = Confidence.MEDIUM
+    timing: Timing = Timing.PRE_MATCH
+    tags: list[str] | None = None
+    human_reasoning: str | None = None
+    acknowledged: bool = False
+    """Accepting a quote IS placing the order — human-confirmed. Refused unless
+    the user explicitly confirmed (clicked Accept)."""
+
+
+@router.post("/combos/accept")
+async def accept_quote(
+    body: AcceptQuoteBody,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Accept a maker's quote — this is the order. Human-confirmed (no
+    autonomous trading): refused unless acknowledged. Accept then confirm starts
+    the execution timer; the resulting fill flows through the normal WS fill
+    path. We record the combo bet here from the accepted quote so the ledger has
+    it immediately; the fill's fee/exact price reconcile in via fills_sync, the
+    same as every other bet."""
+    if not body.acknowledged:
+        raise HTTPException(
+            409, detail={"reasons": ["Accepting a quote must be confirmed by you."]}
+        )
+    if not is_combo_ticker(body.ticker):
+        raise HTTPException(400, f"{body.ticker} is not a combo ticker")
+
+    async with KalshiRestClient() as client:
+        try:
+            await client.accept_quote(body.quote_id)
+            await client.confirm_quote(body.quote_id)
+        except KalshiError as e:
+            log.warning("combo_accept_kalshi_error", quote_id=body.quote_id, error=str(e))
+            raise HTTPException(502, f"kalshi: {str(e)[:160]}") from e
+
+    bet = await record_external_combo(
+        session,
+        ticker=body.ticker,
+        side=BetSide(body.side),
+        entry_price_cents=body.price_cents,
+        quantity=body.count,
+        legs=[ComboLegInput(
+            leg_ticker=l.market_ticker, leg_event_ticker=l.event_ticker,
+            leg_title=None, side=l.side,
+        ) for l in body.legs],
+        placed_at=datetime.now(timezone.utc),
+        strategy=body.strategy,
+        confidence=body.confidence,
+        timing=body.timing,
+        human_reasoning=body.human_reasoning,
+        tags=body.tags,
+    )
+    await session.commit()
+    return {
+        "bet_id": bet.id,
+        "ticker": body.ticker,
         "side": bet.side,
         "entry_price_cents": bet.entry_price_cents,
         "quantity": bet.quantity,

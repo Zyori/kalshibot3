@@ -36,7 +36,10 @@ from src.kalshi.schemas import (
     CancelOrderResponse,
     CreateMultivariateMarketRequest,
     CreateMultivariateMarketResponse,
+    CreateRfqRequest,
+    CreateRfqResponse,
     EventsResponse,
+    QuotesResponse,
     FillsResponse,
     MarketsResponse,
     Orderbook,
@@ -56,6 +59,10 @@ log = get_logger(__name__)
 # 1h TTL is safe and an event's collection is stable within a session.
 _COLLECTION_CACHE: dict[str, tuple[str, float]] = {}
 _COLLECTION_TTL_S = 3600.0
+
+# Account user_id, cached for the process (stable per account). Used as the
+# required rfq_creator_user_id filter on the quotes endpoint.
+_ACCOUNT_USER_ID: str = ""
 
 
 class TokenBucket:
@@ -388,6 +395,66 @@ class KalshiRestClient:
             json=req.model_dump(),
         )
         return CreateMultivariateMarketResponse.model_validate(data)
+
+    # === RFQ (combos fill via request-for-quote, not the order book) ===
+
+    async def create_rfq(self, req: CreateRfqRequest) -> CreateRfqResponse:
+        """Request a quote on a combo. Market makers respond with quotes that
+        arrive over the WS `communications` channel and via get_my_quotes."""
+        log.info(
+            "create_rfq",
+            market_ticker=req.market_ticker,
+            leg_count=len(req.mve_selected_legs),
+            target_cost_dollars=req.target_cost_dollars,
+        )
+        data = await self._request(
+            "POST", "/communications/rfqs", json=req.model_dump(exclude_none=True)
+        )
+        return CreateRfqResponse.model_validate(data)
+
+    async def get_my_quotes(self, *, user_id: str, limit: int = 50) -> QuotesResponse:
+        """Quotes makers have offered on MY RFQs. The rfq_creator_user_id filter
+        is required by Kalshi (a bare call 403s)."""
+        data = await self._request(
+            "GET", "/communications/quotes",
+            params={"rfq_creator_user_id": user_id, "limit": limit},
+        )
+        return QuotesResponse.model_validate(data)
+
+    async def accept_quote(self, quote_id: str) -> dict[str, Any]:
+        """Accept a maker's quote. This requires the maker to then confirm; the
+        confirm starts the short execution timer that produces the fill."""
+        log.info("accept_quote", quote_id=quote_id)
+        return await self._request(
+            "POST", f"/communications/quotes/{quote_id}/accept"
+        )
+
+    async def confirm_quote(self, quote_id: str) -> dict[str, Any]:
+        """Confirm an accepted quote — starts order execution."""
+        log.info("confirm_quote", quote_id=quote_id)
+        return await self._request(
+            "POST", f"/communications/quotes/{quote_id}/confirm"
+        )
+
+    async def delete_rfq(self, rfq_id: str) -> dict[str, Any]:
+        """Cancel an RFQ we no longer want quoted."""
+        return await self._request("DELETE", f"/communications/rfqs/{rfq_id}")
+
+    async def get_account_user_id(self) -> str:
+        """Our account user_id — required (and the ONLY accepted value) for the
+        quote filter rfq_creator_user_id. Note this is NOT the communications_id
+        from /communications/id (that's a different identifier Kalshi rejects
+        here). Kalshi has no dedicated user-id endpoint, so we read it off any
+        order; it's stable per account, so cache it for the process."""
+        global _ACCOUNT_USER_ID
+        if _ACCOUNT_USER_ID:
+            return _ACCOUNT_USER_ID
+        data = await self._request("GET", "/portfolio/orders", params={"limit": 1})
+        orders = data.get("orders") or []
+        if orders and orders[0].get("user_id"):
+            _ACCOUNT_USER_ID = orders[0]["user_id"]
+            return _ACCOUNT_USER_ID
+        raise KalshiError("could not determine account user_id (no orders to read it from)")
 
     # === Orders ===
 

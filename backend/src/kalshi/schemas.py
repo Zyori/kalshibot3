@@ -532,3 +532,69 @@ class CreateMultivariateMarketResponse(WireModelLoose):
     event_ticker: str
     market_ticker: str
     market: Market | None = None
+
+
+# === RFQ (Request For Quote) — how combos actually fill ===
+#
+# A standing limit order on a combo's (empty) book never fills. Combos fill via
+# RFQ: request a quote on the combo, market makers respond with quotes (pushed
+# over the WS `communications` channel and readable via GET /communications/
+# quotes), then the requester accepts the best quote (accept -> maker confirms
+# -> a short execution timer -> fill on the normal WS fill channel).
+
+
+class CreateRfqRequest(WireModel):
+    """Body for POST /communications/rfqs. For a combo, carry the materialized
+    market_ticker plus the collection + legs so makers can price it. Size is
+    either `contracts` or a `target_cost_dollars` budget (one of the two)."""
+    market_ticker: str
+    mve_collection_ticker: str
+    mve_selected_legs: list[SelectedMarket]
+    target_cost_dollars: str | None = None
+    contracts: int | None = None
+
+
+class CreateRfqResponse(WireModelLoose):
+    """The created RFQ. `id` is the rfq_id quotes will reference."""
+    id: str
+
+
+class Quote(WireModelLoose):
+    """A market maker's quote on one of our RFQs. One side's bid is the price
+    (the other is 0). yes_bid is the maker's price per YES contract; accepting
+    the NO side means you take YES at 100 - no_bid. Dollar strings -> int cents
+    at the boundary, like every other wire model.
+
+    Fields verified against live quotes on the account."""
+    id: str
+    rfq_id: str
+    market_ticker: str
+    status: str
+    creator_id: str = ""
+    yes_bid_cents: int = 0
+    no_bid_cents: int = 0
+    yes_contracts: int = 0
+    no_contracts: int = 0
+    created_ts: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_wire(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        if "yes_bid_cents" not in out and "yes_bid_dollars" in out:
+            out["yes_bid_cents"] = _dollar_str_to_cents(out["yes_bid_dollars"])
+        if "no_bid_cents" not in out and "no_bid_dollars" in out:
+            out["no_bid_cents"] = _dollar_str_to_cents(out["no_bid_dollars"])
+        # *_contracts_fp are fractional-contract strings ("71.00"); floor to whole.
+        if "yes_contracts" not in out and "yes_contracts_fp" in out:
+            out["yes_contracts"] = int(float(out["yes_contracts_fp"]))
+        if "no_contracts" not in out and "no_contracts_fp" in out:
+            out["no_contracts"] = int(float(out["no_contracts_fp"]))
+        return out
+
+
+class QuotesResponse(WireModelLoose):
+    quotes: list[Quote] = Field(default_factory=list)
+    cursor: str | None = None

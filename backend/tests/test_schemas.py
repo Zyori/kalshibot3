@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from src.kalshi.schemas import (
     Market,
     PlaceOrderRequest,
+    Quote,
     Settlement,
     SettlementsResponse,
     cents_to_dollars,
@@ -121,3 +122,32 @@ class TestSettlementResult:
         )
         assert len(resp.settlements) == 3
         assert [s.settlement_value_cents for s in resp.settlements] == [100, None, 0]
+
+
+class TestQuoteWire:
+    """RFQ quote wire shape — dollar strings → int cents, fractional contracts
+    floored. Verified against live quotes on the account."""
+
+    def test_quote_converts_dollars_and_contracts(self) -> None:
+        q = Quote.model_validate({
+            "id": "q1", "rfq_id": "r1",
+            "market_ticker": "KXMVESPORTSMULTIGAMEEXTENDED-S...",
+            "status": "open",
+            "yes_bid_dollars": "0.6300", "no_bid_dollars": "0.2900",
+            "yes_contracts_fp": "10.00", "no_contracts_fp": "10.00",
+        })
+        assert q.yes_bid_cents == 63
+        assert q.no_bid_cents == 29
+        assert q.yes_contracts == 10
+        assert q.no_contracts == 10
+
+    def test_quote_one_sided(self) -> None:
+        # A maker may quote only one side; the other bid is "0.0000".
+        q = Quote.model_validate({
+            "id": "q2", "rfq_id": "r1", "market_ticker": "X", "status": "open",
+            "yes_bid_dollars": "0.3900", "no_bid_dollars": "0.0000",
+            "yes_contracts_fp": "10.00", "no_contracts_fp": "0.00",
+        })
+        assert q.yes_bid_cents == 39
+        assert q.no_bid_cents == 0
+        assert q.no_contracts == 0
