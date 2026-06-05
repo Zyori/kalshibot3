@@ -7,6 +7,7 @@ autogenerate can see them. Order doesn't matter — SQLAlchemy resolves FK refs 
 from src.models.bet import Bet
 from src.models.bet_fill import BetFill
 from src.models.chat import ChatMessage
+from src.models.combo_leg import ComboLeg
 from src.models.game import Game
 from src.models.market import Market
 from src.models.position import Position
@@ -17,6 +18,7 @@ __all__ = [
     "Bet",
     "BetFill",
     "ChatMessage",
+    "ComboLeg",
     "Game",
     "Market",
     "Position",

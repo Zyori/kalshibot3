@@ -61,7 +61,7 @@ class Market(Base):
 
     __table_args__ = (
         UniqueConstraint("kalshi_ticker", name="uq_market_kalshi_ticker"),
-        CheckConstraint("sport IN ('soccer', 'nfl')", name="ck_market_sport"),
+        CheckConstraint("sport IN ('soccer', 'nfl', 'combo')", name="ck_market_sport"),
         # Kalshi binary contract prices are integer cents 1-99 when set.
         CheckConstraint(
             "yes_price_cents IS NULL OR (yes_price_cents >= 1 AND yes_price_cents <= 99)",

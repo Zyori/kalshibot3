@@ -170,7 +170,7 @@ class Bet(Base):
         # Idempotency keys: unique when set, multiple NULLs allowed.
         UniqueConstraint("kalshi_order_id", name="uq_bet_kalshi_order_id"),
         UniqueConstraint("client_order_id", name="uq_bet_client_order_id"),
-        CheckConstraint("sport IN ('soccer', 'nfl')", name="ck_bet_sport"),
+        CheckConstraint("sport IN ('soccer', 'nfl', 'combo')", name="ck_bet_sport"),
         CheckConstraint(
             "entry_price_cents >= 1 AND entry_price_cents <= 99",
             name="ck_bet_entry_price_range",
