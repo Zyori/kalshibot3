@@ -192,7 +192,12 @@ async def _resolve_legs_for_market(
 # execution timer lapsed) leaves a pending_combo row that will never be consumed.
 # Sweep rows older than this so the stash doesn't accumulate. No bet was ever
 # created from them, so deleting is clean.
-_PENDING_COMBO_TTL = timedelta(hours=1)
+#
+# Kalshi's RFQ execution is seconds-to-minutes, but the full lifecycle (accept →
+# maker confirm → fill) can lag; 6h is comfortably beyond any realistic window
+# while still bounding accumulation. A fill arriving after the TTL finds no
+# stash and is dropped (logged loudly in record_fill) — a real but rare loss.
+_PENDING_COMBO_TTL = timedelta(hours=6)
 
 
 async def sweep_stale_pending_combos() -> int:
@@ -239,10 +244,15 @@ class SettlementSweeper:
     async def _tick(self) -> None:
         try:
             await sweep_settlements_once()
-            await sweep_stale_pending_combos()
             self._last_run_at = time.monotonic()
         except Exception:  # noqa: BLE001
             log.exception("settlement_sweep_failed")
+        # Independent of settlement — a pending-combo cleanup failure must not
+        # mask a successful settlement sweep nor block _last_run_at above.
+        try:
+            await sweep_stale_pending_combos()
+        except Exception:  # noqa: BLE001
+            log.exception("pending_combo_sweep_failed")
 
     async def trigger(self) -> None:
         await self._tick()

@@ -18,6 +18,7 @@ Two flows:
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -43,7 +44,11 @@ from src.services.bet_service import (
     record_external_combo,
     record_placed_order,
 )
-from src.sports.combo import is_combo_ticker, is_sports_leg_ticker
+from src.sports.combo import (
+    is_combo_ticker,
+    is_cross_category_ticker,
+    is_sports_leg_ticker,
+)
 from src.sports.soccer import is_soccer_ticker
 
 router = APIRouter()
@@ -413,6 +418,12 @@ async def cancel_rfq(rfq_id: str) -> dict[str, Any]:
     """Cancel an open RFQ the user abandoned (changed legs, navigated away).
     Keeps us under Kalshi's open-RFQ cap and gives makers a clean close. Best
     effort — a Kalshi error here isn't fatal (the RFQ expires on its own)."""
+    # Validate shape before forwarding to Kalshi (rfq ids are UUIDs) — rejects a
+    # malformed/crafted path segment and keeps it out of the structured logs.
+    try:
+        uuid.UUID(rfq_id)
+    except ValueError:
+        raise HTTPException(400, "invalid rfq_id")
     async with KalshiRestClient() as client:
         try:
             await client.delete_rfq(rfq_id)
@@ -454,34 +465,41 @@ async def accept_quote(
     No bet is recorded here (accept returns no order_id, and the fill may never
     happen if the maker doesn't confirm). Instead we stash the legs + metadata
     in pending_combo; when the real fill lands, record_fill creates the combo
-    bet keyed to the fill's order_id with the real price/fees. This keeps the
-    money record server-authoritative and avoids phantom bets."""
+    bet keyed to the fill's order_id with the real price/fees.
+
+    Ordering is deliberate: the stash is committed BEFORE the Kalshi accept, so
+    a fill that lands the instant the maker confirms always finds it (the fill
+    handler runs in a separate session/task — if we accepted first, the fill
+    could race ahead of the commit and be dropped, losing a real order). If the
+    accept then fails on Kalshi, we delete the stash (no order, no record)."""
     if not body.acknowledged:
         raise HTTPException(
             409, detail={"reasons": ["Accepting a quote must be confirmed by you."]}
         )
     if not is_combo_ticker(body.ticker):
         raise HTTPException(400, f"{body.ticker} is not a combo ticker")
+    if is_cross_category_ticker(body.ticker):
+        # Cross-category combos can bundle a non-sports leg Kalshi tracks but the
+        # client may omit from body.legs — validating body.legs wouldn't catch
+        # it. Refuse the whole class on the money path (isolation).
+        raise HTTPException(
+            422, f"{body.ticker} is a cross-category combo — not supported "
+                 "(may bundle non-sports legs). Build a sports-only combo.",
+        )
     # Per-leg isolation on the money path — same guard as /rfq and /place.
     _validate_sports_legs(body.legs)
 
-    async with KalshiRestClient() as client:
-        try:
-            await client.accept_quote(body.quote_id)
-        except KalshiError as e:
-            log.warning("combo_accept_kalshi_error", quote_id=body.quote_id, error=str(e))
-            raise HTTPException(502, f"kalshi: {str(e)[:160]}") from e
-
-    # Stash the legs for the async fill. Upsert on the unique combo_ticker so a
-    # re-accept of the same combo updates rather than violating the constraint.
-    existing = await session.scalar(
-        select(PendingCombo).where(PendingCombo.combo_ticker == body.ticker)
-    )
+    # 1) Stash the legs FIRST and commit, so the async fill can always find it.
+    # Upsert on the unique combo_ticker; refresh created_at so the TTL sweep
+    # measures from THIS accept, not a stale earlier one.
     legs_json = [
         {"leg_ticker": l.market_ticker, "leg_event_ticker": l.event_ticker,
          "leg_title": None, "side": l.side}
         for l in body.legs
     ]
+    existing = await session.scalar(
+        select(PendingCombo).where(PendingCombo.combo_ticker == body.ticker)
+    )
     if existing is not None:
         existing.side = body.side
         existing.count = body.count
@@ -491,6 +509,7 @@ async def accept_quote(
         existing.timing = body.timing.value
         existing.tags_json = body.tags
         existing.human_reasoning = body.human_reasoning
+        existing.created_at = datetime.now(timezone.utc)
     else:
         session.add(PendingCombo(
             combo_ticker=body.ticker,
@@ -504,6 +523,22 @@ async def accept_quote(
             human_reasoning=body.human_reasoning,
         ))
     await session.commit()
+
+    # 2) Now accept on Kalshi. If it fails, the order never placed — delete the
+    # stash so a later unrelated fill on this ticker can't bind to it.
+    async with KalshiRestClient() as client:
+        try:
+            await client.accept_quote(body.quote_id)
+        except KalshiError as e:
+            log.warning("combo_accept_kalshi_error", quote_id=body.quote_id, error=str(e))
+            stash = await session.scalar(
+                select(PendingCombo).where(PendingCombo.combo_ticker == body.ticker)
+            )
+            if stash is not None:
+                await session.delete(stash)
+                await session.commit()
+            raise HTTPException(502, f"kalshi: {str(e)[:160]}") from e
+
     return {
         "accepted": True,
         "ticker": body.ticker,

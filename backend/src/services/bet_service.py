@@ -531,9 +531,31 @@ async def _create_combo_bet_from_pending(
     if pending is None:
         return None
 
+    # The reflective metadata is stored as plain strings; a value could be
+    # invalid if an enum member was renamed/removed across a deploy while this
+    # row was in flight. Casting it must NOT raise here — that would roll back
+    # the whole fill and lose a real order. Fall back to a safe default and log.
+    def _enum_or_default(enum_cls: type, value: str, default: object) -> object:
+        try:
+            return enum_cls(value)
+        except ValueError:
+            log.warning(
+                "pending_combo_bad_enum",
+                ticker=ticker, enum=enum_cls.__name__, value=value,
+            )
+            return default
+
+    strategy = _enum_or_default(Strategy, pending.strategy, Strategy.MANUAL)
+    confidence = _enum_or_default(Confidence, pending.confidence, Confidence.MEDIUM)
+    timing = _enum_or_default(Timing, pending.timing, Timing.PRE_MATCH)
+
     market_id = await _get_or_create_market(
         session, ticker=ticker, market_type="combo"
     )
+    # Placeholder quantity/price — the caller (record_fill buy path) overwrites
+    # ALL of quantity/remaining/entry/stake from the actual fill centi the
+    # moment this bet is created, so a partial fill records the filled size, not
+    # the ordered count. pending.count is only a fallback display value.
     quantity = pending.count
     bet = Bet(
         sport=Sport.COMBO,
@@ -543,7 +565,7 @@ async def _create_combo_bet_from_pending(
         kalshi_order_id=order_id,
         client_order_id=None,
         side=side,
-        entry_price_cents=price_cents,  # refined from buy fills by the caller
+        entry_price_cents=price_cents,  # overwritten from buy fills by the caller
         exit_price_cents=None,
         quantity=quantity,
         remaining_quantity=quantity,
@@ -556,15 +578,15 @@ async def _create_combo_bet_from_pending(
         status=BetStatus.OPEN,
         exit_type=None,
         source=BetSource.HUMAN,
-        strategy=Strategy(pending.strategy),
-        confidence=Confidence(pending.confidence),
+        strategy=strategy,
+        confidence=confidence,
         kelly_fraction_bps=None,
         ai_probability_pct=None,
         human_override_sizing=False,
         human_override_direction=False,
         human_reasoning=pending.human_reasoning,
         ai_reasoning=None,
-        timing=Timing(pending.timing),
+        timing=timing,
         game_period=None,
         game_clock=None,
         tags=pending.tags_json,
@@ -678,12 +700,25 @@ async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, Snap
             # trade with its fee_cost on the next sweep if it's genuinely
             # external; otherwise the orders route commit will land first
             # next time.
-            log.info(
-                "fill_orphan_buy_dropped",
-                trade_id=fill.msg.trade_id,
-                order_id=fill.msg.order_id,
-                ticker=ticker,
-            )
+            #
+            # A COMBO buy with no bet AND no pending stash is different: we
+            # accepted a quote that filled, but the stash is gone (swept past
+            # TTL, or a stash-commit failure). That's a real order missing from
+            # the ledger — warn so it's visible, not a routine info drop.
+            if is_combo_ticker(ticker):
+                log.warning(
+                    "combo_fill_dropped_no_pending",
+                    trade_id=fill.msg.trade_id,
+                    order_id=fill.msg.order_id,
+                    ticker=ticker,
+                )
+            else:
+                log.info(
+                    "fill_orphan_buy_dropped",
+                    trade_id=fill.msg.trade_id,
+                    order_id=fill.msg.order_id,
+                    ticker=ticker,
+                )
             return []
 
         bet_fill = _materialize_bet_fill(
@@ -704,6 +739,16 @@ async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, Snap
             # Exact cost from the weighted sum, not the floored price — keeps
             # a fractional-VWAP entry's true stake (see recompute_bet_from_fills).
             bet.stake_cents = weighted_centi // 100
+            # Combo (RFQ) bets are one-shot — there's no resting remainder that
+            # fills later, so the bet's quantity IS what actually filled, not the
+            # quantity ordered. Track it from the fills so a partial fill doesn't
+            # overstate the position (and thus settlement P&L). Normal bets keep
+            # the ordered quantity: their unfilled remainder rests and fills
+            # later, and quantity must reflect the full order.
+            if bet.sport == Sport.COMBO:
+                bet.remaining_quantity_centi = total_centi
+                bet.remaining_quantity = total_centi // 100
+                bet.quantity = max(1, total_centi // 100)
         await _recompute_bet_fees(session, bet=bet)
         bet.version += 1
         await session.flush()

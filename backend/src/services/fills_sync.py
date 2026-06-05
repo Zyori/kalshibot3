@@ -15,8 +15,10 @@ Two roles:
 After updating fee_cents we recompute the affected bet's entry_fees_cents
 and exit_fees_cents as plain sums over its bet_fill rows.
 
-Cross-market isolation: soccer-only. Non-soccer fills are skipped at the
-top of the loop — never persisted to bet_fill.
+Cross-market isolation: tradeable tickers only (soccer + combos, via
+is_tradeable_ticker). Out-of-scope fills (politics/crypto/other) are skipped at
+the top of the loop — never persisted to bet_fill. Combo fills ARE fee-synced
+here, same as soccer.
 """
 
 from __future__ import annotations
@@ -150,7 +152,7 @@ async def sync_fills_once(min_ts: int | None = None) -> dict[str, int]:
     filter. The FillsSyncer passes the highest created_time it has seen
     minus a small overlap so any race-window fills are caught.
     Idempotent — every bet_fill is keyed by trade_id, so re-processing
-    overlap is a no-op. Soccer-only filter keeps the work bounded.
+    overlap is a no-op. The tradeable-ticker filter keeps the work bounded.
     """
     rest_fills: list[RestFill] = []
     async with KalshiRestClient() as client:

@@ -389,3 +389,65 @@ async def test_pending_combo_idempotent_on_replayed_fill(session: AsyncSession):
     await record_fill(session, fill)
     await session.flush()
     assert await session.scalar(select(func.count(Bet.id))) == 1
+
+
+@pytest.mark.asyncio
+async def test_partial_fill_records_filled_size_not_ordered(session: AsyncSession):
+    """A combo ordered for 75 that fills only 62 must record quantity=62 (the
+    real position), not 75 — else settlement pays P&L on a size we don't hold."""
+    await _stash_pending(session, count=75)
+    await record_fill(session, _combo_fill(order_id="ord-partial", price_cents=18, qty=62))
+    await session.flush()
+
+    bet = (await session.execute(
+        select(Bet).where(Bet.kalshi_order_id == "ord-partial")
+    )).scalar_one()
+    assert bet.quantity == 62
+    assert bet.remaining_quantity == 62
+    assert bet.remaining_quantity_centi == 6200
+    assert bet.entry_price_cents == 18
+    assert bet.stake_cents == 18 * 62  # the filled cost, not 18*75
+
+
+@pytest.mark.asyncio
+async def test_partial_then_remainder_fill_accumulates(session: AsyncSession):
+    """A second fill on the same combo order accumulates onto the bet."""
+    await _stash_pending(session, count=75)
+    await record_fill(session, _combo_fill(order_id="ord-acc", price_cents=18, qty=62))
+    await session.flush()
+    # The remaining 13 fill later (same order_id, different trade_id).
+    f2 = _combo_fill(order_id="ord-acc", price_cents=18, qty=13)
+    f2.msg.trade_id = "t-ord-acc-2"  # distinct trade
+    await record_fill(session, f2)
+    await session.flush()
+
+    bet = (await session.execute(
+        select(Bet).where(Bet.kalshi_order_id == "ord-acc")
+    )).scalar_one()
+    assert bet.quantity == 75  # 62 + 13 now filled
+    assert await session.scalar(select(func.count(Bet.id))) == 1  # still one bet
+
+
+@pytest.mark.asyncio
+async def test_bad_enum_in_pending_defaults_not_drops(session: AsyncSession):
+    """An invalid stored strategy must NOT raise (which would roll back and lose
+    the fill) — it defaults, and the bet/legs/fill all still record."""
+    session.add(PendingCombo(
+        combo_ticker=COMBO_TICKER, side="yes", count=10,
+        legs_json=[{"leg_ticker": "L1", "leg_event_ticker": "E1",
+                    "leg_title": None, "side": "yes"},
+                   {"leg_ticker": "L2", "leg_event_ticker": "E2",
+                    "leg_title": None, "side": "yes"}],
+        strategy="not_a_real_strategy",  # invalid
+        confidence="medium", timing="pre_match", tags_json=None, human_reasoning=None,
+    ))
+    await session.flush()
+
+    captures = await record_fill(session, _combo_fill(order_id="ord-bad", price_cents=18, qty=10))
+    await session.flush()
+    bet = (await session.execute(
+        select(Bet).where(Bet.kalshi_order_id == "ord-bad")
+    )).scalar_one()
+    assert bet.strategy == Strategy.MANUAL  # safe default, not a crash
+    assert bet.quantity == 10
+    assert captures  # the fill was recorded, not lost

@@ -28,6 +28,9 @@ from __future__ import annotations
 _COMBO_FAMILY_STEM = "KXMVE"
 
 
+_CROSS_CATEGORY_PREFIX = "KXMVECROSSCATEGORY"
+
+
 def is_combo_ticker(ticker: str) -> bool:
     """True if the ticker is a Kalshi multivariate-event (combo/parlay) market.
 
@@ -37,6 +40,16 @@ def is_combo_ticker(ticker: str) -> bool:
     firewall means the app stops acting on a real position of the user's.
     """
     return ticker.startswith(_COMBO_FAMILY_STEM)
+
+
+def is_cross_category_ticker(ticker: str) -> bool:
+    """True for a KXMVECROSSCATEGORY combo — one that can bundle legs across
+    categories (a sports leg + a politics/weather leg). The PLACE path refuses
+    these: we can't guarantee per-leg isolation when the client supplies the
+    legs and a non-sports leg may be hidden in the materialized market. (We
+    still RECOGNIZE them as combos for the ledger/firewall — recognition is not
+    permission to place.)"""
+    return ticker.startswith(_CROSS_CATEGORY_PREFIX)
 
 
 # Sports series that may appear as combo LEGS. A leg is a single-game/prop
