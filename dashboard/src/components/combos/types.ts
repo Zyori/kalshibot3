@@ -40,3 +40,15 @@ export type SlipLeg = {
   title: string
   price_cents: number | null
 }
+
+/** The materialized combo market returned by POST /api/combos/materialize. */
+export type Materialized = {
+  ticker: string
+  event_ticker: string
+  subtitle: string | null
+  yes_bid_cents: number | null
+  yes_ask_cents: number | null
+  no_bid_cents: number | null
+  no_ask_cents: number | null
+  leg_count: number
+}

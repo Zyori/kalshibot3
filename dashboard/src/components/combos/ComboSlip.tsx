@@ -10,15 +10,7 @@ import {
   Field,
   Segmented,
 } from './ComboFields'
-import type { SlipLeg } from './types'
-
-type Materialized = {
-  ticker: string
-  subtitle: string | null
-  yes_bid_cents: number | null
-  yes_ask_cents: number | null
-  leg_count: number
-}
+import type { Materialized, SlipLeg } from './types'
 
 /**
  * The sticky bet slip. Shows the legs the user picked, a live ESTIMATE of the
@@ -133,7 +125,7 @@ export default function ComboSlip({
                   <span className="font-mono tabular-nums text-gain">
                     {formatDollars(estimatePayoutCents(countN))}
                     <span className="ml-1 text-[10px] text-text-muted">
-                      (+{formatDollars(estimateProfitCents(priceN || estPrice, countN))})
+                      (+{formatDollars(estimateProfitCents(priceN > 0 ? priceN : estPrice, countN))})
                     </span>
                   </span>
                 </div>

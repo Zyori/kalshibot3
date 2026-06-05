@@ -1,18 +1,10 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { errorMessage, type ComboStrategy } from './ComboFields'
 import ComboSlip from './ComboSlip'
 import MarketBrowser from './MarketBrowser'
-import type { SlipLeg } from './types'
-
-type Materialized = {
-  ticker: string
-  subtitle: string | null
-  yes_bid_cents: number | null
-  yes_ask_cents: number | null
-  leg_count: number
-}
+import type { Materialized, SlipLeg } from './types'
 
 type PlaceResult = {
   bet_id: number
@@ -43,12 +35,16 @@ export default function ComboBuilder() {
 
   const apiLegs = legs.map(toApiLeg)
 
-  function addLeg(leg: SlipLeg) {
+  // Clicking an outcome toggles it: add if absent, remove if already picked.
+  function toggleLeg(leg: SlipLeg) {
     setLegs((prev) =>
-      prev.some((l) => l.market_ticker === leg.market_ticker) ? prev : [...prev, leg],
+      prev.some((l) => l.market_ticker === leg.market_ticker)
+        ? prev.filter((l) => l.market_ticker !== leg.market_ticker)
+        : [...prev, leg],
     )
     setStaged(null) // changing legs invalidates the staged combo
   }
+  // The slip's × button removes a specific leg.
   function removeLeg(marketTicker: string) {
     setLegs((prev) => prev.filter((l) => l.market_ticker !== marketTicker))
     setStaged(null)
@@ -103,16 +99,21 @@ export default function ComboBuilder() {
     },
   })
 
-  const selected = new Set(legs.map((l) => l.market_ticker))
+  // Stable identity so MarketBrowser only re-evaluates when legs change, not on
+  // every price/count keystroke.
+  const selected = useMemo(() => new Set(legs.map((l) => l.market_ticker)), [legs])
 
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_340px]">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+      {/* Market list fills its column fully — LIVE and UPCOMING are the same
+          full width. The slip sits in the right column right next to it. */}
       <div className="min-w-0">
         <p className="mb-3 text-sm text-text-muted">
           Click outcomes to build your parlay — the slip on the right shows the
-          running estimate. Stage to see the real Kalshi price, then confirm.
+          running estimate. Click a picked outcome again to remove it. Stage to
+          see the real Kalshi price, then confirm.
         </p>
-        <MarketBrowser selected={selected} onAddLeg={addLeg} />
+        <MarketBrowser selected={selected} onToggleLeg={toggleLeg} />
       </div>
       <ComboSlip
         legs={legs}

@@ -12,10 +12,10 @@ import type { FeedMarket, FeedResponse, SlipLeg } from './types'
  */
 export default function MarketBrowser({
   selected,
-  onAddLeg,
+  onToggleLeg,
 }: {
   selected: Set<string> // market_tickers already in the slip
-  onAddLeg: (leg: SlipLeg) => void
+  onToggleLeg: (leg: SlipLeg) => void // adds if absent, removes if already picked
 }) {
   const { data, isPending, isError, error } = useQuery<FeedResponse>({
     queryKey: ['markets-feed'],
@@ -42,8 +42,8 @@ export default function MarketBrowser({
 
   return (
     <div className="space-y-6">
-      <Section title="Live" empty="No live games right now." markets={data.live} onAddLeg={onAddLeg} selected={selected} />
-      <Section title="Upcoming" empty="No upcoming games." markets={data.upcoming} onAddLeg={onAddLeg} selected={selected} />
+      <Section title="Live" empty="No live games right now." markets={data.live} onToggleLeg={onToggleLeg} selected={selected} />
+      <Section title="Upcoming" empty="No upcoming games." markets={data.upcoming} onToggleLeg={onToggleLeg} selected={selected} />
     </div>
   )
 }
@@ -53,13 +53,13 @@ function Section({
   empty,
   markets,
   selected,
-  onAddLeg,
+  onToggleLeg,
 }: {
   title: string
   empty: string
   markets: FeedMarket[]
   selected: Set<string>
-  onAddLeg: (leg: SlipLeg) => void
+  onToggleLeg: (leg: SlipLeg) => void
 }) {
   const events = groupByEvent(markets)
   return (
@@ -77,7 +77,7 @@ function Section({
       ) : (
         <ul className="grid gap-2">
           {events.map((g) => (
-            <EventRow key={g.event_ticker} group={g} selected={selected} onAddLeg={onAddLeg} />
+            <EventRow key={g.event_ticker} group={g} selected={selected} onToggleLeg={onToggleLeg} />
           ))}
         </ul>
       )}
@@ -127,11 +127,11 @@ function groupByEvent(rows: FeedMarket[]): EventGroup[] {
 function EventRow({
   group,
   selected,
-  onAddLeg,
+  onToggleLeg,
 }: {
   group: EventGroup
   selected: Set<string>
-  onAddLeg: (leg: SlipLeg) => void
+  onToggleLeg: (leg: SlipLeg) => void
 }) {
   const matchLabel = formatMatchClock(
     group.espn_state, group.espn_period, group.espn_clock,
@@ -176,7 +176,7 @@ function EventRow({
             key={m.ticker}
             market={m}
             picked={selected.has(m.ticker)}
-            onAdd={onAddLeg}
+            onToggle={onToggleLeg}
           />
         ))}
       </div>
@@ -187,23 +187,25 @@ function EventRow({
 function OutcomeButton({
   market,
   picked,
-  onAdd,
+  onToggle,
 }: {
   market: FeedMarket
   picked: boolean
-  onAdd: (leg: SlipLeg) => void
+  onToggle: (leg: SlipLeg) => void
 }) {
   const label =
     market.yes_sub_title?.toLowerCase() === 'tie'
       ? 'Draw'
       : market.yes_sub_title ?? market.ticker
   const price = market.yes_ask_cents ?? market.yes_bid_cents
+  // Clicking a picked outcome removes it; the shell's toggle decides add vs
+  // remove from the leg's presence. The ✓ becomes a × on hover so it reads as
+  // "click to remove".
   return (
     <button
       type="button"
-      disabled={picked}
       onClick={() =>
-        onAdd({
+        onToggle({
           market_ticker: market.ticker,
           event_ticker: market.event_ticker,
           side: 'yes',
@@ -211,9 +213,10 @@ function OutcomeButton({
           price_cents: price,
         })
       }
-      className={`flex items-baseline gap-1.5 rounded border px-2 py-1 text-xs transition-colors ${
+      title={picked ? 'Click to remove from parlay' : 'Click to add to parlay'}
+      className={`group flex items-baseline gap-1.5 rounded border px-2 py-1 text-xs transition-colors ${
         picked
-          ? 'border-action bg-action/15 text-text'
+          ? 'border-action bg-action/15 text-text hover:border-loss hover:bg-loss/10'
           : 'border-border text-text-muted hover:border-action hover:bg-bg-hover hover:text-text'
       }`}
     >
@@ -221,7 +224,12 @@ function OutcomeButton({
       <span className="font-mono tabular-nums text-text">
         {price !== null ? `${price}¢` : '—'}
       </span>
-      {picked && <span className="text-action">✓</span>}
+      {picked && (
+        <span className="text-action group-hover:hidden">✓</span>
+      )}
+      {picked && (
+        <span className="hidden text-loss group-hover:inline">×</span>
+      )}
     </button>
   )
 }

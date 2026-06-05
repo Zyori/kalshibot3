@@ -11,7 +11,7 @@ import ComboLogForm from '../components/combos/ComboLogForm'
 export default function Combos() {
   const [tab, setTab] = useState<'build' | 'log'>('build')
   return (
-    <div className="mx-auto max-w-2xl space-y-6">
+    <div className="space-y-6">
       <header>
         <h2 className="text-lg font-semibold text-text">Combos</h2>
         <p className="mt-1 text-sm text-text-muted">
@@ -29,7 +29,14 @@ export default function Combos() {
         </Tab>
       </div>
 
-      {tab === 'build' ? <ComboBuilder /> : <ComboLogForm />}
+      {/* Builder uses the full page width; the log form stays narrow. */}
+      {tab === 'build' ? (
+        <ComboBuilder />
+      ) : (
+        <div className="max-w-2xl">
+          <ComboLogForm />
+        </div>
+      )}
     </div>
   )
 }
