@@ -34,6 +34,8 @@ from src.kalshi.schemas import (
     AmendOrderResponse,
     BalanceResponse,
     CancelOrderResponse,
+    CreateMultivariateMarketRequest,
+    CreateMultivariateMarketResponse,
     EventsResponse,
     FillsResponse,
     MarketsResponse,
@@ -42,6 +44,7 @@ from src.kalshi.schemas import (
     PlaceOrderRequest,
     PlaceOrderResponse,
     PositionsResponse,
+    SelectedMarket,
     SettlementsResponse,
 )
 
@@ -316,6 +319,57 @@ class KalshiRestClient:
             params["cursor"] = cursor
         data = await self._request("GET", "/events", params=params)
         return EventsResponse.model_validate(data)
+
+    # === Multivariate event collections (combos / parlays) ===
+
+    async def find_collection_for_event(self, event_ticker: str) -> str | None:
+        """Return the collection_ticker of the multivariate collection that
+        contains `event_ticker`, or None.
+
+        The collection ticker is NOT the bare series — it carries a period
+        suffix (e.g. KXMVESPORTSMULTIGAMEEXTENDED-R, the rolling collection).
+        We discover it by scanning the collections list and matching the event
+        against each collection's associated_event_tickers. Sports combos live
+        under the KXMVESPORTSMULTIGAMEEXTENDED-* collections; we filter to those
+        to bound the scan.
+        """
+        cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {"limit": 200}
+            if cursor:
+                params["cursor"] = cursor
+            data = await self._request(
+                "GET", "/multivariate_event_collections", params=params
+            )
+            for c in data.get("multivariate_contracts", []):
+                ct = c.get("collection_ticker") or c.get("ticker") or ""
+                if not ct.startswith("KXMVESPORTSMULTIGAMEEXTENDED"):
+                    continue
+                if event_ticker in (c.get("associated_event_tickers") or []):
+                    return ct
+            cursor = data.get("cursor")
+            if not cursor:
+                return None
+
+    async def create_multivariate_market(
+        self, *, collection_ticker: str, legs: list[SelectedMarket]
+    ) -> CreateMultivariateMarketResponse:
+        """Materialize the combo market for a set of leg selections and return
+        its ticker. Idempotent — the same legs return the same market_ticker
+        without consuming another of the weekly creation allowance, so it's safe
+        to call on every stage/preview."""
+        req = CreateMultivariateMarketRequest(selected_markets=legs)
+        log.info(
+            "create_multivariate_market",
+            collection_ticker=collection_ticker,
+            leg_count=len(legs),
+        )
+        data = await self._request(
+            "POST",
+            f"/multivariate_event_collections/{collection_ticker}",
+            json=req.model_dump(),
+        )
+        return CreateMultivariateMarketResponse.model_validate(data)
 
     # === Orders ===
 

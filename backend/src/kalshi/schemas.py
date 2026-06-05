@@ -500,3 +500,30 @@ class Event(WireModelLoose):
 class EventsResponse(WireModelLoose):
     events: list[Event] = Field(default_factory=list)
     cursor: str | None = None
+
+
+# === Multivariate event collections (combos / parlays) ===
+
+class SelectedMarket(WireModel):
+    """One leg of a combo: a single market + the side you're backing.
+    Kalshi calls this a TickerPair."""
+    market_ticker: str
+    event_ticker: str
+    side: Literal["yes", "no"]
+
+
+class CreateMultivariateMarketRequest(WireModel):
+    """Body for POST /multivariate_event_collections/{collection_ticker} —
+    materializes the combo market for a set of leg selections."""
+    selected_markets: list[SelectedMarket]
+    with_market_payload: bool = True
+
+
+class CreateMultivariateMarketResponse(WireModelLoose):
+    """The materialized combo. `market_ticker` is a normal ticker you then
+    trade through the standard CreateOrder endpoint. Idempotent: the same
+    selected_markets return the same market_ticker without consuming another
+    of the weekly creation allowance."""
+    event_ticker: str
+    market_ticker: str
+    market: Market | None = None

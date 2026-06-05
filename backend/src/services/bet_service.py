@@ -198,6 +198,7 @@ async def record_placed_order(
     human_reasoning: str | None = None,
     home_name: str | None = None,
     away_name: str | None = None,
+    combo_legs: list[ComboLegInput] | None = None,
 ) -> Bet | None:
     """Persist a freshly-placed order.
 
@@ -208,6 +209,11 @@ async def record_placed_order(
 
     Idempotent on (kalshi_order_id) for buys — repeated route calls return
     the existing row.
+
+    `combo_legs`, when given (a combo placed through the builder), are written
+    as combo_leg rows after the bet is created — captured direct from the
+    builder's own selections. The sport is inferred from the ticker, so a combo
+    order lands with sport=COMBO automatically.
     """
     if not is_tradeable_ticker(order.ticker):
         raise ValueError(f"refusing to record untracked ticker {order.ticker}")
@@ -290,6 +296,20 @@ async def record_placed_order(
     )
     session.add(bet)
     await session.flush()
+
+    if combo_legs:
+        for i, leg in enumerate(combo_legs):
+            session.add(ComboLeg(
+                bet_id=bet.id,
+                leg_index=i,
+                leg_ticker=leg.leg_ticker,
+                leg_event_ticker=leg.leg_event_ticker,
+                leg_title=leg.leg_title,
+                side=leg.side,
+                result=None,
+            ))
+        await session.flush()
+
     log.info(
         "bet_recorded",
         bet_id=bet.id,
@@ -298,6 +318,7 @@ async def record_placed_order(
         side=order.side,
         count=requested_count,
         price_cents=entry_price,
+        combo_leg_count=len(combo_legs) if combo_legs else 0,
     )
     return bet
 

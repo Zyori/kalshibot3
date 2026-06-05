@@ -21,10 +21,12 @@ from sqlalchemy.pool import StaticPool
 
 from src.core.db import Base
 from src.core.types import BetSide, BetSource, BetStatus, Sport, Strategy
+from src.kalshi.schemas import Order
 from src.models import Bet, BetFill, ComboLeg, Market
 from src.services.bet_service import (
     ComboLegInput,
     record_external_combo,
+    record_placed_order,
     settle_bets_for_market,
 )
 
@@ -159,6 +161,38 @@ async def test_rejects_non_combo_ticker(session: AsyncSession):
             session, ticker="KXWCGAME-26JUN11MEXRSA-MEX", side=BetSide.YES,
             entry_price_cents=50, quantity=1, legs=[], placed_at=datetime.now(timezone.utc),
         )
+
+
+@pytest.mark.asyncio
+async def test_placed_combo_records_human_bet_with_legs(session: AsyncSession):
+    """A combo placed THROUGH the builder records via record_placed_order with
+    combo_legs — source=HUMAN, verified=True, sport inferred=COMBO, legs written."""
+    order = Order(
+        order_id="ord-combo", client_order_id="cli-combo", ticker=COMBO_TICKER,
+        side="yes", action="buy", type="limit", status="resting",
+        yes_price=20, no_price=80, count=10, remaining_count=10,
+    )
+    bet = await record_placed_order(
+        session,
+        order=order,
+        client_order_id="cli-combo",
+        requested_count=10,
+        requested_price_cents=20,
+        action="buy",
+        source=BetSource.HUMAN,
+        strategy=Strategy.LOCK_PARLAY,
+        combo_legs=_legs(),
+    )
+    await session.flush()
+    assert bet is not None
+    assert bet.sport == Sport.COMBO          # inferred from the combo ticker
+    assert bet.source == BetSource.HUMAN
+    assert bet.verified is True
+    assert bet.entry_price_cents == 20
+    legs = (await session.execute(
+        select(ComboLeg).where(ComboLeg.bet_id == bet.id).order_by(ComboLeg.leg_index)
+    )).scalars().all()
+    assert [leg.leg_title for leg in legs] == ["Canada", "Georgia"]
 
 
 @pytest.mark.asyncio
