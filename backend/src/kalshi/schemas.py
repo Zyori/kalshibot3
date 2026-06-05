@@ -320,31 +320,36 @@ class Settlement(WireModelLoose):
 
     Authoritative source of "what did this market pay me?" Used when the
     WS market_lifecycle event was missed (subscription dropped before
-    settlement, reconnect gap, etc.) and the market endpoint doesn't
-    carry settlement_value (notably 3-way moneyline soccer markets where
-    `result == "scalar"`).
+    settlement, reconnect gap, etc.).
 
     Wire format (verified against Kalshi docs):
       ticker                str
-      market_result         "yes" | "no" | ""    YES-side winner indicator
+      market_result         "yes" | "no" | "scalar" | ""   YES-side winner
       yes_count             int                  contracts you held YES-side
       no_count              int                  contracts you held NO-side
       revenue               int cents            payout received
       settled_time          ISO timestamp
 
-    settlement_value_cents is derived: 100 if market_result == "yes",
-    0 if "no". For scalar settlements (rare on soccer moneylines) we
-    fall back to revenue / quantity but the common path is binary.
+    settlement_value_cents is derived: 100 if market_result == "yes", 0 if
+    "no". Both the markets this app handles — soccer per-game/total markets
+    AND combo (MVE) markets — settle binary yes/no (verified across the full
+    settlements history: every settled KXMVE combo and every soccer market
+    resolved yes/no, zero scalar). So combos settle through the sweeper with
+    no special handling.
     """
 
     ticker: str
     market_result: Literal["yes", "no", "scalar", ""] = ""
-    """Kalshi sends `scalar` for markets it didn't resolve to a clean yes/no
-    (3-way moneylines, and combo/MVE markets). The field MUST accept it: one
-    scalar row used to fail validation for the whole settlements page, killing
-    the settlement sweep for every ticker in that batch. `settlement_value_cents`
-    maps it to None, and the sweeper skips None and retries — the value comes
-    from the position going to zero, not from this field."""
+    """`scalar` is accepted but rare and not produced by any market this app
+    trades. Kalshi emits it for some exotic props (observed once on a Super
+    Bowl performance market — not soccer, not a combo). The field MUST accept
+    it anyway: one scalar row used to fail validation for the WHOLE settlements
+    page, killing the sweep for every ticker in that batch. settlement_value_cents
+    maps scalar to None and the sweeper skips it; that's correct, because a
+    scalar row is never one of ours (isolation drops non-tradeable tickers
+    upstream). If a tradeable market ever settles scalar, the bet would hang
+    OPEN — surfaced by the position-to-zero divergence log in position_sync, not
+    silently lost."""
     yes_count: int = Field(default=0, ge=0)
     no_count: int = Field(default=0, ge=0)
     revenue: int = Field(default=0)

@@ -86,7 +86,10 @@ async def test_records_open_external_combo_with_legs(session: AsyncSession):
     assert bet.entry_price_cents == 17
     assert bet.quantity == 95
     assert bet.stake_cents == 17 * 95  # exact: price * qty
-    assert bet.kalshi_order_id is None and bet.client_order_id is None
+    # No real Kalshi order id (logged, not placed). client_order_id is the
+    # synthetic per-ticker idempotency key that DB-enforces one log per combo.
+    assert bet.kalshi_order_id is None
+    assert bet.client_order_id == f"external-combo:{COMBO_TICKER}"
 
     legs = (await session.execute(
         select(ComboLeg).where(ComboLeg.bet_id == bet.id).order_by(ComboLeg.leg_index)
@@ -110,6 +113,36 @@ async def test_idempotent_on_ticker(session: AsyncSession):
     n_legs = await session.scalar(select(func.count(ComboLeg.id)))
     assert n_bets == 1
     assert n_legs == 2
+
+
+@pytest.mark.asyncio
+async def test_relog_same_ticker_no_order_id_returns_same_bet(session: AsyncSession):
+    """Logging the same combo ticker twice with no order_id is deduped by the
+    synthetic per-ticker client_order_id (one EXTERNAL combo per ticker)."""
+    first = await _record(session)
+    await session.flush()
+    second = await _record(session)  # no order_id → synthetic key path
+    assert first.id == second.id
+    assert await session.scalar(select(func.count(Bet.id))) == 1
+    # The synthetic key is what enforces it.
+    assert first.client_order_id == f"external-combo:{COMBO_TICKER}"
+
+
+def test_sports_leg_recognition():
+    """Per-leg isolation guard: sports legs pass, out-of-scope legs don't."""
+    from src.sports.combo import is_sports_leg_ticker
+    from src.sports.soccer import is_soccer_ticker
+
+    # A soccer leg passes via is_soccer_ticker; other sports via is_sports_leg.
+    assert is_sports_leg_ticker("KXNHLGAME-26JUN04VGKCAR-CAR")
+    assert is_sports_leg_ticker("KXNBAGAME-26JUN05NYKSAS-NYK")
+    assert is_sports_leg_ticker("KXMLBGAME-26JUN05-X")
+    # Out of scope: politics / weather / crypto must be refused.
+    assert not is_sports_leg_ticker("KXVPRESNOMR-28-EKIR")
+    assert not is_sports_leg_ticker("KXHIGHCHI-25JAN16")
+    # Soccer is handled by is_soccer_ticker, not the sports-leg list.
+    assert not is_sports_leg_ticker("KXINTLFRIENDLYGAME-26JUN08FRANIR-FRA")
+    assert is_soccer_ticker("KXINTLFRIENDLYGAME-26JUN08FRANIR-FRA")
 
 
 @pytest.mark.asyncio
@@ -222,3 +255,30 @@ async def test_combo_settles_binary_loss(session: AsyncSession):
     await session.refresh(bet)
     assert bet.status == BetStatus.LOST
     assert bet.pnl_cents == (0 - 17) * 95
+
+
+@pytest.mark.asyncio
+async def test_combo_settles_from_a_real_settlement_row(session: AsyncSession):
+    """Bridge the discovery→settle path the sweeper actually runs: feed the
+    settlement_value_cents derived from a Kalshi Settlement WIRE ROW (not a
+    hardcoded int) into settle_bets_for_market. Combos settle binary yes/no —
+    verified across full account history that no KXMVE combo ever returns
+    'scalar' — so this is the real production path, not a bypass."""
+    from src.kalshi.schemas import Settlement
+
+    bet = await _record(session)
+    await session.flush()
+
+    # A real settled-combo row as Kalshi returns it (market_result='yes').
+    row = Settlement(ticker=COMBO_TICKER, market_result="yes", revenue=9500)
+    assert row.settlement_value_cents == 100  # the value the sweeper feeds in
+
+    n = await settle_bets_for_market(
+        session, ticker=COMBO_TICKER,
+        settlement_value_cents=row.settlement_value_cents,
+    )
+    await session.flush()
+    assert n == 1
+    await session.refresh(bet)
+    assert bet.status == BetStatus.WON
+    assert bet.pnl_cents == (100 - 17) * 95

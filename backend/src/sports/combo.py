@@ -37,3 +37,27 @@ def is_combo_ticker(ticker: str) -> bool:
     firewall means the app stops acting on a real position of the user's.
     """
     return ticker.startswith(_COMBO_FAMILY_STEM)
+
+
+# Sports series that may appear as combo LEGS. A leg is a single-game/prop
+# market in one of these series. This is the per-leg isolation guard for combo
+# PLACEMENT: every leg the builder sends must be one of these before we
+# materialize + place, so a crafted out-of-scope leg (politics/weather/crypto)
+# is refused app-side rather than trusted to Kalshi. Derived from the series
+# actually present in Kalshi's sports combo collections (NBA/MLB/NHL/NFL/UFC
+# plus soccer). Extend when a new sport's legs appear.
+_SPORTS_LEG_PREFIXES: tuple[str, ...] = (
+    "KXNBA", "KXNFL", "KXNHL", "KXMLB", "KXUFC", "KXWNBA", "KXNCAA",
+    # Soccer per-game / total series share the KX…GAME / KX…TOTAL shapes but
+    # aren't all KX-prefixed uniformly; soccer legs are validated via
+    # is_soccer_ticker at the call site, so they don't need listing here.
+)
+
+
+def is_sports_leg_ticker(ticker: str) -> bool:
+    """True if `ticker` is a non-soccer sports market that may be a combo leg.
+
+    Soccer legs are checked separately via is_soccer_ticker; this covers the
+    other sports (NBA/NFL/NHL/MLB/UFC/…). Used by the combo placement path to
+    refuse legs that aren't sports markets at all."""
+    return ticker.startswith(_SPORTS_LEG_PREFIXES)

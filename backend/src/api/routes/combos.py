@@ -40,7 +40,8 @@ from src.services.bet_service import (
     record_external_combo,
     record_placed_order,
 )
-from src.sports.combo import is_combo_ticker
+from src.sports.combo import is_combo_ticker, is_sports_leg_ticker
+from src.sports.soccer import is_soccer_ticker
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -316,8 +317,23 @@ async def place_combo(
 
 
 async def _discover_collection(legs: list[LegInput]) -> str:
-    """Find the multivariate collection that hosts these legs (by the first
-    leg's event). Raises 422 if no sports collection contains it."""
+    """Validate every leg is an in-scope sports market, then find the
+    multivariate collection that hosts them (by the first leg's event).
+
+    Per-leg isolation (defense in depth): the order only ever lands on the
+    combo ticker, but we refuse a combo whose legs aren't all sports markets
+    app-side rather than trusting Kalshi — a crafted out-of-scope leg
+    (politics/weather/crypto) must never reach the place path. Raises 422 if
+    a leg is out of scope or no sports collection contains the first leg.
+    """
+    for leg in legs:
+        if not (is_soccer_ticker(leg.market_ticker)
+                or is_sports_leg_ticker(leg.market_ticker)):
+            raise HTTPException(
+                422,
+                f"leg {leg.market_ticker} is not a sports market — combos may "
+                "only bundle sports legs (soccer, NBA, NFL, NHL, MLB, UFC).",
+            )
     async with KalshiRestClient() as client:
         collection = await client.find_collection_for_event(legs[0].event_ticker)
     if collection is None:

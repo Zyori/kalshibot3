@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.logging import get_logger
@@ -369,10 +370,19 @@ async def record_external_combo(
     through the normal sweeper once the market resolves.
 
     Idempotent on kalshi_order_id when an order_id is given (the proper
-    idempotency key); otherwise on (market, source=EXTERNAL).
+    idempotency key). With no order_id we synthesize a deterministic
+    client_order_id from the ticker so the uq_bet_client_order_id unique
+    constraint enforces one EXTERNAL combo per combo ticker at the DB level —
+    a combo ticker is a specific materialized leg-set, never logged twice — and
+    a concurrent double-submit loses the INSERT race cleanly instead of
+    creating a duplicate stake.
     """
     if not is_combo_ticker(ticker):
         raise ValueError(f"not a combo ticker: {ticker}")
+
+    # The idempotency key: the real order id when known, else a deterministic
+    # per-ticker synthetic key.
+    synthetic_coid = None if order_id is not None else f"external-combo:{ticker}"
 
     if order_id is not None:
         existing = await session.scalar(
@@ -380,10 +390,7 @@ async def record_external_combo(
         )
     else:
         existing = await session.scalar(
-            select(Bet)
-            .where(Bet.market_id == select(Market.id).where(
-                Market.kalshi_ticker == ticker).scalar_subquery())
-            .where(Bet.source == BetSource.EXTERNAL)
+            select(Bet).where(Bet.client_order_id == synthetic_coid)
         )
     if existing is not None:
         log.info("combo_record_skipped_duplicate", ticker=ticker, bet_id=existing.id)
@@ -398,7 +405,7 @@ async def record_external_combo(
         suggestion_id=None,
         parent_bet_id=None,
         kalshi_order_id=order_id,
-        client_order_id=None,
+        client_order_id=synthetic_coid,
         side=side,
         entry_price_cents=entry_price_cents,
         exit_price_cents=None,
@@ -439,7 +446,23 @@ async def record_external_combo(
         settled_at=None,
     )
     session.add(bet)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError:
+        # Lost the INSERT race on the unique idempotency key (kalshi_order_id or
+        # the synthetic per-ticker client_order_id) — another concurrent log of
+        # the same combo won. Roll back this attempt and return the winner.
+        await session.rollback()
+        key = order_id if order_id is not None else synthetic_coid
+        winner = await session.scalar(
+            select(Bet).where(
+                (Bet.kalshi_order_id == key) | (Bet.client_order_id == key)
+            )
+        )
+        if winner is not None:
+            log.info("combo_record_lost_insert_race", ticker=ticker, bet_id=winner.id)
+            return winner
+        raise
 
     # Back-link any external bet_fill rows fills_sync already recorded for this
     # order (bet_id=NULL, carrying Kalshi's real fee). The sweep won't re-touch

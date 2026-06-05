@@ -90,10 +90,11 @@ class TestPriceRangeEnforcement:
 
 
 class TestSettlementResult:
-    """market_result must tolerate 'scalar'. Kalshi sends it for markets it
-    didn't resolve to a clean yes/no (3-way moneylines, combo/MVE markets).
-    A too-strict Literal used to fail validation for the whole settlements
-    page, killing the settlement sweep for every ticker in the batch."""
+    """market_result must tolerate 'scalar'. Kalshi emits it rarely for some
+    exotic props (NOT for any market this app trades — every settled soccer and
+    combo market resolves yes/no, verified across full history). A too-strict
+    Literal used to fail validation for the whole settlements page, killing the
+    settlement sweep for every ticker in the batch."""
 
     def test_scalar_result_accepted(self) -> None:
         s = Settlement(ticker="KXMVE-1", market_result="scalar")
