@@ -48,12 +48,20 @@ async def resolve_combo_legs(
         return 0
 
     # WON combo: every leg resolved the way it was picked. No network needed.
+    # Skip a leg with no recorded side — setting result=side=None would leave it
+    # pending and re-trigger this branch every sweep. (Side is always set for
+    # builder-placed and normally-parsed external combos; this is defensive.)
     if bet.status == BetStatus.WON:
+        marked = 0
         for leg in unresolved:
+            if leg.side is None:
+                continue
             leg.result = leg.side
-        await session.flush()
-        log.info("combo_legs_resolved_won", bet_id=bet.id, legs=len(unresolved))
-        return len(unresolved)
+            marked += 1
+        if marked:
+            await session.flush()
+            log.info("combo_legs_resolved_won", bet_id=bet.id, legs=marked)
+        return marked
 
     # LOST combo: look up each leg's own market result to find the miss(es).
     resolved = 0

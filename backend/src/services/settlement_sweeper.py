@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -121,15 +122,29 @@ async def sweep_settlements_once() -> dict[str, int]:
     return {"checked": len(open_tickers), "settled": settled_count}
 
 
+# A combo settles within hours of its legs' games; a leg still pending this
+# long after the combo settled has a game that's long over and settled to
+# something we can't read (void / scalar 3-way). Stop re-fetching it — past
+# this cutoff the pending legs are permanently unresolvable, not just late.
+_LEG_RERESOLVE_CUTOFF = timedelta(hours=48)
+
+
 async def _reresolve_pending_combo_legs() -> None:
-    """Re-resolve legs of already-settled combos that are still pending.
+    """Re-resolve legs of recently-settled combos that are still pending.
 
     A combo can settle before all its legs' games finish (one leg failing
     settles the parlay immediately). Those legs resolve over the next hours as
     their games end; this catches them. resolve_combo_legs is idempotent and
     skips already-resolved legs, so this only does work when a pending leg's
-    game has actually finished. No-op (and no network) when nothing is pending.
+    game has actually finished.
+
+    Bounded by _LEG_RERESOLVE_CUTOFF: once a combo settled more than the cutoff
+    ago, its still-pending legs are treated as permanently unresolvable and no
+    longer re-fetched — otherwise a leg that never settles to a clean yes/no
+    (voided friendly, scalar 3-way) would be polled from Kalshi every sweep
+    forever. No-op (and no network) when nothing recent is pending.
     """
+    cutoff = datetime.now(timezone.utc) - _LEG_RERESOLVE_CUTOFF
     factory = get_session_factory()
     async with factory() as session:
         pending_bet_ids = (await session.execute(
@@ -143,6 +158,7 @@ async def _reresolve_pending_combo_legs() -> None:
             select(Bet)
             .where(Bet.id.in_(pending_bet_ids))
             .where(Bet.status.in_((BetStatus.WON, BetStatus.LOST)))
+            .where(Bet.settled_at >= cutoff)
         )).scalars().all()
     if not bets:
         return

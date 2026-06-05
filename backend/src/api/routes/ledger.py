@@ -52,6 +52,38 @@ from src.sports.soccer import league_display_name
 router = APIRouter()
 
 
+async def _combo_counts(
+    session: AsyncSession, bet_ids: list[int]
+) -> tuple[dict[int, int], dict[int, int]]:
+    """Batch (leg_count, missed_count) per combo bet — avoids N+1 in the list
+    view and keeps the metadata-PATCH response label consistent with it.
+
+    A missed leg = a resolved leg whose result differs from the side we backed.
+    Both result and side must be non-null: a leg with an unknown side can't be
+    judged a miss, so it's excluded (NULL != x is NULL in SQL anyway, but the
+    explicit guard documents the intent)."""
+    leg_counts: dict[int, int] = {}
+    missed_counts: dict[int, int] = {}
+    if not bet_ids:
+        return leg_counts, missed_counts
+    count_rows = (await session.execute(
+        select(ComboLeg.bet_id, func.count(ComboLeg.id))
+        .where(ComboLeg.bet_id.in_(bet_ids))
+        .group_by(ComboLeg.bet_id)
+    )).all()
+    leg_counts = {bid: n for bid, n in count_rows}
+    missed_rows = (await session.execute(
+        select(ComboLeg.bet_id, func.count(ComboLeg.id))
+        .where(ComboLeg.bet_id.in_(bet_ids))
+        .where(ComboLeg.result.is_not(None))
+        .where(ComboLeg.side.is_not(None))
+        .where(ComboLeg.result != ComboLeg.side)
+        .group_by(ComboLeg.bet_id)
+    )).all()
+    missed_counts = {bid: n for bid, n in missed_rows}
+    return leg_counts, missed_counts
+
+
 def _market_label(
     b: Bet, ticker: str | None, leg_count: int = 0, missed_count: int = 0
 ) -> str:
@@ -228,27 +260,8 @@ async def list_bets(
     rows = (await session.execute(stmt)).all()
     has_more = len(rows) > limit
     rows = rows[:limit]
-    # Batch leg counts + missed-leg counts for the combo bets on this page
-    # (avoid N+1). Non-combo bets aren't in the maps and default to 0. A missed
-    # leg = a resolved leg whose result differs from the side we backed.
     combo_ids = [b.id for b, _t, _s in rows if b.sport == Sport.COMBO]
-    leg_counts: dict[int, int] = {}
-    missed_counts: dict[int, int] = {}
-    if combo_ids:
-        count_rows = (await session.execute(
-            select(ComboLeg.bet_id, func.count(ComboLeg.id))
-            .where(ComboLeg.bet_id.in_(combo_ids))
-            .group_by(ComboLeg.bet_id)
-        )).all()
-        leg_counts = {bid: n for bid, n in count_rows}
-        missed_rows = (await session.execute(
-            select(ComboLeg.bet_id, func.count(ComboLeg.id))
-            .where(ComboLeg.bet_id.in_(combo_ids))
-            .where(ComboLeg.result.is_not(None))
-            .where(ComboLeg.result != ComboLeg.side)
-            .group_by(ComboLeg.bet_id)
-        )).all()
-        missed_counts = {bid: n for bid, n in missed_rows}
+    leg_counts, missed_counts = await _combo_counts(session, combo_ids)
     out = [
         _bet_to_dict(
             b, ticker, market_status,
@@ -644,15 +657,17 @@ async def edit_bet_metadata(
     await session.commit()
     await session.refresh(bet)
     leg_count = 0
+    missed_count = 0
     if bet.sport == Sport.COMBO:
-        leg_count = await session.scalar(
-            select(func.count(ComboLeg.id)).where(ComboLeg.bet_id == bet.id)
-        ) or 0
+        legs, missed = await _combo_counts(session, [bet.id])
+        leg_count = legs.get(bet.id, 0)
+        missed_count = missed.get(bet.id, 0)
     return _bet_to_dict(
         bet,
         market.kalshi_ticker if market else None,
         market.status if market else None,
         leg_count,
+        missed_count,
     )
 
 

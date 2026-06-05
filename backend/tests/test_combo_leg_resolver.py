@@ -129,6 +129,30 @@ async def test_idempotent_skips_resolved_legs(session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_won_leg_with_null_side_is_skipped_not_looped(session: AsyncSession):
+    """A WON-combo leg with no recorded side must be skipped, not set to
+    result=side=None (which would leave it pending and re-trigger every sweep)."""
+    bet = await _combo_bet(session, status=BetStatus.WON)
+    # Null out one leg's side to simulate the defensive edge.
+    legs = (await session.execute(
+        select(ComboLeg).where(ComboLeg.bet_id == bet.id).order_by(ComboLeg.leg_index)
+    )).scalars().all()
+    legs[1].side = None
+    await session.flush()
+
+    client = FakeClient({})
+    n = await resolve_combo_legs(session, client, bet=bet)  # type: ignore[arg-type]
+    assert n == 2  # the two sided legs marked; the null-side one skipped
+    assert client.calls == 0
+    refreshed = (await session.execute(
+        select(ComboLeg).where(ComboLeg.bet_id == bet.id).order_by(ComboLeg.leg_index)
+    )).scalars().all()
+    assert refreshed[0].result == "yes"
+    assert refreshed[1].result is None  # skipped, not forced to None-via-side
+    assert refreshed[2].result == "yes"
+
+
+@pytest.mark.asyncio
 async def test_open_combo_is_skipped(session: AsyncSession):
     bet = await _combo_bet(session, status=BetStatus.OPEN)
     client = FakeClient({})
