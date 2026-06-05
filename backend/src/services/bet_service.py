@@ -420,6 +420,24 @@ async def record_external_combo(
     session.add(bet)
     await session.flush()
 
+    # Back-link any external bet_fill rows fills_sync already recorded for this
+    # order (bet_id=NULL, carrying Kalshi's real fee). The sweep won't re-touch
+    # a historical fill — its watermark has moved past it — so we bind it here
+    # at record time. Future combos work the same way: the fill exists by the
+    # time the user logs the bet. entry/stake stay as recorded; only fees flow
+    # from the fill.
+    if order_id is not None:
+        orphan_fills = (await session.execute(
+            select(BetFill)
+            .where(BetFill.order_id == order_id)
+            .where(BetFill.bet_id.is_(None))
+        )).scalars().all()
+        for f in orphan_fills:
+            f.bet_id = bet.id
+        if orphan_fills:
+            await session.flush()
+            await _recompute_bet_fees(session, bet=bet)
+
     for i, leg in enumerate(legs):
         session.add(ComboLeg(
             bet_id=bet.id,
@@ -440,6 +458,7 @@ async def record_external_combo(
         entry_price_cents=entry_price_cents,
         quantity=quantity,
         leg_count=len(legs),
+        entry_fees_cents=bet.entry_fees_cents,
     )
     return bet
 

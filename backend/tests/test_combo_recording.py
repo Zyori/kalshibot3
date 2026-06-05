@@ -21,7 +21,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.core.db import Base
 from src.core.types import BetSide, BetSource, BetStatus, Sport, Strategy
-from src.models import Bet, ComboLeg, Market
+from src.models import Bet, BetFill, ComboLeg, Market
 from src.services.bet_service import (
     ComboLegInput,
     record_external_combo,
@@ -116,6 +116,31 @@ async def test_order_id_stamped_for_fee_backlink(session: AsyncSession):
     await session.flush()
     # kalshi_order_id is set so fills_sync can back-link the external fill's fee.
     assert bet.kalshi_order_id == "ord-abc-123"
+
+
+@pytest.mark.asyncio
+async def test_backlinks_existing_orphan_fill_fee(session: AsyncSession):
+    """An external bet_fill already recorded by fills_sync (bet_id=NULL, real
+    fee) gets bound to the combo at record time, so the fee shows immediately —
+    not dependent on a future sweep that would skip the historical fill."""
+    session.add(BetFill(
+        bet_id=None, trade_id="t-1", order_id="ord-fee",
+        ticker=COMBO_TICKER, side="yes", action="buy",
+        price_cents=17, quantity_centi=9500, fee_cents=93,
+        is_taker=True, created_time=datetime.now(timezone.utc),
+    ))
+    await session.flush()
+
+    bet = await _record(session, order_id="ord-fee")
+    await session.flush()
+    await session.refresh(bet)
+
+    # The orphan fill is now bound and its fee is on the bet.
+    fill = (await session.execute(
+        select(BetFill).where(BetFill.trade_id == "t-1")
+    )).scalar_one()
+    assert fill.bet_id == bet.id
+    assert bet.entry_fees_cents == 93
 
 
 @pytest.mark.asyncio
