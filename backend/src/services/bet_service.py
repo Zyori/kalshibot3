@@ -322,6 +322,7 @@ async def record_external_combo(
     quantity: int,
     legs: list[ComboLegInput],
     placed_at: datetime,
+    order_id: str | None = None,
     strategy: Strategy = Strategy.LOCK_PARLAY,
     confidence: Confidence = Confidence.MEDIUM,
     timing: Timing = Timing.PRE_MATCH,
@@ -336,23 +337,33 @@ async def record_external_combo(
     to). Marked source=EXTERNAL, verified=False.
 
     The combo is one binary market, so the Bet carries all the money exactly
-    like any other bet; the legs are descriptive child rows. No bet_fill rows
-    are created — there's no WS fill to attach, and the entry/fees come from the
-    caller (hydrated from Kalshi's fills endpoint). Settlement flows through the
-    normal sweeper once the market resolves.
+    like any other bet; the legs are descriptive child rows.
 
-    Idempotent on ticker: a combo already logged returns the existing bet
-    rather than duplicating it (combos have no client_order_id to dedupe on).
+    `order_id` is the Kalshi order id of the buy (from the user's fills). When
+    given, we stamp it as kalshi_order_id so the periodic fills_sync sweep
+    back-links the already-recorded external bet_fill row (which carries Kalshi's
+    authoritative fee) to this bet — giving the combo the same fee-accurate
+    accounting as every other bet, instead of a fee-less stake. entry_price_cents
+    and stake stay as recorded; fills_sync only adds the fee. Settlement flows
+    through the normal sweeper once the market resolves.
+
+    Idempotent on kalshi_order_id when an order_id is given (the proper
+    idempotency key); otherwise on (market, source=EXTERNAL).
     """
     if not is_combo_ticker(ticker):
         raise ValueError(f"not a combo ticker: {ticker}")
 
-    existing = await session.scalar(
-        select(Bet)
-        .where(Bet.market_id == select(Market.id).where(
-            Market.kalshi_ticker == ticker).scalar_subquery())
-        .where(Bet.source == BetSource.EXTERNAL)
-    )
+    if order_id is not None:
+        existing = await session.scalar(
+            select(Bet).where(Bet.kalshi_order_id == order_id)
+        )
+    else:
+        existing = await session.scalar(
+            select(Bet)
+            .where(Bet.market_id == select(Market.id).where(
+                Market.kalshi_ticker == ticker).scalar_subquery())
+            .where(Bet.source == BetSource.EXTERNAL)
+        )
     if existing is not None:
         log.info("combo_record_skipped_duplicate", ticker=ticker, bet_id=existing.id)
         return existing
@@ -365,7 +376,7 @@ async def record_external_combo(
         market_id=market_id,
         suggestion_id=None,
         parent_bet_id=None,
-        kalshi_order_id=None,
+        kalshi_order_id=order_id,
         client_order_id=None,
         side=side,
         entry_price_cents=entry_price_cents,

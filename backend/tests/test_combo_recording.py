@@ -111,6 +111,23 @@ async def test_idempotent_on_ticker(session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_order_id_stamped_for_fee_backlink(session: AsyncSession):
+    bet = await _record(session, order_id="ord-abc-123")
+    await session.flush()
+    # kalshi_order_id is set so fills_sync can back-link the external fill's fee.
+    assert bet.kalshi_order_id == "ord-abc-123"
+
+
+@pytest.mark.asyncio
+async def test_idempotent_on_order_id(session: AsyncSession):
+    first = await _record(session, order_id="ord-xyz")
+    await session.flush()
+    second = await _record(session, order_id="ord-xyz")
+    assert first.id == second.id
+    assert await session.scalar(select(func.count(Bet.id))) == 1
+
+
+@pytest.mark.asyncio
 async def test_rejects_non_combo_ticker(session: AsyncSession):
     with pytest.raises(ValueError, match="not a combo ticker"):
         await record_external_combo(

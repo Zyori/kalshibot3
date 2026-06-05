@@ -90,13 +90,16 @@ async def log_combo(
         market = raw.get("market", raw)
         legs = _parse_legs(market)
 
-        # Entry price + quantity from the user's own fills on this ticker.
-        entry_price_cents = body.entry_price_cents
-        quantity = body.quantity
-        if entry_price_cents is None or quantity is None:
-            entry, qty = await _hydrate_entry_from_fills(client, body.ticker, body.side)
-            entry_price_cents = entry_price_cents if entry_price_cents is not None else entry
-            quantity = quantity if quantity is not None else qty
+        # Entry price + quantity + order_id from the user's own fills on this
+        # ticker. The order_id lets fills_sync back-link the external bet_fill
+        # (carrying Kalshi's real fee) to this bet.
+        entry, qty, order_id = await _hydrate_entry_from_fills(
+            client, body.ticker, body.side
+        )
+        entry_price_cents = (
+            body.entry_price_cents if body.entry_price_cents is not None else entry
+        )
+        quantity = body.quantity if body.quantity is not None else qty
 
     if entry_price_cents is None or quantity is None:
         raise HTTPException(
@@ -113,6 +116,7 @@ async def log_combo(
         quantity=quantity,
         legs=legs,
         placed_at=datetime.now(timezone.utc),
+        order_id=order_id,
         strategy=body.strategy,
         confidence=body.confidence,
         timing=body.timing,
@@ -138,15 +142,18 @@ async def log_combo(
 
 async def _hydrate_entry_from_fills(
     client: KalshiRestClient, ticker: str, side: BetSide
-) -> tuple[int | None, int | None]:
-    """Find the user's buy on this combo and return (entry_price_cents, qty).
+) -> tuple[int | None, int | None, str | None]:
+    """Find the user's buy on this combo and return
+    (entry_price_cents, qty, order_id).
 
     A combo buy is a single execution; we sum buy-side centi on the chosen side
     and take the centi-weighted average price, mirroring the bet aggregate math.
-    Returns (None, None) if no matching fill is found.
+    order_id is the buy's Kalshi order id (used to back-link the fill's real
+    fee). Returns (None, None, None) if no matching fill is found.
     """
     total_centi = 0
     weighted = 0
+    order_id: str | None = None
     cursor: str | None = None
     while True:
         resp = await client.get_fills(ticker=ticker, cursor=cursor)
@@ -156,10 +163,12 @@ async def _hydrate_entry_from_fills(
             price = f.yes_price if f.side == "yes" else f.no_price
             total_centi += f.count_centi
             weighted += price * f.count_centi
+            if order_id is None:
+                order_id = f.order_id
         cursor = resp.cursor or None
         if not cursor:
             break
     if total_centi <= 0:
-        return None, None
+        return None, None, None
     avg_price = max(1, min(99, weighted // total_centi))
-    return avg_price, total_centi // 100
+    return avg_price, total_centi // 100, order_id
