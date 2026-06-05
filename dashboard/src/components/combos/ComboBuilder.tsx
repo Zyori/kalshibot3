@@ -1,72 +1,58 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
-import { formatDollars } from '../../lib/format'
-import {
-  COMBO_STRATEGIES,
-  type ComboStrategy,
-  errorMessage,
-  Field,
-  Segmented,
-  type Side,
-  SIDES,
-} from './ComboFields'
-
-type LegDraft = {
-  id: string
-  market_ticker: string
-  event_ticker: string
-  side: Side
-}
-
-function emptyLeg(): LegDraft {
-  return { id: crypto.randomUUID(), market_ticker: '', event_ticker: '', side: 'yes' }
-}
-
-// The leg shape the API expects — LegDraft minus the client-only `id`.
-function toApiLeg(l: LegDraft) {
-  return { market_ticker: l.market_ticker, event_ticker: l.event_ticker, side: l.side }
-}
+import { errorMessage, type ComboStrategy } from './ComboFields'
+import ComboSlip from './ComboSlip'
+import MarketBrowser from './MarketBrowser'
+import type { SlipLeg } from './types'
 
 type Materialized = {
   ticker: string
-  event_ticker: string
   subtitle: string | null
   yes_bid_cents: number | null
   yes_ask_cents: number | null
-  no_bid_cents: number | null
-  no_ask_cents: number | null
   leg_count: number
 }
 
 type PlaceResult = {
   bet_id: number
-  ticker: string
-  side: Side
-  entry_price_cents: number
   quantity: number
+  entry_price_cents: number
   stake_cents: number
 }
 
+// The leg shape the API expects — SlipLeg minus the display-only fields.
+function toApiLeg(l: SlipLeg) {
+  return { market_ticker: l.market_ticker, event_ticker: l.event_ticker, side: l.side }
+}
+
 /**
- * Build a combo from legs and place it on Kalshi. Two steps, mirroring every
- * order: STAGE (materialize the combo market — idempotent, no order) then
- * CONFIRM (place a limit at your price). A fresh combo is illiquid, so you set
- * a deliberate limit price.
+ * Build a combo by browsing markets and clicking outcomes into a sticky slip.
+ * The slip shows a live estimate as the parlay grows; Stage materializes the
+ * real Kalshi combo, then Confirm places a limit order. Mirrors every order's
+ * human-confirmed flow.
  */
 export default function ComboBuilder() {
   const qc = useQueryClient()
-  const [legs, setLegs] = useState<LegDraft[]>([emptyLeg(), emptyLeg()])
-  const [side, setSide] = useState<Side>('yes')
+  const [legs, setLegs] = useState<SlipLeg[]>([])
   const [strategy, setStrategy] = useState<ComboStrategy>('lock_parlay')
   const [price, setPrice] = useState('')
   const [count, setCount] = useState('')
   const [why, setWhy] = useState('')
   const [staged, setStaged] = useState<Materialized | null>(null)
 
-  const filledLegs = legs.filter((l) => l.market_ticker.trim() && l.event_ticker.trim())
-  const canStage = filledLegs.length >= 2
-  const apiLegs = filledLegs.map(toApiLeg)
+  const apiLegs = legs.map(toApiLeg)
+
+  function addLeg(leg: SlipLeg) {
+    setLegs((prev) =>
+      prev.some((l) => l.market_ticker === leg.market_ticker) ? prev : [...prev, leg],
+    )
+    setStaged(null) // changing legs invalidates the staged combo
+  }
+  function removeLeg(marketTicker: string) {
+    setLegs((prev) => prev.filter((l) => l.market_ticker !== marketTicker))
+    setStaged(null)
+  }
 
   const stage = useMutation<Materialized, Error>({
     mutationFn: async () => {
@@ -91,7 +77,7 @@ export default function ComboBuilder() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           legs: apiLegs,
-          side,
+          side: 'yes',
           price_cents: Number(price),
           count: Number(count),
           strategy,
@@ -110,186 +96,44 @@ export default function ComboBuilder() {
       qc.invalidateQueries({ queryKey: ['ledger_stats'] })
       qc.invalidateQueries({ queryKey: ['positions'] })
       setStaged(null)
-      setLegs([emptyLeg(), emptyLeg()])
+      setLegs([])
       setPrice('')
       setCount('')
       setWhy('')
     },
   })
 
-  function updateLeg(i: number, patch: Partial<LegDraft>) {
-    setLegs((prev) => prev.map((l, j) => (j === i ? { ...l, ...patch } : l)))
-    setStaged(null) // editing legs invalidates the staged combo
-  }
-
-  const priceN = Number(price)
-  const countN = Number(count)
-  const stakeCents = priceN > 0 && countN > 0 ? priceN * countN : 0
-  const canPlace = staged && priceN >= 1 && priceN <= 99 && countN >= 1
+  const selected = new Set(legs.map((l) => l.market_ticker))
 
   return (
-    <div className="space-y-6">
-      <p className="text-sm text-text-muted">
-        Build a parlay leg by leg, stage it to see the combo market, then confirm
-        to place a limit order on Kalshi. Every order is human-confirmed.
-      </p>
-
-      <div className="space-y-3 rounded-md border border-border bg-bg-panel p-4">
-        <div className="text-xs uppercase tracking-wide text-text-muted">
-          Legs ({filledLegs.length})
-        </div>
-        {legs.map((leg, i) => (
-          <div key={leg.id} className="grid grid-cols-[1fr_1fr_auto_auto] items-end gap-2">
-            <Field label={i === 0 ? 'Market ticker' : ''}>
-              <input
-                value={leg.market_ticker}
-                onChange={(e) => updateLeg(i, { market_ticker: e.target.value.trim() })}
-                placeholder="KXINTLFRIENDLYGAME-…-FRA"
-                spellCheck={false}
-                className="w-full rounded border border-border bg-bg px-2 py-1.5 font-mono text-xs text-text outline-none focus:border-action"
-              />
-            </Field>
-            <Field label={i === 0 ? 'Event ticker' : ''}>
-              <input
-                value={leg.event_ticker}
-                onChange={(e) => updateLeg(i, { event_ticker: e.target.value.trim() })}
-                placeholder="KXINTLFRIENDLYGAME-…"
-                spellCheck={false}
-                className="w-full rounded border border-border bg-bg px-2 py-1.5 font-mono text-xs text-text outline-none focus:border-action"
-              />
-            </Field>
-            <div className="w-20">
-              <Segmented
-                options={SIDES}
-                value={leg.side}
-                onChange={(v) => updateLeg(i, { side: v })}
-              />
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setLegs((prev) => prev.filter((_, j) => j !== i))
-                setStaged(null)
-              }}
-              disabled={legs.length <= 2}
-              className="mb-0.5 rounded border border-border px-2 py-1.5 text-xs text-text-muted hover:bg-bg-hover disabled:opacity-30"
-              title="Remove leg"
-            >
-              ×
-            </button>
-          </div>
-        ))}
-        {legs.length < 8 && (
-          <button
-            type="button"
-            onClick={() => setLegs((prev) => [...prev, emptyLeg()])}
-            className="text-xs text-action hover:underline"
-          >
-            + Add leg
-          </button>
-        )}
-
-        <button
-          type="button"
-          onClick={() => stage.mutate()}
-          disabled={!canStage || stage.isPending}
-          className="w-full rounded border border-action bg-action/10 px-4 py-2 text-sm font-semibold text-text disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {stage.isPending ? 'Staging…' : 'Stage combo'}
-        </button>
-        {stage.isError && (
-          <div className="rounded border border-loss/40 bg-loss/10 px-3 py-2 text-xs text-loss">
-            {stage.error.message}
-          </div>
-        )}
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_340px]">
+      <div className="min-w-0">
+        <p className="mb-3 text-sm text-text-muted">
+          Click outcomes to build your parlay — the slip on the right shows the
+          running estimate. Stage to see the real Kalshi price, then confirm.
+        </p>
+        <MarketBrowser selected={selected} onAddLeg={addLeg} />
       </div>
-
-      {staged && (
-        <div className="space-y-4 rounded-md border border-action/40 bg-action/5 p-4">
-          <div>
-            <div className="text-xs uppercase tracking-wide text-text-muted">
-              Staged combo — {staged.leg_count} legs
-            </div>
-            <div className="mt-1 text-sm text-text">{staged.subtitle ?? staged.ticker}</div>
-            <div className="mt-1 font-mono text-[11px] text-text-muted">{staged.ticker}</div>
-            <div className="mt-1 font-mono text-xs text-text-muted">
-              book: yes {staged.yes_bid_cents ?? '—'}/{staged.yes_ask_cents ?? '—'} · no{' '}
-              {staged.no_bid_cents ?? '—'}/{staged.no_ask_cents ?? '—'}
-              {staged.yes_bid_cents === null && staged.yes_ask_cents === null && (
-                <span className="ml-2 text-action">(no book yet — set a limit)</span>
-              )}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Side">
-              <Segmented options={SIDES} value={side} onChange={setSide} />
-            </Field>
-            <Field label="Strategy">
-              <Segmented
-                options={COMBO_STRATEGIES}
-                value={strategy}
-                onChange={setStrategy}
-              />
-            </Field>
-            <Field label="Limit price (¢)">
-              <input
-                value={price}
-                onChange={(e) => setPrice(e.target.value)}
-                inputMode="numeric"
-                placeholder="17"
-                className="w-full rounded border border-border bg-bg px-3 py-2 font-mono text-sm text-text outline-none focus:border-action"
-              />
-            </Field>
-            <Field label="Contracts">
-              <input
-                value={count}
-                onChange={(e) => setCount(e.target.value)}
-                inputMode="numeric"
-                placeholder="50"
-                className="w-full rounded border border-border bg-bg px-3 py-2 font-mono text-sm text-text outline-none focus:border-action"
-              />
-            </Field>
-          </div>
-
-          <Field label="Why (optional)">
-            <textarea
-              value={why}
-              onChange={(e) => setWhy(e.target.value)}
-              rows={2}
-              className="w-full rounded border border-border bg-bg px-3 py-2 text-sm text-text outline-none focus:border-action"
-            />
-          </Field>
-
-          {stakeCents > 0 && (
-            <div className="font-mono text-xs text-text-muted">
-              Stake: {formatDollars(stakeCents)} ({countN} × {priceN}¢{' '}
-              {side.toUpperCase()})
-            </div>
-          )}
-
-          <button
-            type="button"
-            onClick={() => place.mutate()}
-            disabled={!canPlace || place.isPending}
-            className="w-full rounded bg-action px-4 py-2 text-sm font-semibold text-bg disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {place.isPending ? 'Placing…' : `Confirm & place ${side.toUpperCase()}`}
-          </button>
-          {place.isError && (
-            <div className="rounded border border-loss/40 bg-loss/10 px-3 py-2 text-xs text-loss">
-              {place.error.message}
-            </div>
-          )}
-        </div>
-      )}
-
-      {place.isSuccess && place.data && (
-        <div className="rounded-md border border-gain/40 bg-gain/5 p-4 text-sm text-gain">
-          Placed — bet #{place.data.bet_id}: {place.data.quantity} ×{' '}
-          {place.data.entry_price_cents}¢, stake {formatDollars(place.data.stake_cents)}
-        </div>
-      )}
+      <ComboSlip
+        legs={legs}
+        onRemove={removeLeg}
+        strategy={strategy}
+        setStrategy={setStrategy}
+        price={price}
+        setPrice={setPrice}
+        count={count}
+        setCount={setCount}
+        why={why}
+        setWhy={setWhy}
+        staged={staged}
+        onStage={() => stage.mutate()}
+        staging={stage.isPending}
+        stageError={stage.isError ? stage.error.message : null}
+        onPlace={() => place.mutate()}
+        placing={place.isPending}
+        placeError={place.isError ? place.error.message : null}
+        placed={place.isSuccess ? place.data : null}
+      />
     </div>
   )
 }
