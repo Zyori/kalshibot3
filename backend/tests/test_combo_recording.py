@@ -31,23 +31,27 @@ from src.kalshi.ws_wire import Fill, FillPayload
 from src.models import Bet, BetFill, ComboLeg, Market, PendingCombo
 from src.services.bet_service import (
     ComboLegInput,
+    recompute_bet_from_fills,
     record_external_combo,
     record_fill,
-    recompute_bet_from_fills,
     settle_bets_for_market,
 )
-
 
 COMBO_TICKER = "KXMVESPORTSMULTIGAMEEXTENDED-S202662EADA40D40-43319250880"
 
 
-def _combo_fill(*, order_id: str, price_cents: int, qty: int, ticker: str = COMBO_TICKER) -> Fill:
-    """A WS buy fill on a combo ticker (the async RFQ fill)."""
+def _combo_fill(
+    *, order_id: str, price_cents: int, qty: int, ticker: str = COMBO_TICKER,
+    trade_id: str | None = None,
+) -> Fill:
+    """A WS buy fill on a combo ticker (the async RFQ fill). `trade_id` defaults
+    to t-{order_id}; pass it explicitly to simulate two partial fills on the
+    same order (same order_id, distinct trade_id)."""
     yes_p = price_cents
     return Fill(
         type="fill", sid=1,
         msg=FillPayload(
-            trade_id=f"t-{order_id}", order_id=order_id, ticker=ticker,
+            trade_id=trade_id or f"t-{order_id}", order_id=order_id, ticker=ticker,
             side="yes", action="buy", count_centi=qty * 100,
             yes_price_cents=yes_p, no_price_cents=100 - yes_p,
             is_taker=True, ts=datetime.now(timezone.utc),
@@ -380,6 +384,29 @@ async def test_rfq_combo_records_at_ordered_size(session: AsyncSession):
     assert bet.quantity == 75
     assert bet.remaining_quantity_centi == 7500
     assert bet.entry_price_cents == 18  # refined from the fill
+
+
+@pytest.mark.asyncio
+async def test_combo_partial_fill_flags_unreconciled_then_clears(session: AsyncSession):
+    """A combo that fills short of its ordered count gets tagged for manual
+    review (quantity isn't auto-reconciled). A later fill that completes the
+    order clears the tag. The recorded quantity stays at the ordered size."""
+    await _stash_pending(session, count=10)  # ordered 10
+
+    # First partial: 6 of 10 fill.
+    await record_fill(session, _combo_fill(order_id="ord-p", price_cents=18, qty=6, trade_id="t-1"))
+    await session.flush()
+    bet = (await session.execute(
+        select(Bet).where(Bet.kalshi_order_id == "ord-p")
+    )).scalar_one()
+    assert bet.quantity == 10  # recorded at ordered size, not shrunk
+    assert "size-unreconciled" in (bet.tags or [])
+
+    # Remaining 4 fill on the same order (distinct trade_id) → order complete.
+    await record_fill(session, _combo_fill(order_id="ord-p", price_cents=18, qty=4, trade_id="t-2"))
+    await session.flush()
+    await session.refresh(bet)
+    assert "size-unreconciled" not in (bet.tags or [])
 
 
 @pytest.mark.asyncio

@@ -113,6 +113,34 @@ def _exact_cost_cents(weighted_centi: int) -> int:
     return weighted_centi // 100
 
 
+_COMBO_UNRECONCILED_TAG = "size-unreconciled"
+
+
+def _flag_combo_fill_shortfall(bet: Bet, *, filled_centi: int) -> None:
+    """Tag a combo whose buy fills don't add up to its ordered quantity.
+
+    A combo is recorded at the ordered count and we don't auto-derive filled
+    size from async fills. If it fills short, the recorded quantity overstates
+    what's held and settlement would pay PnL on phantom contracts. Surface it
+    with a tag (visible in the ledger) rather than reconciling silently — the
+    user verifies against Kalshi and adjusts. Idempotent: clears the tag if a
+    later fill completes the order. Logs only on a transition, not every fill."""
+    ordered_centi = bet.quantity * 100
+    tags = list(bet.tags or [])
+    short = 0 < filled_centi < ordered_centi
+    has_tag = _COMBO_UNRECONCILED_TAG in tags
+    if short and not has_tag:
+        bet.tags = tags + [_COMBO_UNRECONCILED_TAG]
+        log.warning(
+            "combo_partial_fill",
+            bet_id=bet.id, ordered=bet.quantity, filled=filled_centi // 100,
+            note="recorded size overstates holdings; verify against Kalshi",
+        )
+    elif not short and has_tag:
+        bet.tags = [t for t in tags if t != _COMBO_UNRECONCILED_TAG] or None
+        log.info("combo_fill_reconciled", bet_id=bet.id, filled=filled_centi // 100)
+
+
 async def _recompute_bet_fees(session: AsyncSession, *, bet: Bet) -> None:
     """Refresh entry_fees_cents and exit_fees_cents from this bet's bet_fill
     rows. Always derived; never accumulated. Safe to call whenever a
@@ -744,6 +772,15 @@ async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, Snap
             bet.entry_price_cents = _vwap_price_cents(weighted_centi, total_centi)
             bet.stake_cents = _exact_cost_cents(weighted_centi)
         await _recompute_bet_fees(session, bet=bet)
+        # A combo is recorded at the ORDERED size and we don't auto-reconcile its
+        # quantity from async fills (that was a money-path bug source). So if it
+        # fills short, quantity/remaining stay high and settlement would pay PnL
+        # on contracts never held. We can't fix it silently, but we can make it
+        # visible: tag it for manual review. Idempotent — a later fill that
+        # completes the order clears the tag. Combos only; single-market partials
+        # reconcile through the normal position flow.
+        if bet.sport == Sport.COMBO:
+            _flag_combo_fill_shortfall(bet, filled_centi=total_centi)
         bet.version += 1
         await session.flush()
         log.info(
