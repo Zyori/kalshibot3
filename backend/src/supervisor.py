@@ -28,6 +28,7 @@ from src.core.db import get_session_factory
 from src.core.logging import get_logger
 from src.core.ws_manager import BroadcastManager
 from src.ingestion.espn_news import EspnNews
+from src.ingestion.wc_standings import WcStandings
 from src.ingestion.espn_scoreboard import EspnEvent, EspnScoreboard
 from src.ingestion.market_discovery import FeedMarket, MarketDiscovery, MarketFeed
 from src.kalshi.live_state import LiveState
@@ -104,6 +105,9 @@ class Supervisor:
         # this shared snapshot.
         self.espn_scoreboard = EspnScoreboard()
         self.espn_news = EspnNews(kickoff_soon=self._wc_kickoff_soon)
+        # WC group standings — live table + qualification state for the partner
+        # context and /api/wc. Same ephemeral snapshot pattern + kickoff hook.
+        self.wc_standings = WcStandings(kickoff_soon=self._wc_kickoff_soon)
         self.market_discovery = MarketDiscovery(espn=self.espn_scoreboard)
         self.market_discovery.register_refresh_callback(self._on_discovery_refresh)
         # When ESPN flips a game in->post, freeze a final-phase snapshot on its
@@ -771,6 +775,9 @@ class Supervisor:
             self.espn_news.run(), name="espn_news",
         ))
         self._tasks.append(asyncio.create_task(
+            self.wc_standings.run(), name="wc_standings",
+        ))
+        self._tasks.append(asyncio.create_task(
             self.market_discovery.run(), name="market_discovery",
         ))
         self._tasks.append(asyncio.create_task(
@@ -806,6 +813,7 @@ class Supervisor:
         await self.market_refresher.stop()
         await self.espn_scoreboard.stop()
         await self.espn_news.stop()
+        await self.wc_standings.stop()
         await self.broadcast.stop()
         # Let in-flight snapshot writes finish — they're short inserts, and
         # cancelling one mid-write just loses a logbook row for no benefit.

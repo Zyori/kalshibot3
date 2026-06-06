@@ -28,6 +28,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -134,6 +135,10 @@ async def partner_context(
         # the numbers match the site. This is what lets LUTZ say "your draw bets
         # are -EV over 30 trades" instead of eyeballing recent rows.
         "history_stats": await compute_ledger_stats(session),
+        # WC group tables for the teams you hold positions in — so a book-scope
+        # read carries qualification context ("you're on Mexico; they top Group
+        # A, already advanced") without LUTZ having to pull /api/wc separately.
+        "standings": _standings_for_positions(request, positions["positions"]),
     }
 
     if event is not None:
@@ -148,6 +153,19 @@ async def partner_context(
         # suspensions LUTZ should factor into the read. Scoped to the two teams
         # so it's signal, not the whole board.
         out["event_news"] = _news_for_event(request, ev)
+        live = ev.get("live") or {}
+        teams = {n for n in (live.get("home_name"), live.get("away_name")) if n}
+        # Pre-match (before ESPN matches the game) `live` is null, so fall back to
+        # the two teams in the Kalshi event title ("Mexico vs South Africa") —
+        # group context is most useful in exactly that pre-kickoff window.
+        if not teams:
+            teams = _teams_from_title(ev.get("event_title"))
+        # This game's group table(s) + qualification state — the standings
+        # context for the two teams in play.
+        out["event_standings"] = _standings_for_teams(request, teams)
+        # Recent head-to-head meetings (on-demand from ESPN /summary). Reference
+        # color for the matchup; empty for non-WC teams or when ESPN has none.
+        out["event_h2h"] = await _h2h_for_event(ev)
 
     return out
 
@@ -167,6 +185,106 @@ def _news_for_event(request: Request, event_payload: dict[str, Any]) -> list[dic
         {"headline": a.headline, "published": utc_iso(a.published), "url": a.url}
         for a in news.for_teams(teams)
     ]
+
+
+def _group_digest(group: Any) -> dict[str, Any]:
+    """A WC group as a compact table for the partner: each row's rank, team,
+    record, points, GD, qualification state. Small enough to inline per relevant
+    group without flooding the context."""
+    return {
+        "group": group.name,
+        "table": [
+            {
+                "rank": t.rank,
+                "team": t.name,
+                "abbr": t.abbreviation,
+                "played": t.played,
+                "record": t.record,
+                "points": t.points,
+                "gd": t.goal_difference,
+                "advanced": t.advanced,
+                "qualification": t.qualification,
+            }
+            for t in group.teams
+        ],
+    }
+
+
+def _standings_for_teams(request: Request, team_names: set[str]) -> list[dict[str, Any]]:
+    """The group table(s) for the given teams (deduped — both teams in a game
+    usually share neither group, occasionally do). Empty when no standings
+    poller or the teams aren't WC teams. This is how LUTZ knows 'Mexico tops
+    Group A, already advanced' alongside the live read."""
+    wc = getattr(request.app.state, "wc_standings", None)
+    if wc is None or not team_names:
+        return []
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for name in team_names:
+        g = wc.snapshot.group_for_team(name)
+        if g is not None and g.name not in seen:
+            seen.add(g.name)
+            out.append(_group_digest(g))
+    return out
+
+
+def _teams_from_title(title: str | None) -> set[str]:
+    """The two team names from a Kalshi event title ("Mexico vs South Africa").
+    Pre-match fallback for standings when ESPN hasn't matched the game yet."""
+    if not title or " vs " not in title:
+        return set()
+    home, away = title.split(" vs ", 1)
+    return {home.strip(), away.strip()}
+
+
+def _standings_for_positions(
+    request: Request, positions: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Group tables for the teams across all open positions — singles by their
+    label, combos by their leg picks. Deduped by group so holding three teams in
+    Group C yields one table, not three. Lets a book-scope read carry the
+    qualification picture for everything you're holding."""
+    wc = getattr(request.app.state, "wc_standings", None)
+    if wc is None:
+        return []
+    keys: set[str] = set()
+    for p in positions:
+        if p.get("label"):
+            keys.add(str(p["label"]))
+        for leg in p.get("legs") or []:
+            if leg.get("pick"):
+                keys.add(str(leg["pick"]))
+    return _standings_for_teams(request, keys)
+
+
+async def _h2h_for_event(event_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Recent head-to-head meetings for this game's two teams, from ESPN's free
+    /summary (the same source the scoreboard uses for live shots). Fetched on
+    demand for the focused event only — one call, soccer-only, best-effort: any
+    error or missing data yields []. Each entry is a prior meeting: date, the two
+    teams, and the score."""
+    espn_id = (event_payload.get("live") or {}).get("espn_id")
+    if not espn_id:
+        return []
+    url = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/summary"
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.get(url, params={"event": espn_id})
+        if r.status_code != 200:
+            return []
+        data = r.json()
+    except Exception:  # noqa: BLE001 — H2H is reference color, never fail the context on it
+        return []
+    out: list[dict[str, Any]] = []
+    for block in data.get("headToHeadGames") or []:
+        for ev in block.get("events") or []:
+            out.append({
+                "date": ev.get("date"),
+                "name": ev.get("name") or ev.get("shortName"),
+                "score": ev.get("score") or ev.get("gameResult"),
+                "league": ev.get("leagueName") or ev.get("league"),
+            })
+    return out
 
 
 # === Write: suggestions ===================================================

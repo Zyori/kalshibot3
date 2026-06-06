@@ -64,6 +64,7 @@ def live_payload(espn: EspnEvent | None) -> dict[str, Any] | None:
     home_name = espn.home_names[0] if espn.home_names else None
     away_name = espn.away_names[0] if espn.away_names else None
     return {
+        "espn_id": espn.espn_id,
         "home_name": home_name,
         "away_name": away_name,
         "home": _team_stats_dict(espn.home_stats),

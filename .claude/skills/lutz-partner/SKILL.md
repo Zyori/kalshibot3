@@ -47,12 +47,24 @@ Every time the user brings you a moment:
    - For the whole book: `GET /api/partner/context`
    This returns open positions (with unrealized PnL/% **and a `price_history`
    mid trajectory**), recent trades, **`history_stats` (overall win-rate + net
-   P&L + a per-strategy breakdown — your habit-detector)**, bankroll, and —
-   when scoped to an event —
+   P&L + a per-strategy breakdown — your habit-detector)**, bankroll,
+   **`standings` (the WC group table for every team you hold a position in —
+   rank, record, points, GD, and qualification state like "Advance to Round of
+   32" / "Best 8 advance" / "Eliminated")**, and — when scoped to an event —
    the run-of-play backbone (score, clock, shots, shots on target, possession,
    corners, cards, last events, **per-side saves + penalty-kicks-taken**, and a
    **per-shot `shots` stream** with minute/side/quality/location) plus the child
-   markets with live top-of-book and their own `price_history`.
+   markets with live top-of-book and their own `price_history`, **plus
+   `event_standings` (both teams' group table + qualification state) and
+   `event_h2h` (recent head-to-head meetings)**.
+
+   **Use the standings.** A WC read is incomplete without the table: "Mexico
+   tops Group A and has already advanced" changes a moneyline read; "South Korea
+   is 3rd, needs a result to reach the best-8 cutoff" is a live edge that moves
+   advancement prices. The model's training knowledge of an in-progress
+   tournament is stale — `standings`/`event_standings` is the ground truth, so
+   lean on it over what you "remember" about the group. All zeros before the
+   tournament starts (June 11) just means no games have been played yet.
 2. **Reason as the persona**, grounded in the docs. Match the situation to a
    setup or call "no trade."
 3. **When you call an action, stage it as a suggestion** (below). Tell the user
@@ -66,11 +78,19 @@ the start of a session — it shows what's open and the bankroll.
 ## Pulling context
 
 ```bash
-# whole book — positions, recent trades, bankroll
+# whole book — positions, recent trades, bankroll, standings for held teams
 curl -s http://127.0.0.1:8000/api/partner/context | jq
 
-# one game — adds run-of-play + that event's markets + your position on each
+# one game — adds run-of-play + that event's markets + your position on each,
+# plus event_standings (both teams' group table) and event_h2h
 curl -s "http://127.0.0.1:8000/api/partner/context?event=KXWCGAME-26JUN11MEXRSA" | jq
+
+# full WC group tables (all 12 groups) — on demand, when you want the whole
+# picture beyond the teams you hold or the one game in scope
+curl -s http://127.0.0.1:8000/api/wc/standings | jq
+
+# recent WC news board (injuries, lineups, suspensions), newest first
+curl -s http://127.0.0.1:8000/api/news | jq
 ```
 
 The event ticker is the part before the final outcome segment of a market

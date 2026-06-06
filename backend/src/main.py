@@ -37,6 +37,7 @@ from src.api.routes import (
     partner,
     positions,
     settings,
+    wc,
 )
 from src.config import get_settings
 from src.core.db import dispose_engine, get_engine
@@ -127,6 +128,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.broadcast = app.state.supervisor.broadcast
     app.state.price_history = app.state.supervisor.price_history
     app.state.espn_news = app.state.supervisor.espn_news
+    app.state.wc_standings = app.state.supervisor.wc_standings
     app.state.supervisor.app_state = app.state
     if app.state.kalshi_auth_ok:
         await app.state.supervisor.start()
@@ -173,6 +175,7 @@ app.include_router(settings.router, prefix="/api")
 app.include_router(partner.router, prefix="/api")
 app.include_router(futures.router, prefix="/api")
 app.include_router(news.router, prefix="/api")
+app.include_router(wc.router, prefix="/api")
 app.include_router(ws_endpoint.router)
 
 
