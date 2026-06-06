@@ -54,7 +54,9 @@ class FakeClient:
         return {"market": {"result": self.results.get(ticker, "")}}
 
 
-async def _combo_bet(session: AsyncSession, *, status: BetStatus) -> Bet:
+async def _combo_bet(
+    session: AsyncSession, *, status: BetStatus, side: BetSide = BetSide.YES
+) -> Bet:
     market = Market(
         sport=Sport.COMBO, game_id=None, kalshi_ticker=COMBO_TICKER,
         market_type="combo", title=COMBO_TICKER, yes_price_cents=None,
@@ -64,7 +66,7 @@ async def _combo_bet(session: AsyncSession, *, status: BetStatus) -> Bet:
     session.add(market)
     await session.flush()
     bet = Bet(
-        sport=Sport.COMBO, market_id=market.id, side=BetSide.YES,
+        sport=Sport.COMBO, market_id=market.id, side=side,
         entry_price_cents=20, quantity=10, remaining_quantity=0,
         remaining_quantity_centi=0, stake_cents=200, status=status,
         source=BetSource.HUMAN, strategy=Strategy.LOCK_PARLAY,
@@ -94,6 +96,26 @@ async def test_won_combo_marks_all_legs_hit_without_network(session: AsyncSessio
         select(ComboLeg).where(ComboLeg.bet_id == bet.id)
     )).scalars().all()
     assert all(leg.result == "yes" for leg in legs)
+
+
+@pytest.mark.asyncio
+async def test_won_no_combo_resolves_each_leg_not_blind_fast_path(session: AsyncSession):
+    """A combo held NO that WON did so because the parlay MISSED — at least one
+    leg failed. It must do per-leg lookups, not the YES fast-path (which would
+    mislabel every leg as a hit)."""
+    bet = await _combo_bet(session, status=BetStatus.WON, side=BetSide.NO)
+    # The legs were picked 'yes'; the NO position won because LEG-B missed.
+    client = FakeClient({"LEG-A": "yes", "LEG-B": "no", "LEG-C": "yes"})
+    n = await resolve_combo_legs(session, client, bet=bet)  # type: ignore[arg-type]
+    assert n == 3
+    assert client.calls == 3  # NOT zero — the YES fast-path must not fire
+    legs = {
+        leg.leg_ticker: leg.result
+        for leg in (await session.execute(
+            select(ComboLeg).where(ComboLeg.bet_id == bet.id)
+        )).scalars().all()
+    }
+    assert legs == {"LEG-A": "yes", "LEG-B": "no", "LEG-C": "yes"}
 
 
 @pytest.mark.asyncio

@@ -6,9 +6,11 @@ not which legs did. But every leg ticker is itself a real market with its own
 leg's market result and record it on combo_leg.result, which the ledger renders
 as a per-leg ✓/✗.
 
-Shortcut: a WON combo means every leg hit (logical certainty) — we mark all legs
-with their selected side without any per-leg network calls. A LOST combo needs
-the per-leg lookups to find the miss(es).
+Shortcut: a combo held YES that WON means every leg hit (logical certainty) —
+we mark all legs with their selected side without any per-leg network calls.
+Every other terminal case needs per-leg lookups: a LOST combo (find the miss),
+AND a combo held NO that WON — a NO position wins precisely because the parlay
+did NOT all-hit, so at least one leg missed and we can't assume any leg hit.
 
 Kept separate from bet_service.settle_bets_for_market on purpose: settlement is
 a pure-DB transition with no network; this is the network-touching enrichment,
@@ -21,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.logging import get_logger
-from src.core.types import BetStatus
+from src.core.types import BetSide, BetStatus
 from src.kalshi.rest import KalshiRestClient
 from src.models import Bet, ComboLeg
 
@@ -47,11 +49,13 @@ async def resolve_combo_legs(
     if not unresolved:
         return 0
 
-    # WON combo: every leg resolved the way it was picked. No network needed.
+    # YES combo that WON: every leg hit the way it was picked. No network needed.
     # Skip a leg with no recorded side — setting result=side=None would leave it
     # pending and re-trigger this branch every sweep. (Side is always set for
     # builder-placed and normally-parsed external combos; this is defensive.)
-    if bet.status == BetStatus.WON:
+    # A NO combo that WON does NOT take this path: it won because the parlay
+    # missed, so we fall through to per-leg lookups to find which leg(s) missed.
+    if bet.status == BetStatus.WON and bet.side == BetSide.YES:
         marked = 0
         for leg in unresolved:
             if leg.side is None:
@@ -63,7 +67,8 @@ async def resolve_combo_legs(
             log.info("combo_legs_resolved_won", bet_id=bet.id, legs=marked)
         return marked
 
-    # LOST combo: look up each leg's own market result to find the miss(es).
+    # LOST combo, or WON-on-NO: look up each leg's own market result to find
+    # the actual hits/misses.
     resolved = 0
     for leg in unresolved:
         if not leg.leg_ticker:
