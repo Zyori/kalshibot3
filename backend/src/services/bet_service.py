@@ -96,6 +96,23 @@ def _materialize_bet_fill(
     return bf
 
 
+def _vwap_price_cents(weighted_centi: int, total_centi: int) -> int:
+    """Volume-weighted average price clamped to a valid Kalshi contract price
+    (1-99). `weighted_centi` is Σ(price_cents · quantity_centi); `total_centi`
+    is Σ(quantity_centi). The single source of truth for turning a weighted sum
+    into a stored entry/exit price — every buy/sell/settle path uses it so the
+    rounding+clamp rule lives in exactly one place."""
+    return max(1, min(99, weighted_centi // total_centi))
+
+
+def _exact_cost_cents(weighted_centi: int) -> int:
+    """Exact cost in cents from a weighted sum (price_cents · quantity_centi).
+    Divides the weighted sum by 100 rather than multiplying the floored VWAP by
+    quantity, so a fractional-VWAP entry keeps its true cost (a 57.71¢ VWAP does
+    not collapse to 57·qty)."""
+    return weighted_centi // 100
+
+
 async def _recompute_bet_fees(session: AsyncSession, *, bet: Bet) -> None:
     """Refresh entry_fees_cents and exit_fees_cents from this bet's bet_fill
     rows. Always derived; never accumulated. Safe to call whenever a
@@ -128,17 +145,13 @@ async def recompute_bet_from_fills(session: AsyncSession, *, bet: Bet) -> None:
     buy_centi = sum(f.quantity_centi for f in buys)
     buy_weighted = sum(f.price_cents * f.quantity_centi for f in buys)
     if buy_centi > 0:
-        # entry_price_cents: clamped whole-cent for the column / legacy callers.
-        bet.entry_price_cents = max(1, min(99, buy_weighted // buy_centi))
-        # stake_cents: EXACT cost (price·centi is cents·centi; /100 → cents).
-        # Derived from the weighted sum, NOT from the floored price, so a
-        # 57.71¢ VWAP keeps its true cost instead of collapsing to 57·qty.
-        bet.stake_cents = buy_weighted // 100
+        bet.entry_price_cents = _vwap_price_cents(buy_weighted, buy_centi)
+        bet.stake_cents = _exact_cost_cents(buy_weighted)
 
     sell_centi = sum(f.quantity_centi for f in sells)
     if sell_centi > 0:
         sell_weighted = sum(f.price_cents * f.quantity_centi for f in sells)
-        bet.exit_price_cents = max(1, min(99, sell_weighted // sell_centi))
+        bet.exit_price_cents = _vwap_price_cents(sell_weighted, sell_centi)
         # PnL against the EXACT entry VWAP, not the floored entry_price_cents.
         # (Σ sell_price·centi − entry_vwap·Σ sell_centi) / 100, where
         # entry_vwap = buy_weighted/buy_centi kept as a ratio to avoid the
@@ -728,10 +741,8 @@ async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, Snap
         total_centi = sum(f.quantity_centi for f in buy_fills)
         if total_centi > 0:
             weighted_centi = sum(f.price_cents * f.quantity_centi for f in buy_fills)
-            bet.entry_price_cents = max(1, min(99, weighted_centi // total_centi))
-            # Exact cost from the weighted sum, not the floored price — keeps
-            # a fractional-VWAP entry's true stake (see recompute_bet_from_fills).
-            bet.stake_cents = weighted_centi // 100
+            bet.entry_price_cents = _vwap_price_cents(weighted_centi, total_centi)
+            bet.stake_cents = _exact_cost_cents(weighted_centi)
         await _recompute_bet_fees(session, bet=bet)
         bet.version += 1
         await session.flush()
@@ -871,7 +882,7 @@ async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, Snap
                 f.price_cents * f.quantity_centi
                 for f in opener_fills if f.action == "sell"
             )
-            opener.exit_price_cents = max(1, min(99, sell_weighted // sell_centi))
+            opener.exit_price_cents = _vwap_price_cents(sell_weighted, sell_centi)
 
         await _recompute_bet_fees(session, bet=opener)
 
@@ -1146,9 +1157,15 @@ async def settle_bets_for_market(
         sold_centi = sum(f.quantity_centi for f in sold_fills)
         if sold_centi > 0:
             sold_weighted_centi = sum(f.price_cents * f.quantity_centi for f in sold_fills)
-            bet.exit_price_cents = (sold_weighted_centi + side_settle * held_centi) // (sold_centi + held_centi)
+            # Blend the sell VWAP with the settlement value over all contracts.
+            # Clamp like every other exit_price write: a losing settlement makes
+            # side_settle 0, which can drive the blend below 1¢ and store an
+            # invalid price (the column is a 1-99 contract price).
+            bet.exit_price_cents = _vwap_price_cents(
+                sold_weighted_centi + side_settle * held_centi, sold_centi + held_centi
+            )
         elif held_centi > 0:
-            bet.exit_price_cents = side_settle
+            bet.exit_price_cents = max(1, min(99, side_settle))
         # else: bet was already fully closed via sells; exit_price set then.
 
         bet.pnl_cents = bet.realized_pnl_cents
