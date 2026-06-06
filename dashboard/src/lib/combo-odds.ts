@@ -23,15 +23,3 @@ export function estimateComboPriceCents(legPricesCents: (number | null)[]): numb
   }
   return Math.max(1, Math.round(product * 100))
 }
-
-/** Estimated payout in cents if the combo hits: each contract pays out 100¢
- *  (the YES side resolves to $1), so payout = count × 100. Net profit would be
- *  payout − stake; we show gross payout next to the stake. */
-export function estimatePayoutCents(count: number): number {
-  return count * 100
-}
-
-/** Estimated profit in cents if the combo hits: payout − stake. */
-export function estimateProfitCents(priceCents: number, count: number): number {
-  return estimatePayoutCents(count) - priceCents * count
-}
