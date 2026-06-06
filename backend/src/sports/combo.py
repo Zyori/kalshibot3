@@ -20,7 +20,7 @@ sports/tradeable.py for the combined firewall check.
 
 from __future__ import annotations
 
-from src.sports.soccer import is_soccer_ticker
+from src.sports.soccer import is_soccer_ticker, parse_market_ticker
 
 # Kalshi multivariate series prefixes. All begin with the `KXMVE` family stem;
 # we match the stem so new MVE series are recognized without a code change,
@@ -127,3 +127,19 @@ def uniform_combo_sport(leg_tickers: list[str | None]) -> str | None:
             return None
         sports.add(s)
     return sports.pop() if len(sports) == 1 else None
+
+
+def combo_leg_pick(leg_title: str | None, leg_ticker: str | None) -> str:
+    """A short, human label for one combo leg's pick — for the compact card
+    chips. Prefers the stored title ("Brazil"); else derives the selection from
+    a soccer leg ticker ("MEX" → the picked team code, "Draw" for the tie);
+    else the trimmed ticker; else "?". Never the raw 40-char MVE-style string."""
+    if leg_title:
+        return leg_title
+    if leg_ticker:
+        parsed = parse_market_ticker(leg_ticker)
+        if parsed is not None:
+            return "Draw" if parsed.selection_code == "TIE" else parsed.selection_code
+        # Non-soccer or unparseable: last path segment is the most specific bit.
+        return leg_ticker.rsplit("-", 1)[-1]
+    return "?"

@@ -13,53 +13,68 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
 from src.core.types import BetSide, Sport, position_avg_entry_price, utc_iso
 from src.ingestion.market_discovery import MarketFeed
 from src.models import Bet, ComboLeg, Position
-from src.sports.combo import uniform_combo_sport
+from src.sports.combo import combo_leg_pick, uniform_combo_sport
 
 router = APIRouter()
 
 
-async def _combo_leg_counts(
+class ComboInfo:
+    """Per combo market: leg count, shared sport (or None if mixed), and a
+    compact pick list for the card chips."""
+
+    __slots__ = ("count", "sport", "legs")
+
+    def __init__(
+        self, count: int, sport: str | None, legs: list[dict[str, Any]]
+    ) -> None:
+        self.count = count
+        self.sport = sport
+        self.legs = legs
+
+
+async def _combo_info(
     session: AsyncSession, market_ids: list[int]
-) -> dict[int, int]:
-    """Leg count per combo market_id — for the "Parlay (N legs)" label. Combos
-    have no per-game title in the feed, so we count the legs attached to the
-    bet(s) on that market. Batched to avoid an N+1 over the position list."""
+) -> dict[int, ComboInfo]:
+    """Leg count, shared sport, and compact per-leg picks for each combo
+    market_id, in one batched query (no N+1 over the position list).
+
+    A pick = {pick, side, result}: the short label (combo_leg_pick), the backed
+    side, and the resolved result (None while pending) so the card can show
+    ✓/✗ as legs settle."""
     if not market_ids:
         return {}
     rows = (await session.execute(
-        select(Bet.market_id, func.count(ComboLeg.id))
-        .join(ComboLeg, ComboLeg.bet_id == Bet.id)
-        .where(Bet.market_id.in_(market_ids))
-        .group_by(Bet.market_id)
-    )).all()
-    return {market_id: n for market_id, n in rows}
-
-
-async def _combo_leg_sports(
-    session: AsyncSession, market_ids: list[int]
-) -> dict[int, str | None]:
-    """Per combo market_id, the single sport all its legs share (an all-World-Cup
-    parlay → 'soccer'), or None when mixed. Lets a same-sport parlay card show
-    that sport's badge while the position stays Sport.COMBO. Batched."""
-    if not market_ids:
-        return {}
-    rows = (await session.execute(
-        select(Bet.market_id, ComboLeg.leg_ticker)
+        select(
+            Bet.market_id,
+            ComboLeg.leg_title,
+            ComboLeg.leg_ticker,
+            ComboLeg.side,
+            ComboLeg.result,
+        )
         .join(ComboLeg, ComboLeg.bet_id == Bet.id)
         .where(Bet.market_id.in_(market_ids))
         .order_by(Bet.market_id, ComboLeg.leg_index)
     )).all()
-    by_market: dict[int, list[str | None]] = {}
-    for market_id, leg_ticker in rows:
-        by_market.setdefault(market_id, []).append(leg_ticker)
-    return {mid: uniform_combo_sport(tickers) for mid, tickers in by_market.items()}
+    tickers: dict[int, list[str | None]] = {}
+    legs: dict[int, list[dict[str, Any]]] = {}
+    for market_id, title, ticker, side, result in rows:
+        tickers.setdefault(market_id, []).append(ticker)
+        legs.setdefault(market_id, []).append({
+            "pick": combo_leg_pick(title, ticker),
+            "side": side,
+            "result": result,
+        })
+    return {
+        mid: ComboInfo(len(legs[mid]), uniform_combo_sport(tickers[mid]), legs[mid])
+        for mid in legs
+    }
 
 
 def _position_label(ticker: str, side: BetSide, feed: MarketFeed | None) -> str | None:
@@ -105,37 +120,38 @@ async def list_positions(
     feed = supervisor.market_discovery.get_feed() if supervisor is not None else None
     rows = (await session.execute(select(Position).order_by(Position.kalshi_ticker))).scalars().all()
     combo_market_ids = [p.market_id for p in rows if p.sport == Sport.COMBO]
-    leg_counts = await _combo_leg_counts(session, combo_market_ids)
-    leg_sports = await _combo_leg_sports(session, combo_market_ids)
+    combo_info = await _combo_info(session, combo_market_ids)
 
     def _label(p: Position) -> str | None:
         if p.sport == Sport.COMBO:
-            n = leg_counts.get(p.market_id, 0)
+            info = combo_info.get(p.market_id)
+            n = info.count if info else 0
             return f"Parlay ({n} legs)" if n else "Parlay"
         return _position_label(p.kalshi_ticker, p.side, feed)
 
-    return {
-        "positions": [
-            {
-                "ticker": p.kalshi_ticker,
-                "label": _label(p),
-                "sport": p.sport,
-                # Same-sport parlay → that sport for the badge; None otherwise.
-                "leg_sport": leg_sports.get(p.market_id) if p.sport == Sport.COMBO else None,
-                "side": p.side,
-                "quantity": p.quantity,
-                "avg_entry_price_cents": p.avg_entry_price_cents,
-                "avg_entry_price": position_avg_entry_price(
-                    p.cost_basis_cents, p.fees_paid_cents, p.quantity,
-                    p.avg_entry_price_cents,
-                ),
-                "cost_basis_cents": p.cost_basis_cents,
-                "current_price_cents": p.current_price_cents,
-                "unrealized_pnl_cents": p.unrealized_pnl_cents,
-                "realized_pnl_cents": p.realized_pnl_cents,
-                "fees_paid_cents": p.fees_paid_cents,
-                "last_synced": utc_iso(p.last_synced),
-            }
-            for p in rows
-        ],
-    }
+    def _row(p: Position) -> dict[str, Any]:
+        info = combo_info.get(p.market_id) if p.sport == Sport.COMBO else None
+        return {
+            "ticker": p.kalshi_ticker,
+            "label": _label(p),
+            "sport": p.sport,
+            # Same-sport parlay → that sport for the badge; None otherwise.
+            "leg_sport": info.sport if info else None,
+            # Compact per-leg picks for the card chips (combos only).
+            "legs": info.legs if info else None,
+            "side": p.side,
+            "quantity": p.quantity,
+            "avg_entry_price_cents": p.avg_entry_price_cents,
+            "avg_entry_price": position_avg_entry_price(
+                p.cost_basis_cents, p.fees_paid_cents, p.quantity,
+                p.avg_entry_price_cents,
+            ),
+            "cost_basis_cents": p.cost_basis_cents,
+            "current_price_cents": p.current_price_cents,
+            "unrealized_pnl_cents": p.unrealized_pnl_cents,
+            "realized_pnl_cents": p.realized_pnl_cents,
+            "fees_paid_cents": p.fees_paid_cents,
+            "last_synced": utc_iso(p.last_synced),
+        }
+
+    return {"positions": [_row(p) for p in rows]}

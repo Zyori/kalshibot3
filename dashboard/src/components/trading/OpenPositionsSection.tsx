@@ -7,11 +7,18 @@ import { SportBadge } from '../ledger/SportBadge'
 import { badgeSport } from '../../lib/sport'
 import { formatPriceCents, formatSignedDollars } from '../../lib/format'
 
+type ComboLeg = {
+  pick: string
+  side: 'yes' | 'no' | null
+  result: 'yes' | 'no' | null
+}
+
 type Position = {
   ticker: string
   label: string | null
   sport: string
   leg_sport: string | null
+  legs: ComboLeg[] | null
   side: 'yes' | 'no'
   quantity: number
   avg_entry_price_cents: number | null
@@ -19,6 +26,9 @@ type Position = {
   current_price_cents: number | null
   unrealized_pnl_cents: number | null
 }
+
+// How many pick chips to show before collapsing the rest into "+N".
+const MAX_PICK_CHIPS = 4
 
 type PositionsResponse = { positions: Position[] }
 
@@ -122,6 +132,8 @@ function PositionCardItem({ position: p }: { position: Position }) {
         </span>
       </div>
 
+      {p.legs && p.legs.length > 0 && <ParlayLegs legs={p.legs} />}
+
       <div className="mt-2 flex items-baseline justify-between gap-2 text-xs">
         <span className="text-text-muted">
           {p.quantity} @ {formatPriceCents(p.avg_entry_price ?? p.avg_entry_price_cents)}
@@ -138,5 +150,53 @@ function PositionCardItem({ position: p }: { position: Position }) {
         </span>
       </div>
     </Link>
+  )
+}
+
+/**
+ * Compact pick chips for a parlay card — enough to see what's riding without
+ * blowing out the card. Shows the first few picks, collapses the rest into
+ * "+N". Once legs start resolving, chips color (green hit / red miss) and a
+ * "X/N hit" summary appears so a live parlay's standing is visible at a glance.
+ */
+function ParlayLegs({ legs }: { legs: ComboLeg[] }) {
+  const resolved = legs.filter((l) => l.result !== null)
+  const hits = resolved.filter((l) => l.result === l.side).length
+  const shown = legs.slice(0, MAX_PICK_CHIPS)
+  const extra = legs.length - shown.length
+
+  return (
+    <div className="mt-2">
+      <div className="flex flex-wrap items-center gap-1">
+        {shown.map((leg, i) => {
+          const tone =
+            leg.result === null
+              ? 'border-border text-text-muted'
+              : leg.result === leg.side
+                ? 'border-gain/40 text-gain'
+                : 'border-loss/40 text-loss'
+          return (
+            <span
+              key={i}
+              className={`rounded border px-1 py-0.5 text-[10px] leading-none ${tone}`}
+              title={leg.pick}
+            >
+              {leg.pick}
+              {leg.result !== null && (
+                <span className="ml-0.5">{leg.result === leg.side ? '✓' : '✗'}</span>
+              )}
+            </span>
+          )
+        })}
+        {extra > 0 && (
+          <span className="text-[10px] leading-none text-text-muted">+{extra}</span>
+        )}
+      </div>
+      {resolved.length > 0 && (
+        <div className="mt-1 text-[10px] text-text-muted">
+          {hits}/{legs.length} legs hit
+        </div>
+      )}
+    </div>
   )
 }
