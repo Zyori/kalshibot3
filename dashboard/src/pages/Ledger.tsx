@@ -35,6 +35,10 @@ type Filters = {
   timing: string[]
 }
 
+// Statuses shown when "Hide cancelled" is on and the user hasn't explicitly
+// picked a status — everything except cancelled.
+const NON_CANCELLED_STATUSES = ['open', 'won', 'lost'] as const
+
 export default function Ledger() {
   const [filters, setFilters] = useState<Filters>({
     sport: [],
@@ -43,19 +47,32 @@ export default function Ledger() {
     strategy: [],
     timing: [],
   })
+  // Cancelled bets are mostly clear-bid-then-cancel noise that inflates the
+  // count and crowds the view. Hidden by default; flip off (or pick the
+  // 'cancelled' status chip) to see them. Reversible — nothing is deleted.
+  const [hideCancelled, setHideCancelled] = useState(true)
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [editingId, setEditingId] = useState<number | null>(null)
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams()
     for (const v of filters.sport) params.append('sport', v)
-    for (const v of filters.status) params.append('status', v)
+    // When the user hasn't chosen a status and hide-cancelled is on, request the
+    // non-cancelled set so the list AND the stats both exclude cancelled. An
+    // explicit status selection always wins (even if it includes 'cancelled').
+    const statuses =
+      filters.status.length > 0
+        ? filters.status
+        : hideCancelled
+          ? [...NON_CANCELLED_STATUSES]
+          : []
+    for (const v of statuses) params.append('status', v)
     for (const v of filters.source) params.append('source', v)
     for (const v of filters.strategy) params.append('strategy', v)
     for (const v of filters.timing) params.append('timing', v)
     params.set('limit', '200')
     return params.toString()
-  }, [filters])
+  }, [filters, hideCancelled])
 
   const bets = useQuery<LedgerResponse>({
     queryKey: ['ledger', queryString],
@@ -111,12 +128,23 @@ export default function Ledger() {
         selected={filters.sport}
         onToggle={(v) => toggle('sport', v)}
       />
-      <FilterBar
-        title="Status"
-        options={STATUS_OPTIONS as readonly string[]}
-        selected={filters.status}
-        onToggle={(v) => toggle('status', v)}
-      />
+      <div className="flex flex-wrap items-center gap-3">
+        <FilterBar
+          title="Status"
+          options={STATUS_OPTIONS as readonly string[]}
+          selected={filters.status}
+          onToggle={(v) => toggle('status', v)}
+        />
+        <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-text-muted">
+          <input
+            type="checkbox"
+            checked={hideCancelled}
+            onChange={(e) => setHideCancelled(e.target.checked)}
+            className="accent-action"
+          />
+          Hide cancelled
+        </label>
+      </div>
       <FilterBar
         title="Strategy"
         options={STRATEGY_OPTIONS as readonly string[]}
