@@ -52,8 +52,12 @@ def is_placeable_sports_combo(ticker: str) -> bool:
     ALLOWLIST, not a blocklist, so a new MVE series that could bundle a
     non-sports leg is refused by default rather than slipping through. (Combos
     are still RECOGNIZED via is_combo_ticker for the ledger/firewall —
-    recognition is not permission to place.)"""
-    return ticker.startswith(_PLACEABLE_SPORTS_SERIES)
+    recognition is not permission to place.)
+
+    Matches the series segment exactly (series + '-'), so a future series whose
+    name merely starts with ours (KXMVESPORTSMULTIGAMEEXTENDEDPLUS-…) doesn't
+    slip through the allowlist."""
+    return ticker.startswith(_PLACEABLE_SPORTS_SERIES + "-")
 
 
 # Sports series that may appear as combo LEGS. A leg is a single-game/prop

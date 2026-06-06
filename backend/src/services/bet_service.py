@@ -111,31 +111,6 @@ async def _recompute_bet_fees(session: AsyncSession, *, bet: Bet) -> None:
     )
 
 
-def _is_rfq_combo(bet: Bet) -> bool:
-    """An RFQ combo: placed via the request-for-quote flow, recorded only when
-    its async fill landed (so it carries kalshi_order_id but no client_order_id).
-    Its quantity IS what filled — there's no resting remainder that fills later,
-    unlike a /combos/place resting LIMIT combo (which has a client_order_id) or
-    any single-market bet. So its "ordered" basis is the actual buy-fill centi,
-    not quantity*100. This is the single predicate every quantity site uses to
-    decide the held basis — see _ordered_centi."""
-    return (
-        bet.sport == Sport.COMBO
-        and bet.kalshi_order_id is not None
-        and bet.client_order_id is None
-    )
-
-
-def _ordered_centi(bet: Bet, buy_centi: int) -> int:
-    """The contracts this bet 'ordered', in centi — the basis for remaining =
-    ordered - sold. For an RFQ combo that's exactly what filled (buy_centi);
-    for everything else it's quantity*100 (the full order, whose unfilled part
-    rests and fills later). SINGLE source of truth: every site that computes
-    remaining_quantity_centi for a bet must call this, so a partial RFQ-combo
-    fill can't be re-inflated to the ordered count by a later recompute."""
-    return buy_centi if _is_rfq_combo(bet) else bet.quantity * 100
-
-
 async def recompute_bet_from_fills(session: AsyncSession, *, bet: Bet) -> None:
     """Recompute every derived field on Bet from its bet_fill rows. Used
     when fills_sync back-links an orphan bet_fill to its Bet — we don't
@@ -173,11 +148,7 @@ async def recompute_bet_from_fills(session: AsyncSession, *, bet: Bet) -> None:
                 sell_weighted - (buy_weighted * sell_centi) // buy_centi
             ) // 100
 
-    # For an RFQ combo, quantity tracks what filled (buy_centi); set it before
-    # deriving remaining so the two stay consistent across every recompute.
-    if _is_rfq_combo(bet) and buy_centi > 0:
-        bet.quantity = max(1, buy_centi // 100)
-    ordered_centi = _ordered_centi(bet, buy_centi)
+    ordered_centi = bet.quantity * 100
     bet.remaining_quantity_centi = max(0, ordered_centi - sell_centi)
     bet.remaining_quantity = bet.remaining_quantity_centi // 100
 
@@ -581,10 +552,12 @@ async def _create_combo_bet_from_pending(
     market_id = await _get_or_create_market(
         session, ticker=ticker, market_type="combo"
     )
-    # Placeholder quantity/price — the caller (record_fill buy path) overwrites
-    # ALL of quantity/remaining/entry/stake from the actual fill centi the
-    # moment this bet is created, so a partial fill records the filled size, not
-    # the ordered count. pending.count is only a fallback display value.
+    # Recorded at the ORDERED size, like every other bet — entry_price/stake are
+    # refined from the actual fills by the caller (record_fill buy path), but
+    # quantity stays the ordered count. A lock parlay is taken in full; if a rare
+    # partial fill leaves the recorded size slightly high, adjust it manually.
+    # (We deliberately do NOT auto-derive filled size from async fills — that
+    # reconciliation was a persistent source of money-path bugs.)
     quantity = pending.count
     bet = Bet(
         sport=Sport.COMBO,
@@ -594,7 +567,7 @@ async def _create_combo_bet_from_pending(
         kalshi_order_id=order_id,
         client_order_id=None,
         side=side,
-        entry_price_cents=price_cents,  # overwritten from buy fills by the caller
+        entry_price_cents=price_cents,  # refined from buy fills by the caller
         exit_price_cents=None,
         quantity=quantity,
         remaining_quantity=quantity,
@@ -768,17 +741,6 @@ async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, Snap
             # Exact cost from the weighted sum, not the floored price — keeps
             # a fractional-VWAP entry's true stake (see recompute_bet_from_fills).
             bet.stake_cents = weighted_centi // 100
-            # An RFQ combo is one-shot: no resting remainder fills later, so its
-            # quantity IS what filled, not the ordered count — track it from the
-            # fills so a partial fill can't overstate the position (and thus
-            # settlement P&L). Uses the same _is_rfq_combo predicate as every
-            # other quantity site, so a later recompute can't re-inflate it.
-            # NOT applied to /combos/place resting-limit combos (they have a
-            # client_order_id and their unfilled remainder rests and fills later).
-            if _is_rfq_combo(bet):
-                bet.quantity = max(1, total_centi // 100)
-                bet.remaining_quantity_centi = total_centi
-                bet.remaining_quantity = total_centi // 100
         await _recompute_bet_fees(session, bet=bet)
         bet.version += 1
         await session.flush()
@@ -888,13 +850,11 @@ async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, Snap
             select(BetFill).where(BetFill.bet_id == opener.id)
         )).scalars().all()
         sell_centi = sum(f.quantity_centi for f in opener_fills if f.action == "sell")
-        buy_centi = sum(f.quantity_centi for f in opener_fills if f.action == "buy")
         # Ordered amount in centi minus sold centi = exact remaining. Kalshi
         # may split a single contract across fee tiers (0.97 + 0.03); using
         # whole contracts here would floor the residual to 0 and flip the
-        # bet terminal while exposure remained. For an RFQ combo the ordered
-        # basis is what filled (buy_centi), not quantity*100 — see _ordered_centi.
-        ordered_centi = _ordered_centi(opener, buy_centi)
+        # bet terminal while exposure remained.
+        ordered_centi = opener.quantity * 100
         opener.remaining_quantity_centi = max(0, ordered_centi - sell_centi)
         opener.remaining_quantity = opener.remaining_quantity_centi // 100
 
