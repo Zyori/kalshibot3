@@ -490,6 +490,34 @@ async def accept_quote(
     # Per-leg isolation on the money path — same guard as /rfq and /place.
     _validate_sports_legs(body.legs)
 
+    # 0) Verify the quote actually belongs to the combo the user staked. The
+    # guards above only checked body.ticker/body.legs (what the client CLAIMS);
+    # accept_quote moves money on whatever market quote_id points at. A stale or
+    # buggy client could send a quote_id for a different (even out-of-scope)
+    # market while passing sports-only legs — without this the order lands on the
+    # wrong market and the ledger records the wrong legs. Done BEFORE the stash
+    # so a refusal leaves nothing behind.
+    async with KalshiRestClient() as client:
+        try:
+            uid = await client.get_account_user_id()
+            my_quotes = await client.get_my_quotes(user_id=uid)
+        except KalshiError as e:
+            raise HTTPException(502, f"kalshi: could not verify quote: {str(e)[:160]}") from e
+    quote = next((q for q in my_quotes.quotes if q.id == body.quote_id), None)
+    if quote is None:
+        raise HTTPException(404, f"quote {body.quote_id} not found among your open quotes")
+    if quote.market_ticker != body.ticker:
+        log.warning(
+            "combo_accept_ticker_mismatch",
+            quote_id=body.quote_id, quote_ticker=quote.market_ticker,
+            body_ticker=body.ticker,
+        )
+        raise HTTPException(
+            409,
+            f"quote {body.quote_id} is for {quote.market_ticker}, "
+            f"not {body.ticker} — refusing to accept.",
+        )
+
     # 1) Stash the legs FIRST and commit, so the async fill can always find it.
     # Upsert on the unique combo_ticker; refresh created_at so the TTL sweep
     # measures from THIS accept, not a stale earlier one.
