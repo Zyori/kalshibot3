@@ -669,6 +669,14 @@ class Supervisor:
 
             self._last_tier[m.ticker] = tier
 
+        # Prune tiers for tickers that aged out of the discovery feed — they
+        # can't transition again, so their entries are dead weight. Without this
+        # the dict grows monotonically over a season (one entry per ticker ever
+        # seen). Same eviction discipline as _last_burst_at below.
+        seen = {m.ticker for m in all_markets}
+        for dead in self._last_tier.keys() - seen:
+            self._last_tier.pop(dead, None)
+
         # Total-goals subscriptions follow their game's lifecycle. A game's
         # event_ticker is the prefix of its market tickers (KX…GAME-DATE…-SIDE),
         # so derive the set of currently-active game events from subscribe_tickers
