@@ -49,6 +49,7 @@ from src.services.fills_sync import FillsSyncer
 from src.services.market_refresher import MarketRefresher
 from src.services.market_tier import MarketTier, classify
 from src.services.nudge_evaluator import Nudge, NudgeEvaluator
+from src.services.order_reconciler import OrderReconciler
 from src.services.position_sync import PositionSyncer, _mark_price_cents
 from src.services.price_history import PriceHistory
 from src.services.settlement_sweeper import SettlementSweeper
@@ -171,6 +172,11 @@ class Supervisor:
         # handlers re-derive bet aggregates from rows visible in their own
         # transaction, which is only correct under serialized writes.
         self._ledger_write_lock = asyncio.Lock()
+
+        # Reconciles OPEN bets whose Kalshi order was canceled outside our live
+        # paths (cancel on kalshi.com, or while the backend was down). Shares the
+        # ledger write lock so its transitions serialize against the WS handlers.
+        self.order_reconciler = OrderReconciler(self._ledger_write_lock)
 
         self._tasks: list[asyncio.Task[None]] = []
         # Fire-and-forget tasks (e.g. snapshot writes) kept in a set so the event
@@ -783,6 +789,9 @@ class Supervisor:
             self.settlement_sweeper.run(), name="settlement_sweep",
         ))
         self._tasks.append(asyncio.create_task(
+            self.order_reconciler.run(), name="order_reconcile",
+        ))
+        self._tasks.append(asyncio.create_task(
             self._nudge_observer_loop(), name="nudge_observer",
         ))
         log.info("supervisor_started", tasks=len(self._tasks))
@@ -790,6 +799,7 @@ class Supervisor:
     async def stop(self) -> None:
         """Cancel every task and await its cleanup."""
         await self.settlement_sweeper.stop()
+        await self.order_reconciler.stop()
         await self.fills_syncer.stop()
         await self.position_syncer.stop()
         await self.market_discovery.stop()
