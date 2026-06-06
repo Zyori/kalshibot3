@@ -271,16 +271,26 @@ async def list_bets(
         since=since,
         until=until,
     )
+    # Order by placed_at, newest first. placed_at is stored as text in SQLite
+    # and mixes two formats (older rows have an ISO `T` and `+00:00` suffix,
+    # newer rows a space and no tz), so a raw text ORDER BY scrambles them —
+    # but julianday() parses every format to a real number and sorts correctly.
+    # id is the tiebreaker for rows sharing a timestamp. This (vs the old id-only
+    # sort) puts a manually-edited/backdated placed_at in its true chronological
+    # spot instead of its insert position.
+    order_key = func.julianday(Bet.placed_at)
     if cursor is not None:
-        stmt = stmt.where(Bet.id < cursor)
-    # Order by id (newest first). placed_at on SQLite is stored as text and
-    # mixes two formats across the bet table — rows written before the
-    # batch_alter_table migration that added remaining_quantity have an ISO
-    # `T` and a `+00:00` suffix, rows written after have a space and no tz
-    # suffix. Text-sorting those mixes them out of chronological order. Since
-    # bet.id is monotonic and bets are inserted in placed_at order, id desc
-    # is the reliable chronological sort.
-    stmt = stmt.order_by(Bet.id.desc()).limit(limit + 1)
+        # Keyset pagination matching the sort: continue strictly after the
+        # cursor row in (placed_at DESC, id DESC) order. We carry the cursor as
+        # the row id and look up its placed_at so the cursor stays a simple int.
+        cursor_pa = await session.scalar(select(Bet.placed_at).where(Bet.id == cursor))
+        if cursor_pa is not None:
+            cursor_key = func.julianday(cursor_pa)
+            stmt = stmt.where(
+                (order_key < cursor_key)
+                | ((order_key == cursor_key) & (Bet.id < cursor))
+            )
+    stmt = stmt.order_by(order_key.desc(), Bet.id.desc()).limit(limit + 1)
 
     rows = (await session.execute(stmt)).all()
     has_more = len(rows) > limit
