@@ -122,9 +122,21 @@ class Supervisor:
             self.live_state, broadcast_queue=self.kalshi_to_browser,
             is_ws_authoritative=self.kalshi_ws.is_subscribed,
         )
+        # Serializes every DB write to the ledger's money rows (bet_fill, Bet).
+        # The WS handlers (fill, settlement, cancel) hold it directly; the
+        # background sweepers below hold it via core.locks.ledger_guard. ws.py
+        # dispatches each WS handler as a detached create_task, and the sweepers
+        # run on their own poll loops, so without one shared lock two writers on
+        # the same bet — a fill racing a settlement sweep, say — would run
+        # concurrent read-modify-write in separate sessions and the later commit
+        # would clobber the earlier (a lost update on realized PnL). Every writer
+        # re-derives bet aggregates from rows visible in its own transaction,
+        # which is only correct under serialized writes.
+        self._ledger_write_lock = asyncio.Lock()
+
         self.position_syncer = PositionSyncer(live_state=self.live_state)
-        self.fills_syncer = FillsSyncer()
-        self.settlement_sweeper = SettlementSweeper()
+        self.fills_syncer = FillsSyncer(self._ledger_write_lock)
+        self.settlement_sweeper = SettlementSweeper(self._ledger_write_lock)
         # position_syncer fires this when a Kalshi position drops to zero
         # while we still have an OPEN bet on that market — strong signal
         # that the position was paid out and we missed the WS lifecycle event.
@@ -167,15 +179,6 @@ class Supervisor:
         # Set externally (main.lifespan) so the fill handler can invalidate
         # the cached balance after a fill changes the account state.
         self.app_state: Any = None
-
-        # Serializes the DB-mutating WS handlers (fill, settlement, cancel).
-        # ws.py dispatches each as a detached create_task, so without this two
-        # fills on the same bet — or a fill racing a settlement — would run
-        # concurrent read-modify-write on the same bet_fill/Bet rows in separate
-        # sessions, and the later commit would clobber the earlier. All three
-        # handlers re-derive bet aggregates from rows visible in their own
-        # transaction, which is only correct under serialized writes.
-        self._ledger_write_lock = asyncio.Lock()
 
         # Reconciles OPEN bets whose Kalshi order was canceled outside our live
         # paths (cancel on kalshi.com, or while the backend was down). Shares the

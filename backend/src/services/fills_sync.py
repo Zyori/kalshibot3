@@ -31,6 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session_factory
+from src.core.locks import ledger_guard
 from src.core.logging import get_logger
 from src.kalshi.rest import KalshiRestClient
 from src.kalshi.schemas import Fill as RestFill
@@ -145,7 +146,9 @@ async def _ingest_rest_fill(
     return set()
 
 
-async def sync_fills_once(min_ts: int | None = None) -> dict[str, int]:
+async def sync_fills_once(
+    min_ts: int | None = None, lock: asyncio.Lock | None = None
+) -> dict[str, int]:
     """One pass over /portfolio/fills.
 
     `min_ts` is Kalshi's "fills created at or after this epoch second"
@@ -153,6 +156,15 @@ async def sync_fills_once(min_ts: int | None = None) -> dict[str, int]:
     minus a small overlap so any race-window fills are caught.
     Idempotent — every bet_fill is keyed by trade_id, so re-processing
     overlap is a no-op. The tradeable-ticker filter keeps the work bounded.
+
+    `lock` is the supervisor's ledger-write lock. recompute_bet_from_fills
+    mutates Bet rows the WS handlers also write, so the per-fill DB work
+    serializes under it. The network pull stays outside the lock.
+
+    Per-fill isolation: each fill is ingested + recomputed + committed on its
+    own. A single malformed REST row rolls back only itself and is logged,
+    rather than aborting the whole pass — which would otherwise wedge the
+    watermark and re-poison every 30s sweep, silently starving fee backfill.
     """
     rest_fills: list[RestFill] = []
     async with KalshiRestClient() as client:
@@ -166,45 +178,64 @@ async def sync_fills_once(min_ts: int | None = None) -> dict[str, int]:
 
     factory = get_session_factory()
     enriched = 0
-    affected_bet_ids: set[int] = set()
-    async with factory() as session:
-        for rf in rest_fills:
-            touched = await _ingest_rest_fill(session, rest_fill=rf)
-            if touched:
-                affected_bet_ids.update(touched)
-                enriched += 1
-        await session.flush()
-        for bet_id in affected_bet_ids:
-            bet = await session.get(Bet, bet_id)
-            if bet is not None:
-                # Full re-derive from bet_fill: catches orphan-buy back-links
-                # (entry_price + stake_cents reflect the now-bound fill) AND
-                # routine fee-only updates. Cheaper than two code paths.
-                await recompute_bet_from_fills(session, bet=bet)
-        await session.commit()
-
-    # Watermark = the latest fill ts we saw. Caller advances its cursor
-    # to (watermark - overlap_seconds) so the next sweep refetches the
-    # tail safely. 0 if we got no fills this pass.
+    recomputed = 0
+    failed = 0
     max_ts = 0
+    earliest_failure_ts: int | None = None
     for rf in rest_fills:
+        try:
+            async with ledger_guard(lock):
+                async with factory() as session:
+                    affected = await _ingest_rest_fill(session, rest_fill=rf)
+                    if affected:
+                        enriched += 1
+                    await session.flush()
+                    for bet_id in affected:
+                        bet = await session.get(Bet, bet_id)
+                        if bet is not None:
+                            # Full re-derive from bet_fill: catches orphan-buy
+                            # back-links (entry_price + stake_cents reflect the
+                            # now-bound fill) AND routine fee-only updates.
+                            await recompute_bet_from_fills(session, bet=bet)
+                            recomputed += 1
+                    await session.commit()
+        except Exception:  # noqa: BLE001
+            # Per-fill isolation: a malformed row rolls back only itself and is
+            # logged, rather than aborting the whole pass. The watermark is held
+            # at/below the earliest failure so the next sweep re-fetches and
+            # retries it (idempotent) instead of advancing past a fill that was
+            # never processed.
+            log.exception("fills_sync_row_failed", trade_id=rf.trade_id)
+            failed += 1
+            if rf.created_time is not None:
+                ts = int(rf.created_time.timestamp())
+                if earliest_failure_ts is None or ts < earliest_failure_ts:
+                    earliest_failure_ts = ts
+            continue
         if rf.created_time is not None:
             ts = int(rf.created_time.timestamp())
             if ts > max_ts:
                 max_ts = ts
 
+    # Don't let the watermark step past an unprocessed fill: cap it just below
+    # the earliest failure so that row is re-fetched next pass.
+    if earliest_failure_ts is not None:
+        max_ts = min(max_ts, earliest_failure_ts - 1) if max_ts else 0
+
     log.info(
         "fills_sync_complete",
         rest_fills=len(rest_fills),
         enriched=enriched,
-        bets_recomputed=len(affected_bet_ids),
+        bets_recomputed=recomputed,
+        failed=failed,
         since_ts=min_ts,
         max_ts=max_ts,
     )
     return {
         "rest_fills": len(rest_fills),
         "enriched": enriched,
-        "bets_recomputed": len(affected_bet_ids),
+        "bets_recomputed": recomputed,
+        "failed": failed,
         "max_ts": max_ts,
     }
 
@@ -225,10 +256,11 @@ class FillsSyncer:
     than the watermark we observed) and any clock skew between client/
     Kalshi. 60s is enough to cover a slow sweep."""
 
-    def __init__(self) -> None:
+    def __init__(self, lock: asyncio.Lock | None = None) -> None:
         self._stopped = False
         self._last_run_at: float | None = None
         self._watermark_ts: int | None = None
+        self._lock = lock
 
     @property
     def last_run_age_s(self) -> float | None:
@@ -248,7 +280,7 @@ class FillsSyncer:
                 None if self._watermark_ts is None
                 else max(0, self._watermark_ts - self.OVERLAP_SECONDS)
             )
-            result = await sync_fills_once(min_ts=since)
+            result = await sync_fills_once(min_ts=since, lock=self._lock)
             max_ts = result.get("max_ts", 0)
             if max_ts > 0 and (self._watermark_ts is None or max_ts > self._watermark_ts):
                 self._watermark_ts = max_ts

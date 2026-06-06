@@ -30,6 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session_factory
+from src.core.locks import ledger_guard
 from src.core.logging import get_logger
 from src.core.types import BetStatus, Sport
 from src.kalshi.rest import KalshiRestClient
@@ -44,13 +45,23 @@ log = get_logger(__name__)
 POLL_INTERVAL_S = 60
 
 
-async def sweep_settlements_once() -> dict[str, int]:
+async def sweep_settlements_once(
+    lock: asyncio.Lock | None = None,
+) -> dict[str, int]:
     """One pass: find tickers with OPEN bets, ask Kalshi if each has settled,
     drive settlement through bet_service when yes.
 
     Per-ticker query (not a bulk /settlements pull) because the bet set is
     small (single-user app, $4 bankroll, ~handful of OPEN bets at a time)
     and per-ticker is unambiguous about which markets we care about.
+
+    `lock` is the supervisor's ledger-write lock. The settle+commit step
+    mutates Bet rows the WS fill/cancel handlers also write, so it must
+    serialize against them — otherwise a settlement landing in the same
+    window as a sell fill is a lost update on realized PnL. We hold the lock
+    only across the pure-DB settle+commit, never across the Kalshi network
+    calls (fetching settlements, resolving legs), so it can't stall the WS
+    path on a slow Kalshi response.
     """
     factory = get_session_factory()
     async with factory() as session:
@@ -72,6 +83,7 @@ async def sweep_settlements_once() -> dict[str, int]:
         return {"checked": 0, "settled": 0}
 
     settled_count = 0
+    settled_combo_tickers: list[str] = []
     async with KalshiRestClient() as client:
         for ticker in open_tickers:
             try:
@@ -92,24 +104,33 @@ async def sweep_settlements_once() -> dict[str, int]:
                     continue
                 async with factory() as session:
                     try:
-                        n = await settle_bets_for_market(
-                            session,
-                            ticker=row.ticker,
-                            settlement_value_cents=value_cents,
-                        )
+                        async with ledger_guard(lock):
+                            n = await settle_bets_for_market(
+                                session,
+                                ticker=row.ticker,
+                                settlement_value_cents=value_cents,
+                            )
+                            await session.commit()
                         if n > 0:
                             settled_count += n
-                        # A settled combo: resolve which legs hit/missed for the
-                        # ledger drill-down. Network-touching, so it lives here
-                        # (client open) not in the pure-DB settle path.
-                        if n > 0 and is_combo_ticker(row.ticker):
-                            await _resolve_legs_for_market(session, client, row.ticker)
-                        await session.commit()
+                            if is_combo_ticker(row.ticker):
+                                settled_combo_tickers.append(row.ticker)
                     except Exception:  # noqa: BLE001
                         log.exception(
                             "settlement_sweep_settle_failed",
                             ticker=row.ticker,
                         )
+
+        # Resolve which legs hit/missed for each settled combo, for the ledger
+        # drill-down. Network-touching and money-free (combo_leg.result only),
+        # so it runs after the settlement commit and outside the ledger lock.
+        for ticker in settled_combo_tickers:
+            async with factory() as session:
+                try:
+                    await _resolve_legs_for_market(session, client, ticker)
+                    await session.commit()
+                except Exception:  # noqa: BLE001
+                    log.exception("settlement_sweep_legs_failed", ticker=ticker)
 
     # Fill in any combo legs whose games have since finished.
     await _reresolve_pending_combo_legs()
@@ -225,9 +246,10 @@ class SettlementSweeper:
     "Kalshi paid us, our row is stale" signal.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, lock: asyncio.Lock | None = None) -> None:
         self._stopped = False
         self._last_run_at: float | None = None
+        self._lock = lock
 
     @property
     def last_run_age_s(self) -> float | None:
@@ -243,7 +265,7 @@ class SettlementSweeper:
 
     async def _tick(self) -> None:
         try:
-            await sweep_settlements_once()
+            await sweep_settlements_once(self._lock)
             self._last_run_at = time.monotonic()
         except Exception:  # noqa: BLE001
             log.exception("settlement_sweep_failed")
