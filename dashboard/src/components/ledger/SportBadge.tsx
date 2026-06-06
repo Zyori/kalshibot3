@@ -1,17 +1,4 @@
-// Per-sport visual identity. Icon + accent color. Add a row when a new
-// sport lands in core/types.Sport.
-
-type SportMeta = {
-  label: string
-  icon: string
-  color: string // tailwind text color class
-}
-
-const SPORTS: Record<string, SportMeta> = {
-  soccer: { label: 'Soccer', icon: '⚽', color: 'text-emerald-400' },
-  nfl: { label: 'NFL', icon: '🏈', color: 'text-amber-500' },
-  ufc: { label: 'UFC', icon: '🥊', color: 'text-red-400' },
-}
+import { SPORTS } from '../../lib/sport'
 
 export function SportBadge({ sport, compact = false }: { sport: string; compact?: boolean }) {
   const meta = SPORTS[sport] ?? { label: sport, icon: '•', color: 'text-text-muted' }
@@ -31,5 +18,3 @@ export function SportBadge({ sport, compact = false }: { sport: string; compact?
     </span>
   )
 }
-
-export const KNOWN_SPORTS = Object.keys(SPORTS)

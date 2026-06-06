@@ -5,6 +5,10 @@
 export type Bet = {
   id: number
   sport: string
+  // For a same-sport combo, the sport its legs share ('soccer' for an
+  // all-World-Cup parlay); null for a mixed parlay or non-combo bet. Used for
+  // the badge so a one-sport parlay shows that sport, not the generic combo dot.
+  leg_sport: string | null
   ticker: string | null
   market_label: string
   leg_count: number

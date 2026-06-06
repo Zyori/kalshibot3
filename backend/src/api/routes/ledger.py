@@ -47,6 +47,7 @@ from src.core.types import (
 )
 from src.models import Bet, BetFill, ComboLeg, Market, TradeSnapshot
 from src.services.bet_service import settle_bets_for_market
+from src.sports.combo import uniform_combo_sport
 from src.sports.soccer import league_display_name
 
 router = APIRouter()
@@ -82,6 +83,25 @@ async def _combo_counts(
     )).all()
     missed_counts = {bid: n for bid, n in missed_rows}
     return leg_counts, missed_counts
+
+
+async def _combo_leg_sports(
+    session: AsyncSession, bet_ids: list[int]
+) -> dict[int, str | None]:
+    """Per combo bet, the single sport all its legs share (e.g. an all-World-Cup
+    parlay → 'soccer'), or None when the legs mix sports. Lets a same-sport
+    parlay show that sport's badge while the bet stays Sport.COMBO. Batched."""
+    if not bet_ids:
+        return {}
+    rows = (await session.execute(
+        select(ComboLeg.bet_id, ComboLeg.leg_ticker)
+        .where(ComboLeg.bet_id.in_(bet_ids))
+        .order_by(ComboLeg.bet_id, ComboLeg.leg_index)
+    )).all()
+    by_bet: dict[int, list[str | None]] = {}
+    for bet_id, leg_ticker in rows:
+        by_bet.setdefault(bet_id, []).append(leg_ticker)
+    return {bid: uniform_combo_sport(tickers) for bid, tickers in by_bet.items()}
 
 
 def _market_label(
@@ -125,6 +145,7 @@ def _bet_to_dict(
     market_status: str | None = None,
     leg_count: int = 0,
     missed_count: int = 0,
+    leg_sport: str | None = None,
 ) -> dict[str, Any]:
     fees_cents = (b.entry_fees_cents or 0) + (b.exit_fees_cents or 0)
     # Show running net PnL on partial closes. pnl_cents is None while the
@@ -135,6 +156,10 @@ def _bet_to_dict(
     return {
         "id": b.id,
         "sport": b.sport,
+        # For a combo whose legs are all one sport, the badge sport (e.g.
+        # 'soccer' for an all-World-Cup parlay); None for a mixed parlay or a
+        # non-combo bet. Display-only — `sport` stays 'combo'.
+        "leg_sport": leg_sport,
         "ticker": ticker,
         "market_label": _market_label(b, ticker, leg_count, missed_count),
         "leg_count": leg_count,
@@ -262,10 +287,12 @@ async def list_bets(
     rows = rows[:limit]
     combo_ids = [b.id for b, _t, _s in rows if b.sport == Sport.COMBO]
     leg_counts, missed_counts = await _combo_counts(session, combo_ids)
+    leg_sports = await _combo_leg_sports(session, combo_ids)
     out = [
         _bet_to_dict(
             b, ticker, market_status,
             leg_counts.get(b.id, 0), missed_counts.get(b.id, 0),
+            leg_sports.get(b.id),
         )
         for b, ticker, market_status in rows
     ]
@@ -658,16 +685,19 @@ async def edit_bet_metadata(
     await session.refresh(bet)
     leg_count = 0
     missed_count = 0
+    leg_sport: str | None = None
     if bet.sport == Sport.COMBO:
         legs, missed = await _combo_counts(session, [bet.id])
         leg_count = legs.get(bet.id, 0)
         missed_count = missed.get(bet.id, 0)
+        leg_sport = (await _combo_leg_sports(session, [bet.id])).get(bet.id)
     return _bet_to_dict(
         bet,
         market.kalshi_ticker if market else None,
         market.status if market else None,
         leg_count,
         missed_count,
+        leg_sport,
     )
 
 

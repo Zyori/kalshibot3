@@ -3,12 +3,15 @@ import { Link } from 'react-router'
 
 import InlineError from '../InlineError'
 import Skeleton from '../Skeleton'
+import { SportBadge } from '../ledger/SportBadge'
+import { badgeSport } from '../../lib/sport'
 import { formatPriceCents, formatSignedDollars } from '../../lib/format'
 
 type Position = {
   ticker: string
   label: string | null
   sport: string
+  leg_sport: string | null
   side: 'yes' | 'no'
   quantity: number
   avg_entry_price_cents: number | null
@@ -104,8 +107,11 @@ function PositionCardItem({ position: p }: { position: Position }) {
       className="block rounded-lg border border-border bg-bg-card p-3 transition-colors hover:bg-bg-hover"
     >
       <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 truncate text-sm text-text" title={title}>
-          {title}
+        <div className="flex min-w-0 items-center gap-1.5">
+          <SportBadge sport={badgeSport(p.sport, p.leg_sport)} compact />
+          <span className="min-w-0 truncate text-sm text-text" title={title}>
+            {title}
+          </span>
         </div>
         <span
           className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${

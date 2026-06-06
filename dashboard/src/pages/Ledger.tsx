@@ -5,7 +5,8 @@ import InlineError from '../components/InlineError'
 import PnLChart from '../components/charts/PnLChart'
 import StrategyBreakdown from '../components/charts/StrategyBreakdown'
 import BetMetadataForm from '../components/ledger/BetMetadataForm'
-import { SportBadge, KNOWN_SPORTS } from '../components/ledger/SportBadge'
+import { SportBadge } from '../components/ledger/SportBadge'
+import { KNOWN_SPORTS, badgeSport } from '../lib/sport'
 import { formatET, formatDollars, formatFee, formatPriceCents, formatSignedDollars } from '../lib/format'
 import type { Bet, BetFillsResponse, BetLegsResponse, LedgerStats as Stats } from '../lib/types'
 
@@ -410,7 +411,7 @@ function BetRow({
         className="cursor-pointer border-b border-border last:border-b-0 hover:bg-bg-hover"
       >
         <td className="px-3 py-2 text-center">
-          <SportBadge sport={bet.sport} compact />
+          <SportBadge sport={badgeSport(bet.sport, bet.leg_sport)} compact />
         </td>
         <td className="px-3 py-2 text-xs text-text-muted">{formatET(bet.placed_at)}</td>
         <td className="px-3 py-2 text-xs" title={bet.ticker ?? undefined}>

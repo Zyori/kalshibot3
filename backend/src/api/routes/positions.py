@@ -20,6 +20,7 @@ from src.core.db import get_session
 from src.core.types import BetSide, Sport, position_avg_entry_price, utc_iso
 from src.ingestion.market_discovery import MarketFeed
 from src.models import Bet, ComboLeg, Position
+from src.sports.combo import uniform_combo_sport
 
 router = APIRouter()
 
@@ -39,6 +40,26 @@ async def _combo_leg_counts(
         .group_by(Bet.market_id)
     )).all()
     return {market_id: n for market_id, n in rows}
+
+
+async def _combo_leg_sports(
+    session: AsyncSession, market_ids: list[int]
+) -> dict[int, str | None]:
+    """Per combo market_id, the single sport all its legs share (an all-World-Cup
+    parlay → 'soccer'), or None when mixed. Lets a same-sport parlay card show
+    that sport's badge while the position stays Sport.COMBO. Batched."""
+    if not market_ids:
+        return {}
+    rows = (await session.execute(
+        select(Bet.market_id, ComboLeg.leg_ticker)
+        .join(ComboLeg, ComboLeg.bet_id == Bet.id)
+        .where(Bet.market_id.in_(market_ids))
+        .order_by(Bet.market_id, ComboLeg.leg_index)
+    )).all()
+    by_market: dict[int, list[str | None]] = {}
+    for market_id, leg_ticker in rows:
+        by_market.setdefault(market_id, []).append(leg_ticker)
+    return {mid: uniform_combo_sport(tickers) for mid, tickers in by_market.items()}
 
 
 def _position_label(ticker: str, side: BetSide, feed: MarketFeed | None) -> str | None:
@@ -85,6 +106,7 @@ async def list_positions(
     rows = (await session.execute(select(Position).order_by(Position.kalshi_ticker))).scalars().all()
     combo_market_ids = [p.market_id for p in rows if p.sport == Sport.COMBO]
     leg_counts = await _combo_leg_counts(session, combo_market_ids)
+    leg_sports = await _combo_leg_sports(session, combo_market_ids)
 
     def _label(p: Position) -> str | None:
         if p.sport == Sport.COMBO:
@@ -98,6 +120,8 @@ async def list_positions(
                 "ticker": p.kalshi_ticker,
                 "label": _label(p),
                 "sport": p.sport,
+                # Same-sport parlay → that sport for the badge; None otherwise.
+                "leg_sport": leg_sports.get(p.market_id) if p.sport == Sport.COMBO else None,
                 "side": p.side,
                 "quantity": p.quantity,
                 "avg_entry_price_cents": p.avg_entry_price_cents,

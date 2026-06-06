@@ -20,6 +20,8 @@ sports/tradeable.py for the combined firewall check.
 
 from __future__ import annotations
 
+from src.sports.soccer import is_soccer_ticker
+
 # Kalshi multivariate series prefixes. All begin with the `KXMVE` family stem;
 # we match the stem so new MVE series are recognized without a code change,
 # but keep the known concrete prefixes documented for readers.
@@ -82,3 +84,46 @@ def is_sports_leg_ticker(ticker: str) -> bool:
     other sports (NBA/NFL/NHL/MLB/UFC/…). Used by the combo placement path to
     refuse legs that aren't sports markets at all."""
     return ticker.startswith(_SPORTS_LEG_PREFIXES)
+
+
+# Non-soccer leg prefix → sport name (for display badges). Soccer legs are
+# classified via is_soccer_ticker, not this map. Mirrors _SPORTS_LEG_PREFIXES.
+_LEG_PREFIX_SPORT: tuple[tuple[str, str], ...] = (
+    ("KXNFL", "nfl"),
+    ("KXNBA", "nba"), ("KXWNBA", "nba"),
+    ("KXNHL", "nhl"),
+    ("KXMLB", "mlb"),
+    ("KXUFC", "ufc"),
+    ("KXNCAA", "ncaa"),
+)
+
+
+def _leg_sport(ticker: str) -> str | None:
+    """Sport name for one combo leg ticker, or None if not a known sports leg.
+    Soccer first (its tickers don't all share a single prefix), then the
+    non-soccer prefix map."""
+    if is_soccer_ticker(ticker):
+        return "soccer"
+    for prefix, sport in _LEG_PREFIX_SPORT:
+        if ticker.startswith(prefix):
+            return sport
+    return None
+
+
+def uniform_combo_sport(leg_tickers: list[str | None]) -> str | None:
+    """The single sport shared by EVERY leg of a combo, or None.
+
+    A parlay whose legs are all the same sport (e.g. all World Cup soccer games)
+    gets that sport for its display badge — the bet itself stays Sport.COMBO so
+    it never pollutes the sport-only stats, this is display-only. Returns None
+    when the combo mixes sports or any leg can't be classified (don't guess on a
+    mixed parlay)."""
+    sports = set()
+    for t in leg_tickers:
+        if not t:
+            return None
+        s = _leg_sport(t)
+        if s is None:
+            return None
+        sports.add(s)
+    return sports.pop() if len(sports) == 1 else None
