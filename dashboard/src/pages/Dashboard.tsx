@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import InlineError from '../components/InlineError'
 import Skeleton from '../components/Skeleton'
+import OpenPositionsSection from '../components/trading/OpenPositionsSection'
 import { formatET, formatMatchClock } from '../lib/format'
 
 type FeedMarket = {
@@ -58,6 +59,8 @@ export default function Dashboard() {
           Soccer matches across every Kalshi series we track. Click any market to open it.
         </p>
       </header>
+
+      <OpenPositionsSection />
 
       <TickerLookup />
 

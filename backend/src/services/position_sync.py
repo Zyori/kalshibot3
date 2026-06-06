@@ -29,7 +29,7 @@ from collections.abc import Awaitable, Callable
 
 from src.core.db import get_session_factory
 from src.core.logging import get_logger
-from src.core.types import BetSide, BetStatus, MarketStatus, Sport
+from src.core.types import BetSide, BetStatus, MarketStatus, Sport, dollars_str_to_cents
 from src.kalshi.live_state import LiveState, MarketBook
 from src.kalshi.rest import KalshiRestClient
 from src.kalshi.schemas import PortfolioPosition
@@ -99,6 +99,42 @@ def _mark_price_cents(book: MarketBook | None, side: BetSide) -> int | None:
         return None
     mid: int = round((bid + ask) / 2)
     return mid
+
+
+def _rest_mark_price_cents(market: dict[str, object], side: BetSide) -> int | None:
+    """Mark for `side` from a REST /markets payload's dollar fields.
+
+    The fallback for positions with no live WS book — illiquid combos and
+    longshot outrights aren't WS-subscribed, so _mark_price_cents returns None
+    for them and the card would show no current price. Kalshi exposes the book
+    top on the market object as dollar strings (yes_bid_dollars etc.); route
+    them through the single canonical converter.
+
+    A book with no genuine quotes reports the full 0↔100 boundary
+    (bid=0, ask=100) on a side — its midpoint is a meaningless 50¢, NOT a price.
+    In that case fall back to last_price (the last real trade) for that side, and
+    only return None if there's no last trade either — never invent a 50¢ mark.
+    """
+    if side is BetSide.YES:
+        bid_raw, ask_raw = market.get("yes_bid_dollars"), market.get("yes_ask_dollars")
+    else:
+        bid_raw, ask_raw = market.get("no_bid_dollars"), market.get("no_ask_dollars")
+    if isinstance(bid_raw, str) and isinstance(ask_raw, str):
+        bid = dollars_str_to_cents(bid_raw)
+        ask = dollars_str_to_cents(ask_raw)
+        # Genuine two-sided-ish book: at least one side is quoted inside the
+        # 0↔100 boundary. (One-sided quotes — e.g. yes_ask 7¢, yes_bid 0¢ — are
+        # real and keep their midpoint.)
+        if not (bid == 0 and ask == 100):
+            return round((bid + ask) / 2)
+    # No real book on this side. last_price is market-wide on the YES scale; the
+    # NO holder's mark is its complement.
+    last_raw = market.get("last_price_dollars")
+    if isinstance(last_raw, str):
+        yes_last = dollars_str_to_cents(last_raw)
+        if yes_last > 0:
+            return yes_last if side is BetSide.YES else 100 - yes_last
+    return None
 
 
 async def _upsert_position(
@@ -236,6 +272,10 @@ async def sync_positions_once(live_state: LiveState | None = None) -> dict[str, 
     tracked_positions: list[PortfolioPosition] = []
     other_count = 0
 
+    # REST-sourced marks for positions with no live WS book, filled below while
+    # the client is open. ticker -> midpoint cents (or None when unquoted).
+    rest_marks: dict[str, int | None] = {}
+
     async with KalshiRestClient() as client:
         cursor: str | None = None
         while True:
@@ -250,6 +290,25 @@ async def sync_positions_once(live_state: LiveState | None = None) -> dict[str, 
             cursor = resp.cursor
             if not cursor:
                 break
+
+        # Fallback marks: any held ticker without a live WS book (illiquid
+        # combos, longshot outrights) gets one REST market read so its card can
+        # still show a current price + unrealized PnL. Only these — liquid
+        # markets already have a book mark. Best-effort: a per-market failure
+        # leaves that one unmarked, never aborts the sync.
+        for p in tracked_positions:
+            if p.position == 0:
+                continue
+            book = live_state.books.get(p.ticker) if live_state is not None else None
+            side, _qty = _signed_position_to_side_and_qty(p.position)
+            if _mark_price_cents(book, side) is not None:
+                continue
+            try:
+                raw = await client.get_market(p.ticker)
+                market = raw.get("market", raw)
+                rest_marks[p.ticker] = _rest_mark_price_cents(market, side)
+            except Exception:  # noqa: BLE001 — one bad market never fails the sweep
+                log.warning("position_rest_mark_failed", ticker=p.ticker)
 
     factory = get_session_factory()
     closed_with_open_bet: set[str] = set()
@@ -269,7 +328,11 @@ async def sync_positions_once(live_state: LiveState | None = None) -> dict[str, 
             # entry comes from Kalshi's exact cost basis, not the floored
             # avg, so the % the UI derives matches the dollar figure.
             book = live_state.books.get(p.ticker) if live_state is not None else None
+            # Live WS book first; fall back to the REST mark for book-less
+            # (illiquid) positions collected above.
             mark = _mark_price_cents(book, side)
+            if mark is None:
+                mark = rest_marks.get(p.ticker)
             unrealized: int | None = None
             if mark is not None and qty > 0:
                 entry_exact = abs(p.market_exposure) / qty  # cents/contract, fractional

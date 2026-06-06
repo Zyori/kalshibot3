@@ -1,8 +1,9 @@
 """Positions API.
 
-Read-only listing of the user's current soccer positions. Single source of
-truth is the POSITION table, which position_sync reconciles against Kalshi
-every 60s plus on every order placement.
+Read-only listing of the user's current open positions — soccer single-market
+positions and combo (parlay) positions alike. Single source of truth is the
+POSITION table, which position_sync reconciles against Kalshi every 60s plus on
+every order placement (tracked = soccer + combos, via is_tradeable_ticker).
 
 This route never hits Kalshi — keeping the dashboard polling cheap.
 """
@@ -12,15 +13,32 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
-from src.core.types import BetSide, position_avg_entry_price, utc_iso
+from src.core.types import BetSide, Sport, position_avg_entry_price, utc_iso
 from src.ingestion.market_discovery import MarketFeed
-from src.models import Position
+from src.models import Bet, ComboLeg, Position
 
 router = APIRouter()
+
+
+async def _combo_leg_counts(
+    session: AsyncSession, market_ids: list[int]
+) -> dict[int, int]:
+    """Leg count per combo market_id — for the "Parlay (N legs)" label. Combos
+    have no per-game title in the feed, so we count the legs attached to the
+    bet(s) on that market. Batched to avoid an N+1 over the position list."""
+    if not market_ids:
+        return {}
+    rows = (await session.execute(
+        select(Bet.market_id, func.count(ComboLeg.id))
+        .join(ComboLeg, ComboLeg.bet_id == Bet.id)
+        .where(Bet.market_id.in_(market_ids))
+        .group_by(Bet.market_id)
+    )).all()
+    return {market_id: n for market_id, n in rows}
 
 
 def _position_label(ticker: str, side: BetSide, feed: MarketFeed | None) -> str | None:
@@ -59,16 +77,27 @@ def _position_label(ticker: str, side: BetSide, feed: MarketFeed | None) -> str 
 async def list_positions(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> dict[str, Any]:
-    """Every open position in our DB. position_sync filters to soccer only,
-    so this is implicitly soccer-only too."""
+    """Every open position in our DB — soccer singles and combos. Soccer
+    positions get a team/outcome label from the discovery feed; combos get a
+    "Parlay (N legs)" label (they have no per-game title)."""
     supervisor = getattr(request.app.state, "supervisor", None)
     feed = supervisor.market_discovery.get_feed() if supervisor is not None else None
     rows = (await session.execute(select(Position).order_by(Position.kalshi_ticker))).scalars().all()
+    combo_market_ids = [p.market_id for p in rows if p.sport == Sport.COMBO]
+    leg_counts = await _combo_leg_counts(session, combo_market_ids)
+
+    def _label(p: Position) -> str | None:
+        if p.sport == Sport.COMBO:
+            n = leg_counts.get(p.market_id, 0)
+            return f"Parlay ({n} legs)" if n else "Parlay"
+        return _position_label(p.kalshi_ticker, p.side, feed)
+
     return {
         "positions": [
             {
                 "ticker": p.kalshi_ticker,
-                "label": _position_label(p.kalshi_ticker, p.side, feed),
+                "label": _label(p),
+                "sport": p.sport,
                 "side": p.side,
                 "quantity": p.quantity,
                 "avg_entry_price_cents": p.avg_entry_price_cents,
