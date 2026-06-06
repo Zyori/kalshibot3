@@ -533,15 +533,35 @@ async def accept_quote(
     # it is safe: if the order truly didn't place, the TTL sweep removes the
     # stash within the window (no fill ever binds); if it did place, the fill
     # binds correctly. The only cost is a stale stash lingering up to the TTL.
+    # body.side is the position the user wants to HOLD. Kalshi's accepted_side
+    # is which BID you take, and taking the yes-bid makes you the NO holder (a
+    # yes bid at X == a no ask at 100-X). So accepted_side is the OPPOSITE of the
+    # side you want to hold.
+    accepted_side = "no" if body.side == "yes" else "yes"
     async with KalshiRestClient() as client:
         try:
-            await client.accept_quote(body.quote_id)
+            await client.accept_quote(body.quote_id, side=accepted_side)
         except KalshiError as e:
             log.warning(
                 "combo_accept_kalshi_error",
                 quote_id=body.quote_id, ticker=body.ticker, error=str(e),
             )
             raise HTTPException(502, f"kalshi: {str(e)[:160]}") from e
+        except Exception:  # noqa: BLE001 — surface the real exception, not a bare 500
+            log.exception("combo_accept_unexpected", quote_id=body.quote_id)
+            raise
+        # Confirm starts the execution timer, but accept often fills immediately
+        # on a crossing quote — in which case confirm 4xxs (already executed).
+        # That's NOT a failure: the order is placed. Best-effort, never fail the
+        # request on it (a false 500 here makes the user think nothing happened
+        # and retry → double order).
+        try:
+            await client.confirm_quote(body.quote_id)
+        except Exception as e:  # noqa: BLE001 — confirm failing never fails the order
+            log.info(
+                "combo_confirm_skipped",
+                quote_id=body.quote_id, reason=str(e)[:120],
+            )
 
     return {
         "accepted": True,

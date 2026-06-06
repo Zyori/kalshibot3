@@ -169,11 +169,18 @@ function QuotesPanel({
   onAccept: (quote: Quote, side: 'yes' | 'no') => void
   accepting: boolean
 }) {
-  // Best YES = lowest cost to back the parlay; best NO = back against it.
+  // A maker's quote is posted as BIDS: yes_bid = the maker bidding to BUY yes,
+  // no_bid = bidding to buy no. As the taker, to HOLD yes you fill the maker's
+  // no-bid (cost = 100 - no_bid); to HOLD no you fill the yes-bid (cost =
+  // 100 - yes_bid). The buttons below are in YOUR position terms — the side you
+  // end up holding and the price you pay — and onAccept gets that hold-side.
+  const yesCost = (q: Quote) => 100 - q.no_bid_cents // cost to hold YES
+  const noCost = (q: Quote) => 100 - q.yes_bid_cents // cost to hold NO
+  // Best (cheapest) YES first.
   const sorted = [...quotes].sort((a, b) => {
-    const ay = a.yes_bid_cents || 999
-    const by = b.yes_bid_cents || 999
-    return ay - by
+    const ac = a.no_bid_cents > 0 ? yesCost(a) : 999
+    const bc = b.no_bid_cents > 0 ? yesCost(b) : 999
+    return ac - bc
   })
   return (
     <div className="rounded border border-action/40 bg-action/5 p-2">
@@ -198,26 +205,28 @@ function QuotesPanel({
             className="flex items-center justify-between gap-2 rounded border border-border bg-bg-card px-2 py-1.5 text-xs"
           >
             <div className="flex gap-3 font-mono tabular-nums">
-              {q.yes_bid_cents > 0 && (
+              {/* Hold YES: available when the maker bids on no; cost 100-no_bid */}
+              {q.no_bid_cents > 0 && (
                 <button
                   type="button"
                   disabled={accepting}
                   onClick={() => onAccept(q, 'yes')}
                   className="rounded border border-gain/50 px-2 py-0.5 text-gain hover:bg-gain/10 disabled:opacity-40"
-                  title={`Buy YES at ${q.yes_bid_cents}¢ · ${formatDollars(q.yes_bid_cents * countN)}`}
+                  title={`Buy YES at ${yesCost(q)}¢ · ${formatDollars(yesCost(q) * countN)}`}
                 >
-                  YES {q.yes_bid_cents}¢
+                  YES {yesCost(q)}¢
                 </button>
               )}
-              {q.no_bid_cents > 0 && (
+              {/* Hold NO: available when the maker bids on yes; cost 100-yes_bid */}
+              {q.yes_bid_cents > 0 && (
                 <button
                   type="button"
                   disabled={accepting}
                   onClick={() => onAccept(q, 'no')}
                   className="rounded border border-loss/50 px-2 py-0.5 text-loss hover:bg-loss/10 disabled:opacity-40"
-                  title={`Buy NO at ${q.no_bid_cents}¢ · ${formatDollars(q.no_bid_cents * countN)}`}
+                  title={`Buy NO at ${noCost(q)}¢ · ${formatDollars(noCost(q) * countN)}`}
                 >
-                  NO {q.no_bid_cents}¢
+                  NO {noCost(q)}¢
                 </button>
               )}
             </div>

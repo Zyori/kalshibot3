@@ -102,7 +102,11 @@ export default function ComboBuilder() {
     AcceptResult, Error, { quote: Quote; side: 'yes' | 'no'; ticker: string }
   >({
     mutationFn: async ({ quote, side, ticker }) => {
-      const price = side === 'yes' ? quote.yes_bid_cents : quote.no_bid_cents
+      // `side` is the position to HOLD. A maker posts bids: to hold YES you pay
+      // 100 - no_bid; to hold NO you pay 100 - yes_bid. (The backend translates
+      // the hold-side into Kalshi's accepted_side, which is the opposite.)
+      const price =
+        side === 'yes' ? 100 - quote.no_bid_cents : 100 - quote.yes_bid_cents
       const res = await fetch('/api/combos/accept', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

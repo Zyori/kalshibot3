@@ -194,6 +194,11 @@ class KalshiRestClient:
             )
             raise _classify_kalshi_error(resp.status_code, resp.text)
 
+        # Some endpoints (e.g. quote accept/confirm) return 204 No Content or an
+        # otherwise empty body on success — calling .json() on that raises
+        # JSONDecodeError. An empty body is a valid success; return {}.
+        if resp.status_code == 204 or not resp.content:
+            return {}
         data: dict[str, Any] = resp.json()
         return data
 
@@ -435,19 +440,23 @@ class KalshiRestClient:
                 break
         return QuotesResponse(quotes=all_quotes, cursor=None)
 
-    async def accept_quote(self, quote_id: str) -> dict[str, Any]:
-        """Accept a maker's quote. This requires the maker to then confirm; the
-        confirm starts the short execution timer that produces the fill."""
-        log.info("accept_quote", quote_id=quote_id)
+    async def accept_quote(self, quote_id: str, *, side: str) -> dict[str, Any]:
+        """Accept a quote on the chosen side. Per Kalshi's spec this is a PUT
+        with a required `accepted_side` body; it then needs a confirm to start
+        execution. (Verified against the OpenAPI spec — the earlier POST/no-body
+        form 404'd.)"""
+        log.info("accept_quote", quote_id=quote_id, side=side)
         return await self._request(
-            "POST", f"/communications/quotes/{quote_id}/accept"
+            "PUT", f"/communications/quotes/{quote_id}/accept",
+            json={"accepted_side": side},
         )
 
     async def confirm_quote(self, quote_id: str) -> dict[str, Any]:
-        """Confirm an accepted quote — starts order execution."""
+        """Confirm an accepted quote — PUT, starts the order-execution timer
+        that produces the fill."""
         log.info("confirm_quote", quote_id=quote_id)
         return await self._request(
-            "POST", f"/communications/quotes/{quote_id}/confirm"
+            "PUT", f"/communications/quotes/{quote_id}/confirm"
         )
 
     async def delete_rfq(self, rfq_id: str) -> dict[str, Any]:

@@ -531,6 +531,17 @@ async def _create_combo_bet_from_pending(
     if pending is None:
         return None
 
+    # The recorded side is the FILL's side — what we actually hold on Kalshi,
+    # the source of truth. If it disagrees with the side the user asked to hold
+    # (pending.side), that's a red flag the accept mapped to the wrong side —
+    # warn loudly. The ledger still records reality (the fill), not the intent.
+    if pending.side != side.value:
+        log.warning(
+            "combo_side_mismatch",
+            ticker=ticker, ordered_side=pending.side, filled_side=side.value,
+            note="ledger records the FILLED side (what you hold); investigate the accept mapping",
+        )
+
     # The reflective metadata is stored as plain strings; a value could be
     # invalid if an enum member was renamed/removed across a deploy while this
     # row was in flight. Casting it must NOT raise here — that would roll back
