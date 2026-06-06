@@ -64,10 +64,12 @@ const ET_TZ = 'America/New_York'
  *   state='in', period=2, clock='67:42'    → '68'   (rounded up, soccer convention)
  *   state='post' (after FT)                → 'Final'
  *
- * ESPN's clock counts UP within each half (not the broadcast countdown).
- * Period 1 = first half (1..45 + stoppage); period 2 = second half
- * (46..90 + stoppage). We display the human match-minute, rounded up so
- * 67:42 reads '68' the same way Kalshi labels in-game prices.
+ * ESPN's displayClock is the ABSOLUTE match minute, not a per-half count:
+ * the second half reads 46:00..90+ and extra time 91:00.., so the human
+ * match-minute is just the clock rounded up (67:42 → 68), the same way
+ * Kalshi labels in-game prices. (The backend's clock_to_minute parses it
+ * identically — see nudge_evaluator.) Period is used only for halftime and
+ * penalty labels, never added to the minute.
  *
  * Falls back to ESPN's status_detail when it carries a clearer label
  * (e.g. 'HT', 'FT', 'AET') than we can derive ourselves.
@@ -94,13 +96,11 @@ export function formatMatchClock(
   const detail = (statusDetail ?? '').trim().toLowerCase()
   if (detail === 'ht' || detail === 'halftime') return 'Half time'
 
-  // Use the period base + minutes-in-half to get the human match minute.
-  const halfBase = period === 2 ? 45 : period === 3 ? 90 : period === 4 ? 105 : 0
   if (period === 5) return 'Penalties'
+  // displayClock is already the absolute match minute; just round up.
   const minutes = parseClockMinutes(clock)
   if (minutes === null) return statusDetail ? statusDetail : null
-  const total = halfBase + Math.ceil(minutes)
-  return `${total}'`
+  return `${Math.ceil(minutes)}'`
 }
 
 /**
