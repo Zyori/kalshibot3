@@ -9,11 +9,14 @@ Two flows:
     labels from `yes_sub_title`, and entry/qty/fees from the user's fills.
     source=EXTERNAL, verified=False (see feedback_no_external_fill_reconciliation:
     the app never auto-imports, but it records what the user asks it to).
-  - PLACE (POST /combos/place): build a combo from legs and place it on Kalshi
-    through the same staged + human-confirm path as every order (no autonomous
-    trading). The server discovers the collection, materializes the combo
-    market (idempotent), then places a standard order and records the bet with
-    its legs captured direct from the builder. source=HUMAN, verified=True.
+  - PLACE via RFQ (POST /combos/rfq → quotes → POST /combos/accept): combos fill
+    through request-for-quote, not the order book. /rfq materializes the combo
+    market and requests a quote; the user picks the best maker offer and
+    confirms; /accept takes it. No bet is recorded at accept — the async fill
+    creates it (source=HUMAN, verified=True) keyed to the real order_id. Every
+    write path enforces cross-market isolation per-leg via
+    _assert_sports_leg_tickers; placement additionally requires the
+    is_placeable_sports_combo allowlist.
 """
 
 from __future__ import annotations
@@ -28,15 +31,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
-from src.models import PendingCombo
+from src.core.exceptions import KalshiError
 from src.core.logging import get_logger
 from src.core.types import BetSide, Confidence, Strategy, Timing, utc_iso
-from src.core.exceptions import KalshiError
 from src.kalshi.rest import KalshiRestClient
 from src.kalshi.schemas import (
     CreateRfqRequest,
     SelectedMarket,
 )
+from src.models import PendingCombo
 from src.services.bet_service import (
     ComboLegInput,
     record_external_combo,
@@ -130,6 +133,20 @@ async def log_combo(
             raise HTTPException(404, f"could not fetch combo market: {str(e)[:120]}")
         market = raw.get("market", raw)
         legs = _parse_legs(market)
+        # Cross-market isolation: even though logging places no order, recording
+        # a non-sports combo (one with a politics/crypto leg) would pull that
+        # out-of-scope position into the ledger — the firewall says the app never
+        # reflects non-sports positions. Gate on the same per-leg guard the
+        # placement paths use. (is_combo_ticker above only confirms it's an MVE
+        # market, not that its legs are in scope.) Refuse a legless market too:
+        # with no legs we can't prove isolation, so don't record it blind.
+        if not legs:
+            raise HTTPException(
+                422,
+                f"{body.ticker} has no readable legs (mve_selected_legs) — "
+                "cannot verify it's an all-sports combo, refusing to log.",
+            )
+        _assert_sports_leg_tickers([leg.leg_ticker for leg in legs])
 
         # Entry price + quantity + order_id from the user's own fills on this
         # ticker. The order_id lets fills_sync back-link the external bet_fill
@@ -445,20 +462,25 @@ async def accept_quote(
     }
 
 
-def _validate_sports_legs(legs: list[LegInput]) -> None:
+def _assert_sports_leg_tickers(tickers: list[str | None]) -> None:
     """Per-leg cross-market isolation (defense in depth): refuse a combo whose
     legs aren't all sports markets app-side rather than trusting Kalshi — a
-    crafted out-of-scope leg (politics/weather/crypto) must never reach a path
-    that places an order. Used by every combo write path (rfq, place, accept).
-    Raises 422 if any leg is out of scope."""
-    for leg in legs:
-        if not (is_soccer_ticker(leg.market_ticker)
-                or is_sports_leg_ticker(leg.market_ticker)):
+    crafted or stale out-of-scope leg (politics/weather/crypto) must never reach
+    a write path. The single source of truth for the per-leg guard; every combo
+    write path (rfq, place, accept, log) funnels through it. Raises 422 on the
+    first out-of-scope (or missing) leg ticker."""
+    for t in tickers:
+        if not t or not (is_soccer_ticker(t) or is_sports_leg_ticker(t)):
             raise HTTPException(
                 422,
-                f"leg {leg.market_ticker} is not a sports market — combos may "
-                "only bundle sports legs (soccer, NBA, NFL, NHL, MLB, UFC).",
+                f"leg {t} is not a sports market — combos may only bundle "
+                "sports legs (soccer, NBA, NFL, NHL, MLB, UFC).",
             )
+
+
+def _validate_sports_legs(legs: list[LegInput]) -> None:
+    """Per-leg isolation for the placement-body leg shape (rfq/accept)."""
+    _assert_sports_leg_tickers([leg.market_ticker for leg in legs])
 
 
 async def _discover_collection(legs: list[LegInput]) -> str:

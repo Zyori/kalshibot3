@@ -187,6 +187,30 @@ def test_sports_leg_recognition():
     assert is_soccer_ticker("KXINTLFRIENDLYGAME-26JUN08FRANIR-FRA")
 
 
+def test_assert_sports_leg_tickers_enforces_isolation():
+    """The single per-leg isolation guard every combo write path funnels
+    through (rfq/place/accept/log). All-sports passes; any out-of-scope or
+    missing leg raises 422 so a non-sports combo never enters the ledger."""
+    import pytest as _pytest
+    from fastapi import HTTPException
+
+    from src.api.routes.combos import _assert_sports_leg_tickers
+
+    # All-sports (soccer + NBA) passes.
+    _assert_sports_leg_tickers([
+        "KXINTLFRIENDLYGAME-26JUN05KSAPUR-KSA", "KXNBAGAME-26JUN05NYKSAS-NYK",
+    ])
+    # One politics leg poisons the combo → refused.
+    with _pytest.raises(HTTPException) as ei:
+        _assert_sports_leg_tickers([
+            "KXINTLFRIENDLYGAME-26JUN05KSAPUR-KSA", "KXVPRESNOMR-28-EKIR",
+        ])
+    assert ei.value.status_code == 422
+    # A missing (None) leg ticker can't be proven in-scope → refused, not skipped.
+    with _pytest.raises(HTTPException):
+        _assert_sports_leg_tickers(["KXNBAGAME-26JUN05NYKSAS-NYK", None])
+
+
 @pytest.mark.asyncio
 async def test_order_id_stamped_for_fee_backlink(session: AsyncSession):
     bet = await _record(session, order_id="ord-abc-123")
