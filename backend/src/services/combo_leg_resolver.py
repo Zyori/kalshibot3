@@ -33,15 +33,15 @@ log = get_logger(__name__)
 async def resolve_combo_legs(
     session: AsyncSession, client: KalshiRestClient, *, bet: Bet
 ) -> int:
-    """Populate combo_leg.result for a settled combo bet. Returns the number of
-    legs newly resolved. Idempotent — legs already resolved are skipped, so a
-    re-run after a transient lookup failure fills only the gaps.
+    """Populate combo_leg.result for a combo bet. Returns the number of legs
+    newly resolved. Idempotent — legs already resolved are skipped, so a re-run
+    after a transient lookup failure fills only the gaps.
 
-    The bet must be terminal (WON/LOST); OPEN bets are skipped (nothing to
-    resolve yet)."""
-    if bet.status not in (BetStatus.WON, BetStatus.LOST):
-        return 0
-
+    Works on OPEN combos too, for live progress: each leg's own market resolves
+    to yes/no as its game finishes, independent of the parent combo's status, so
+    the ledger can show '2 of 5 legs in' before the parlay settles. The WON-YES
+    fast-path only applies once the combo is terminal; an OPEN combo always does
+    per-leg lookups (it has no logical certainty to shortcut)."""
     legs = (await session.execute(
         select(ComboLeg).where(ComboLeg.bet_id == bet.id)
     )).scalars().all()

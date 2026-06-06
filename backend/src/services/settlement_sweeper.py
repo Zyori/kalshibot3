@@ -151,19 +151,23 @@ _LEG_RERESOLVE_CUTOFF = timedelta(hours=48)
 
 
 async def _reresolve_pending_combo_legs() -> None:
-    """Re-resolve legs of recently-settled combos that are still pending.
+    """Re-resolve still-pending combo legs — for live progress on OPEN combos
+    and late legs on recently-settled ones.
 
-    A combo can settle before all its legs' games finish (one leg failing
-    settles the parlay immediately). Those legs resolve over the next hours as
-    their games end; this catches them. resolve_combo_legs is idempotent and
-    skips already-resolved legs, so this only does work when a pending leg's
-    game has actually finished.
+    Each leg's own market resolves to yes/no as its game finishes, independent of
+    the parent combo. For an OPEN combo that lets the ledger show '2 of 5 legs
+    in' before the parlay settles. For a settled combo it catches legs whose
+    games finished after the combo did (one leg failing settles the parlay
+    immediately; the rest resolve over the next hours). resolve_combo_legs is
+    idempotent and skips already-resolved legs, so this only touches the network
+    when a pending leg's game has actually finished.
 
-    Bounded by _LEG_RERESOLVE_CUTOFF: once a combo settled more than the cutoff
-    ago, its still-pending legs are treated as permanently unresolvable and no
-    longer re-fetched — otherwise a leg that never settles to a clean yes/no
-    (voided friendly, scalar 3-way) would be polled from Kalshi every sweep
-    forever. No-op (and no network) when nothing recent is pending.
+    OPEN combos are always included (they're live by definition). Settled combos
+    are bounded by _LEG_RERESOLVE_CUTOFF: once a combo settled more than the
+    cutoff ago, its still-pending legs are treated as permanently unresolvable
+    and no longer re-fetched — otherwise a leg that never settles to a clean
+    yes/no (voided friendly, scalar 3-way) would be polled from Kalshi every
+    sweep forever. No-op (and no network) when nothing pending.
     """
     cutoff = datetime.now(timezone.utc) - _LEG_RERESOLVE_CUTOFF
     factory = get_session_factory()
@@ -178,8 +182,13 @@ async def _reresolve_pending_combo_legs() -> None:
         bets = (await session.execute(
             select(Bet)
             .where(Bet.id.in_(pending_bet_ids))
-            .where(Bet.status.in_((BetStatus.WON, BetStatus.LOST)))
-            .where(Bet.settled_at >= cutoff)
+            .where(
+                (Bet.status == BetStatus.OPEN)
+                | (
+                    Bet.status.in_((BetStatus.WON, BetStatus.LOST))
+                    & (Bet.settled_at >= cutoff)
+                )
+            )
         )).scalars().all()
     if not bets:
         return

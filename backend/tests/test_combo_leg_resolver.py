@@ -175,12 +175,23 @@ async def test_won_leg_with_null_side_is_skipped_not_looped(session: AsyncSessio
 
 
 @pytest.mark.asyncio
-async def test_open_combo_is_skipped(session: AsyncSession):
+async def test_open_combo_resolves_finished_legs_for_live_progress(session: AsyncSession):
+    """An OPEN combo resolves each leg whose game has finished (per-leg lookup,
+    no fast-path) so the ledger can show progress before the parlay settles. A
+    leg whose game is still in progress (no clean yes/no) stays pending."""
     bet = await _combo_bet(session, status=BetStatus.OPEN)
-    client = FakeClient({})
+    # LEG-A finished (hit), LEG-B finished (missed), LEG-C still in progress.
+    client = FakeClient({"LEG-A": "yes", "LEG-B": "no", "LEG-C": ""})
     n = await resolve_combo_legs(session, client, bet=bet)  # type: ignore[arg-type]
-    assert n == 0
-    assert client.calls == 0
+    assert n == 2  # the two finished legs; the in-progress one stays pending
+    assert client.calls == 3
+    legs = {
+        leg.leg_ticker: leg.result
+        for leg in (await session.execute(
+            select(ComboLeg).where(ComboLeg.bet_id == bet.id)
+        )).scalars().all()
+    }
+    assert legs == {"LEG-A": "yes", "LEG-B": "no", "LEG-C": None}
 
 
 @pytest.mark.asyncio
