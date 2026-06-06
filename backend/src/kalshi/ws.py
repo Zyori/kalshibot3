@@ -20,7 +20,7 @@ import asyncio
 import contextlib
 import json
 import time
-from collections.abc import Iterable
+from collections.abc import Coroutine, Iterable
 from typing import TYPE_CHECKING, Any
 
 import websockets
@@ -49,7 +49,17 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 # Tunables
-STALENESS_TIMEOUT_S = 30.0
+STALENESS_TIMEOUT_S = 90.0
+"""Force a reconnect if NO WS message arrives for this long while connected.
+Catches the half-stall the library ping/pong can't: TCP alive and pongs still
+answered, but data messages stopped — the book silently freezes. Generous on
+purpose: _last_message_at is connection-global across all subscribed tickers, so
+genuine total silence for 90s means a stall, not a quiet market (during dead
+hours some book still ticks). Library ping/pong (PING_INTERVAL_S below) handles
+the fully-dead socket faster; this is the backstop for the alive-but-silent case."""
+PING_INTERVAL_S = 20.0
+PING_TIMEOUT_S = 20.0
+WATCHDOG_INTERVAL_S = 15.0
 BACKOFF_BASE_S = 1.0
 BACKOFF_MAX_S = 30.0
 SUBSCRIBE_BATCH_SIZE = 100
@@ -98,6 +108,11 @@ class KalshiWsClient:
         self._sequence_numbers: dict[int, int] = {}
         """sid -> last seq we saw. Detects dropped messages."""
         self._last_message_at: float = 0.0
+        self._handler_tasks: set[asyncio.Task[None]] = set()
+        """Strong refs to in-flight handler tasks (fill/lifecycle/user_order).
+        Without this the event loop holds only a weak ref and a handler — e.g.
+        record_fill writing a real fill — could be GC'd mid-await. Each task
+        self-discards on completion (see _spawn_handler)."""
 
     def is_subscribed(self, ticker: str) -> bool:
         """True if `ticker` is on our orderbook_delta subscription — i.e. WS is
@@ -125,7 +140,14 @@ class KalshiWsClient:
 
     async def connect(self) -> None:
         headers = self._auth_headers()
-        self._ws = await websockets.connect(self.ws_url, additional_headers=headers)
+        # Pin ping/pong rather than relying on library defaults: this is what
+        # surfaces a fully-dead socket (no pong → ConnectionClosed → the
+        # supervisor reconnect loop catches it). The staleness watchdog is the
+        # separate backstop for an alive-but-silent socket.
+        self._ws = await websockets.connect(
+            self.ws_url, additional_headers=headers,
+            ping_interval=PING_INTERVAL_S, ping_timeout=PING_TIMEOUT_S,
+        )
         self.live_state.connected = True
         self._last_message_at = time.monotonic()
         self._sequence_numbers.clear()
@@ -288,6 +310,14 @@ class KalshiWsClient:
                 with contextlib.suppress(asyncio.QueueFull):
                     self.broadcast_queue.put_nowait(msg)
 
+    def _spawn_handler(self, coro: Coroutine[Any, Any, None]) -> None:
+        """Run a message handler as a tracked task, holding a strong reference
+        until it finishes so it can't be GC'd mid-await (a dropped fill-persist
+        is real money lost). Self-discards on completion."""
+        task = asyncio.create_task(coro)
+        self._handler_tasks.add(task)
+        task.add_done_callback(self._handler_tasks.discard)
+
     def _dispatch(self, msg: KalshiWsMessage) -> None:
         """Apply a parsed message to LiveState. Side-effecting, no errors raised."""
         if isinstance(msg, OrderbookSnapshot):
@@ -297,18 +327,18 @@ class KalshiWsClient:
         elif isinstance(msg, MarketLifecycle):
             self.live_state.apply_market_lifecycle(msg)
             if self._lifecycle_handler is not None:
-                asyncio.create_task(self._lifecycle_handler(msg))
+                self._spawn_handler(self._lifecycle_handler(msg))
         elif isinstance(msg, UserOrder):
             self.live_state.apply_user_order(msg)
             if self._user_order_handler is not None:
-                asyncio.create_task(self._user_order_handler(msg))
+                self._spawn_handler(self._user_order_handler(msg))
         elif isinstance(msg, Fill):
             # LiveState only notes the liveness timestamp. The supervisor
             # wires a fill handler (bet_service.record_fill) via set_fill_handler
             # so DB persistence happens without dragging DB imports here.
             self.live_state.apply_fill(msg)
             if self._fill_handler is not None:
-                asyncio.create_task(self._fill_handler(msg))
+                self._spawn_handler(self._fill_handler(msg))
         elif isinstance(msg, Subscribed):
             # Capture the sid for the orderbook channel — this is THE sid we
             # mutate via update_subscription for the entire connection life.
@@ -363,3 +393,16 @@ class KalshiWsClient:
         if self._ws is not None:
             await self._ws.close()
             self._ws = None
+
+    def seconds_since_last_message(self) -> float | None:
+        """Wall-clock seconds since the last WS message, or None if connected but
+        no message has landed yet / not connected."""
+        if self._ws is None or self._last_message_at == 0.0:
+            return None
+        return time.monotonic() - self._last_message_at
+
+    def is_stale(self) -> bool:
+        """True when connected but no message has arrived for STALENESS_TIMEOUT_S
+        — an alive-but-silent socket whose book has frozen."""
+        idle = self.seconds_since_last_message()
+        return idle is not None and idle > STALENESS_TIMEOUT_S

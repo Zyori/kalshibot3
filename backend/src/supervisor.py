@@ -36,6 +36,7 @@ from src.kalshi.rest import KalshiRestClient
 from src.kalshi.ws import (
     BACKOFF_BASE_S,
     BACKOFF_MAX_S,
+    WATCHDOG_INTERVAL_S,
     KalshiWsClient,
 )
 from src.core.types import BetSide, BetStatus, SnapshotPhase
@@ -749,6 +750,27 @@ class Supervisor:
             log.info("kalshi_ws_reconnecting", attempt=attempt, delay_s=round(delay, 1))
             await asyncio.sleep(delay)
 
+    async def _ws_staleness_watchdog(self) -> None:
+        """Force a reconnect if the WS goes silent while still 'connected'.
+
+        Library ping/pong recovers a fully-dead socket, but not an alive-but-
+        silent one (TCP up, pongs answered, data stopped) — there the book
+        freezes while /health still reads connected. We close the socket, which
+        makes listen()'s `async for` raise and the consumer loop reconnect
+        (snapshot-then-subscribe replays the full book). The watchdog only
+        triggers the existing recovery path; it owns no reconnect logic itself."""
+        while True:
+            await asyncio.sleep(WATCHDOG_INTERVAL_S)
+            if self.kalshi_ws.is_stale():
+                idle = self.kalshi_ws.seconds_since_last_message()
+                log.warning(
+                    "kalshi_ws_stale_forcing_reconnect",
+                    idle_seconds=round(idle, 1) if idle is not None else None,
+                )
+                # close() makes the consumer loop's `async for` end and reconnect.
+                with contextlib.suppress(Exception):
+                    await self.kalshi_ws.close()
+
     async def start(self) -> None:
         """Spawn every background task. Idempotent — calling twice is a no-op."""
         if self._tasks:
@@ -771,6 +793,9 @@ class Supervisor:
 
         self._tasks.append(asyncio.create_task(
             self._ws_consumer_loop(), name="kalshi_ws_consumer",
+        ))
+        self._tasks.append(asyncio.create_task(
+            self._ws_staleness_watchdog(), name="kalshi_ws_watchdog",
         ))
         self._tasks.append(asyncio.create_task(
             self.broadcast.consume_queue(self.kalshi_to_browser),
