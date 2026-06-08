@@ -11,6 +11,10 @@
 # Units that drive this (live in /etc/systemd/system/, not in the repo):
 #   kalshibot3.service           — FastAPI backend on 127.0.0.1:8000
 #   kalshibot3-dashboard.service — `vite build --watch` rebuilding dist/
+#   kalshibot3-dashboard-watchdog.timer — runs scripts/dashboard-build-watchdog.sh
+#       every minute; restarts the dashboard service if `vite build --watch`
+#       silently stops rebuilding dist/ (the watcher's file watch wedges while
+#       the process stays alive — Restart=on-failure doesn't catch it).
 #
 # Useful commands:
 #   ./start.sh                          restart everything (this script)
