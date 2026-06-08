@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from datetime import date, datetime, timezone
+from datetime import date
 
 from src.core.logging import get_logger
 from src.ingestion.espn_scoreboard import EspnEvent, EspnSnapshot
