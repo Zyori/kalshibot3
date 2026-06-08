@@ -26,16 +26,19 @@ bug worth surfacing, not silently hiding.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
+from src.core.locks import ledger_guard
+from src.core.logging import get_logger
 from src.core.types import (
+    BetSide,
     BetSource,
     BetStatus,
     Confidence,
@@ -45,10 +48,19 @@ from src.core.types import (
     Timing,
     utc_iso,
 )
+from src.kalshi.rest import KalshiRestClient
+from src.kalshi.schemas import Fill as RestFill
 from src.models import Bet, BetFill, ComboLeg, Market, TradeSnapshot
-from src.services.bet_service import settle_bets_for_market
+from src.services.bet_service import (
+    ExternalFillInput,
+    record_external_position,
+    settle_bets_for_market,
+)
 from src.sports.combo import uniform_combo_sport
-from src.sports.soccer import league_display_name
+from src.sports.soccer import league_display_name, parse_market_ticker
+from src.sports.tradeable import is_tradeable_ticker
+
+log = get_logger(__name__)
 
 router = APIRouter()
 
@@ -622,6 +634,352 @@ async def force_settle_bet(
         "ticker": market.kalshi_ticker,
         "settlement_value_cents": body.settlement_value_cents,
     }
+
+
+# === Import from Kalshi ==================================================
+#
+# Place a bet directly on kalshi.com, then hand-pick it into the ledger here.
+# This is the manual counterpart to the deliberately-unwired auto-reconcile
+# path (feedback_no_external_fill_reconciliation): the app never silently
+# mirrors the Kalshi account, but it imports the fills the user explicitly
+# selects. Buys only — a sell isn't an entry; closed-loop matching is out of
+# scope (same as the combo log path).
+
+_IMPORT_WINDOW_DAYS = 14
+"""How far back importable fills are scanned. The user's framing: "whats not on
+our ledger within the last ~2 weeks". Bounds the /portfolio/fills pull."""
+
+
+def _importable_label(ticker: str, side: BetSide, feed: Any) -> str | None:
+    """Readable outcome label for an importable fill. Prefers the live discovery
+    feed (full team names); falls back to the codes parsed from the ticker for
+    resolved / aged-out markets the feed no longer carries — which is most of an
+    import list, so a feed-only label would leave them all as raw tickers.
+
+    The feed's yes_sub_title is the YES outcome, so the label flips with side.
+    None only when the ticker is neither in the feed nor a parseable per-game
+    ticker (e.g. a futures derivative) — UI then falls back to the raw ticker."""
+    label = _feed_label(ticker, side, feed)
+    if label is not None:
+        return label
+    return _ticker_label(ticker, side)
+
+
+def _feed_label(ticker: str, side: BetSide, feed: Any) -> str | None:
+    """Label from the live discovery feed (full team names), or None if the
+    ticker isn't currently in it."""
+    if feed is None:
+        return None
+    row = next(
+        (
+            m
+            for bucket in (feed.live, feed.upcoming, feed.recent)
+            for m in bucket
+            if m.ticker == ticker
+        ),
+        None,
+    )
+    if row is None:
+        return None
+    sub = (row.yes_sub_title or "").strip()
+    negate = side == BetSide.NO
+    if sub.lower() in ("tie", "draw"):
+        base = f"{row.event_title.replace(' vs ', ' - ')} DRAW"
+        return f"{base.removesuffix(' DRAW')} NOT DRAW" if negate else base
+    if not sub:
+        return None
+    return f"{sub} NOT WIN" if negate else f"{sub} WIN"
+
+
+def _ticker_label(ticker: str, side: BetSide) -> str | None:
+    """Label from the ticker alone (3-letter codes), for markets the feed has
+    dropped: 'Intl Friendly — VEN v TUR — Draw'. None for an unparseable ticker.
+    Mirrors the ledger's code-fallback label so an imported bet reads the same
+    in the picker and the ledger row."""
+    parsed = parse_market_ticker(ticker)
+    if parsed is None:
+        return None
+    league = league_display_name(parsed.series) or parsed.series
+    matchup = f"{parsed.home_code} v {parsed.away_code}"
+    if parsed.selection_code == "TIE":
+        selection = "Draw"
+    elif parsed.selection_code == parsed.home_code:
+        selection = parsed.home_code
+    elif parsed.selection_code == parsed.away_code:
+        selection = parsed.away_code
+    else:
+        selection = parsed.selection_code
+    base = f"{league} — {matchup} — {selection}"
+    # NO = a bet against the outcome (mirrors the YES/NO flip the feed label uses).
+    return f"{base} (NO)" if side == BetSide.NO else base
+
+
+class ImportablePosition(BaseModel):
+    """One unlinked Kalshi position — all buys + closing sells on a (ticker, held
+    side) folded together — offered for import. `held_quantity` is what's still
+    open (bought − sold); `realized_pnl_cents` is the closed-portion P&L already
+    banked. `resolved` flags a market that has settled; on import a still-open
+    remainder lands terminal with that result. `result` is the YES-side outcome
+    (yes/no) when resolved, for the picker's ✓/✗."""
+
+    key: str  # "{ticker}:{side}" — the selection + import key
+    ticker: str
+    label: str | None
+    side: BetSide
+    bought_quantity: int
+    held_quantity: int
+    entry_price_cents: int
+    exit_price_cents: int | None
+    realized_pnl_cents: int | None
+    placed_at: str | None
+    resolved: bool
+    result: str | None
+
+
+def _held_price(fill: RestFill, side: BetSide) -> int:
+    """The fill's price in the held side's frame. Kalshi's fill carries BOTH
+    complementary prices (yes_price + no_price); a position held YES always
+    reads yes_price, held NO reads no_price — for buys AND closing sells. This
+    is the fix for the sell-misprice bug: a YES position closed via Kalshi's
+    `sell no @ 7¢` is the `sell yes @ 93¢` it actually was."""
+    return fill.yes_price if side == BetSide.YES else fill.no_price
+
+
+async def _gather_positions(
+    client: KalshiRestClient, min_ts: int
+) -> dict[tuple[str, str], list[RestFill]]:
+    """Group every per-game fill in the window by (ticker, held side).
+
+    Held side = the side of the BUYS (what the position is). All fills on that
+    ticker whose held-side frame matches a buy belong to the position: a buy is
+    its own held side; a closing sell is reported by Kalshi on the OPPOSITE side
+    (`sell no` closes a YES hold), so its held side is the complement of the
+    reported side. We bucket each fill under the held side and keep its raw Fill
+    (carrying both prices) for the importer to price exactly.
+    """
+    positions: dict[tuple[str, str], list[RestFill]] = {}
+    cursor: str | None = None
+    while True:
+        resp = await client.get_fills(cursor=cursor, min_ts=min_ts)
+        for f in resp.fills:
+            # Per-game soccer match bets only. parse_market_ticker is None for
+            # combos (own log flow) and futures (deci-cent priced — can't be
+            # stored in the whole-cent money core; the Futures board is
+            # read-only for that reason), excluding both in one check.
+            if (
+                not is_tradeable_ticker(f.ticker)
+                or parse_market_ticker(f.ticker) is None
+            ):
+                continue
+            # A buy holds its own side; a sell closes the OPPOSITE side it
+            # reports. So the position's held side is the buy's side or the
+            # sell's complement.
+            if f.action == "buy":
+                held = f.side
+            else:
+                held = "no" if f.side == "yes" else "yes"
+            positions.setdefault((f.ticker, held), []).append(f)
+        cursor = resp.cursor or None
+        if not cursor:
+            break
+    return positions
+
+
+@router.get("/ledger/importable")
+async def list_importable(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Scan recent Kalshi fills for tradeable positions not yet in the ledger.
+
+    Ephemeral by design — recomputed each call, never cached. Pulls
+    /portfolio/fills for the last ~2 weeks (cross-market isolation: only
+    parseable per-game soccer tickers), folds each (ticker, held side) into one
+    position with its true blended entry, exit, realized P&L, and held quantity,
+    and drops any (ticker, side) already in the ledger. Each is tagged
+    held/resolved so the picker shows outcomes for finished markets.
+    """
+    min_ts = int(
+        (datetime.now(timezone.utc) - timedelta(days=_IMPORT_WINDOW_DAYS)).timestamp()
+    )
+    async with KalshiRestClient() as client:
+        positions = await _gather_positions(client, min_ts)
+        if not positions:
+            return {"positions": []}
+
+        keys = [f"external-single:{t}:{s}" for (t, s) in positions]
+        linked = set((await session.execute(
+            select(Bet.client_order_id).where(Bet.client_order_id.in_(keys))
+        )).scalars().all())
+
+        supervisor = getattr(request.app.state, "supervisor", None)
+        feed = (
+            supervisor.market_discovery.get_feed()
+            if supervisor is not None else None
+        )
+
+        unlinked = {
+            k: v for k, v in positions.items()
+            if f"external-single:{k[0]}:{k[1]}" not in linked
+        }
+        # Settlement status per distinct ticker (one query each — small set).
+        resolved_result: dict[str, str] = {}
+        for ticker in {t for (t, _s) in unlinked}:
+            try:
+                sresp = await client.get_settlements(ticker=ticker, limit=1)
+            except Exception as e:  # noqa: BLE001
+                log.warning("importable_settlement_check_failed",
+                            ticker=ticker, error=str(e)[:120])
+                continue
+            for row in sresp.settlements:
+                if row.settlement_value_cents is not None:
+                    resolved_result[ticker] = (
+                        "yes" if row.settlement_value_cents >= 50 else "no"
+                    )
+                break
+
+    out: list[ImportablePosition] = []
+    for (ticker, side_str), fills in unlinked.items():
+        side = BetSide(side_str)
+        buys = [f for f in fills if f.action == "buy"]
+        sells = [f for f in fills if f.action == "sell"]
+        bought_centi = sum(f.count_centi for f in buys)
+        if bought_centi < 100:
+            # No whole-contract buy on this side (e.g. only a stray sell, or a
+            # sub-contract residual). Nothing importable as a position.
+            continue
+        sold_centi = sum(f.count_centi for f in sells)
+        entry_centi = sum(_held_price(f, side) * f.count_centi for f in buys)
+        entry = max(1, min(99, entry_centi // bought_centi))
+        exit_price: int | None = None
+        realized: int | None = None
+        if sold_centi > 0:
+            sell_w = sum(_held_price(f, side) * f.count_centi for f in sells)
+            exit_price = max(1, min(99, sell_w // sold_centi))
+            realized = (
+                sell_w - (entry_centi * sold_centi) // bought_centi
+            ) // 100
+        out.append(ImportablePosition(
+            key=f"{ticker}:{side_str}",
+            ticker=ticker,
+            label=_importable_label(ticker, side, feed),
+            side=side,
+            bought_quantity=bought_centi // 100,
+            held_quantity=max(0, (bought_centi - sold_centi) // 100),
+            entry_price_cents=entry,
+            exit_price_cents=exit_price,
+            realized_pnl_cents=realized,
+            placed_at=utc_iso(min(f.created_time for f in buys)),
+            resolved=ticker in resolved_result,
+            result=resolved_result.get(ticker),
+        ))
+    out.sort(key=lambda r: r.placed_at or "", reverse=True)
+    return {"positions": [r.model_dump() for r in out]}
+
+
+class ImportBody(BaseModel):
+    keys: list[str] = Field(min_length=1, max_length=50)
+    """Each key is "{ticker}:{side}" from the importable list."""
+
+
+@router.post("/ledger/import")
+async def import_fills(
+    body: ImportBody,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Import the hand-picked Kalshi positions into the ledger as EXTERNAL bets.
+
+    Re-gathers every fill from Kalshi (never trusts client-supplied prices — the
+    request carries only "{ticker}:{side}" keys), folds each picked position's
+    buys + closing sells into one bet via record_external_position, then — if the
+    market has settled and a held remainder is still open — drives the same
+    settle_bets_for_market path the sweeper uses, in the same transaction, so a
+    resolved remainder lands terminal with no transient OPEN window.
+
+    The supervisor's ledger lock serializes the write+settle against the WS
+    handlers (lost-update safety). Idempotent and self-healing on (ticker, side):
+    re-importing rebinds the fills and recomputes.
+    """
+    supervisor = getattr(request.app.state, "supervisor", None)
+    lock = supervisor._ledger_write_lock if supervisor is not None else None
+
+    min_ts = int(
+        (datetime.now(timezone.utc) - timedelta(days=_IMPORT_WINDOW_DAYS)).timestamp()
+    )
+    async with KalshiRestClient() as client:
+        positions = await _gather_positions(client, min_ts)
+
+        imported: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        for key in body.keys:
+            # key = "{ticker}:{side}". Split on the LAST colon — tickers contain
+            # no colon, but split-from-right is robust regardless.
+            ticker, _, side_str = key.rpartition(":")
+            raw_fills = positions.get((ticker, side_str))
+            if raw_fills is None or side_str not in ("yes", "no"):
+                skipped.append(key)
+                continue
+            side = BetSide(side_str)
+            fills = [
+                ExternalFillInput(
+                    trade_id=f.trade_id,
+                    order_id=f.order_id,
+                    action=f.action,
+                    held_price_cents=_held_price(f, side),
+                    quantity_centi=f.count_centi,
+                    fee_cents=f.fee_cents,
+                    created_time=f.created_time,
+                )
+                for f in raw_fills
+            ]
+            if not any(f.action == "buy" for f in fills):
+                skipped.append(key)
+                continue
+
+            # Settlement status — fetched outside the lock (network).
+            settle_value: int | None = None
+            try:
+                sresp = await client.get_settlements(ticker=ticker, limit=1)
+                for row in sresp.settlements:
+                    settle_value = row.settlement_value_cents
+                    break
+            except Exception as e:  # noqa: BLE001
+                log.warning("import_settlement_check_failed",
+                            ticker=ticker, error=str(e)[:120])
+
+            async with ledger_guard(lock):
+                bet = await record_external_position(
+                    session, ticker=ticker, side=side, fills=fills,
+                )
+                # Settle only a still-open held remainder. A position fully
+                # closed via sells is already terminal (CLOSED_EARLY) from
+                # recompute — don't re-settle it.
+                if (
+                    settle_value is not None
+                    and bet.status == BetStatus.OPEN
+                    and bet.remaining_quantity_centi > 0
+                ):
+                    await settle_bets_for_market(
+                        session, ticker=ticker,
+                        settlement_value_cents=settle_value,
+                    )
+                await session.commit()
+            await session.refresh(bet)
+            imported.append({
+                "bet_id": bet.id,
+                "ticker": ticker,
+                "side": bet.side,
+                "quantity": bet.quantity,
+                "held_quantity": bet.remaining_quantity,
+                "entry_price_cents": bet.entry_price_cents,
+                "exit_price_cents": bet.exit_price_cents,
+                "status": bet.status,
+                "pnl_cents": bet.pnl_cents,
+                "realized_pnl_cents": bet.realized_pnl_cents,
+            })
+
+    return {"imported": imported, "skipped": skipped}
 
 
 # === Reflective metadata edit ============================================

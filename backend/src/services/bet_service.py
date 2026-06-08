@@ -528,6 +528,196 @@ async def record_external_combo(
     return bet
 
 
+@dataclass(frozen=True)
+class ExternalFillInput:
+    """One Kalshi fill on a single-market position, priced in the HELD side's
+    frame. The caller resolves held_price_cents = yes_price if the position is
+    held YES else no_price — Kalshi's fill carries both complementary prices, so
+    a sell that closes a YES position (reported by Kalshi as `sell no @ 7¢`) is
+    priced here as the YES exit it actually was (`@ 93¢`). Storing the held-side
+    price is what makes recompute_bet_from_fills produce P&L matching Kalshi."""
+
+    trade_id: str
+    order_id: str
+    action: str  # "buy" | "sell"
+    held_price_cents: int
+    quantity_centi: int
+    fee_cents: int
+    created_time: datetime
+
+
+async def record_external_position(
+    session: AsyncSession,
+    *,
+    ticker: str,
+    side: BetSide,
+    fills: list[ExternalFillInput],
+    strategy: Strategy = Strategy.MANUAL,
+    confidence: Confidence = Confidence.MEDIUM,
+    timing: Timing = Timing.PRE_MATCH,
+    human_reasoning: str | None = None,
+    tags: list[str] | None = None,
+) -> Bet:
+    """Reconstruct a single-market position placed on kalshi.com into one bet.
+
+    A deliberate, user-initiated import — NOT auto-reconcile (see
+    feedback_no_external_fill_reconciliation: the app never silently mirrors the
+    Kalshi account, but it imports the positions the user hand-picks). The single
+    counterpart to record_external_combo. source=EXTERNAL, verified=False.
+
+    The import unit is (ticker, held side), not a single buy order: a position
+    can be built across several buys and closed across several sells, and a sell
+    that flattens a YES position is reported by Kalshi on the OPPOSITE side
+    (`sell no`). So we fold ALL of the position's fills — every buy and every
+    closing sell — into one bet, with each fill priced in the held side's frame
+    (ExternalFillInput.held_price_cents). recompute_bet_from_fills then derives
+    entry VWAP, exit VWAP, realized P&L, and remaining quantity exactly as for an
+    app-placed bet, so the import matches Kalshi's own figures.
+
+    Idempotent and self-healing on (ticker, side) via a synthetic client_order_id
+    (`external-single:{ticker}:{side}`): re-importing finds the existing bet,
+    re-binds its fills, and recomputes — so a bet imported before this path
+    handled sells is corrected by simply re-importing it. quantity = total bought
+    centi (whole contracts); remaining = bought − sold, so a fully-closed
+    position lands terminal.
+
+    Fills are matched to their already-recorded bet_fill rows by trade_id
+    (fills_sync records every external fill, carrying Kalshi's authoritative
+    fee). We bind those rows to this bet and OVERWRITE price_cents/side to the
+    held-side frame — healing the orphan sells fills_sync stored at the raw
+    opposite-side price. A fill with no recorded bet_fill yet (imported before
+    the sync sweep saw it) is inserted fresh.
+    """
+    if not is_tradeable_ticker(ticker):
+        raise ValueError(f"refusing to record untracked ticker {ticker}")
+    if is_combo_ticker(ticker):
+        raise ValueError(f"combo ticker {ticker} — use record_external_combo")
+
+    buys = [f for f in fills if f.action == "buy"]
+    if not buys:
+        raise ValueError(f"no buy fills for {ticker} {side} — nothing to import")
+
+    bought_centi = sum(f.quantity_centi for f in buys)
+    quantity = bought_centi // 100
+    if quantity < 1:
+        raise ValueError(f"sub-contract position on {ticker} ({bought_centi} centi)")
+
+    placed_at = min(f.created_time for f in buys)
+    entry_centi = sum(f.held_price_cents * f.quantity_centi for f in buys)
+    entry_price = max(1, min(99, entry_centi // bought_centi))
+
+    synthetic_coid = f"external-single:{ticker}:{side.value}"
+    bet = await session.scalar(
+        select(Bet).where(Bet.client_order_id == synthetic_coid)
+    )
+    if bet is None:
+        market_id = await _get_or_create_market(session, ticker=ticker)
+        parsed = parse_market_ticker(ticker)
+        bet = Bet(
+            sport=Sport.SOCCER,
+            market_id=market_id,
+            suggestion_id=None,
+            parent_bet_id=None,
+            kalshi_order_id=None,
+            client_order_id=synthetic_coid,
+            side=side,
+            entry_price_cents=entry_price,
+            exit_price_cents=None,
+            quantity=quantity,
+            remaining_quantity=quantity,
+            remaining_quantity_centi=bought_centi,
+            stake_cents=entry_centi // 100,
+            pnl_cents=None,
+            realized_pnl_cents=None,
+            entry_fees_cents=0,
+            exit_fees_cents=0,
+            status=BetStatus.OPEN,
+            exit_type=None,
+            source=BetSource.EXTERNAL,
+            strategy=strategy,
+            confidence=confidence,
+            kelly_fraction_bps=None,
+            ai_probability_pct=None,
+            human_override_sizing=False,
+            human_override_direction=False,
+            human_reasoning=human_reasoning,
+            ai_reasoning=None,
+            timing=timing,
+            game_period=None,
+            game_clock=None,
+            tags=tags,
+            # Codes/series from the ticker; full team names resolve from the live
+            # feed at display time, so they stay null and the label falls back to
+            # the codes.
+            event_series=parsed.series if parsed else None,
+            home_code=parsed.home_code if parsed else None,
+            away_code=parsed.away_code if parsed else None,
+            home_name=None,
+            away_name=None,
+            selection_code=parsed.selection_code if parsed else None,
+            verified=False,
+            version=1,
+            placed_at=placed_at,
+            settled_at=None,
+        )
+        session.add(bet)
+        try:
+            await session.flush()
+        except IntegrityError:
+            await session.rollback()
+            winner = await session.scalar(
+                select(Bet).where(Bet.client_order_id == synthetic_coid)
+            )
+            if winner is not None:
+                log.info("single_record_lost_insert_race", ticker=ticker, bet_id=winner.id)
+                bet = winner
+            else:
+                raise
+    else:
+        # Re-import: keep quantity in sync with the buys (it drives remaining)
+        # but otherwise let recompute_bet_from_fills re-derive everything.
+        bet.quantity = quantity
+
+    # Bind every fill's bet_fill to this bet and force its price into the held
+    # frame. fills_sync already inserted these (by trade_id) at the raw side —
+    # we correct + bind them; we insert any the sync hasn't seen yet.
+    for f in fills:
+        row = await session.scalar(
+            select(BetFill).where(BetFill.trade_id == f.trade_id)
+        )
+        if row is None:
+            row = BetFill(
+                trade_id=f.trade_id,
+                order_id=f.order_id,
+                ticker=ticker,
+                created_time=f.created_time,
+                fee_synced_at=None,
+            )
+            session.add(row)
+        row.bet_id = bet.id
+        row.side = side.value          # held-side frame
+        row.action = f.action
+        row.price_cents = f.held_price_cents
+        row.quantity_centi = f.quantity_centi
+        row.fee_cents = f.fee_cents
+    await session.flush()
+    await recompute_bet_from_fills(session, bet=bet)
+
+    log.info(
+        "single_recorded",
+        bet_id=bet.id,
+        ticker=ticker,
+        side=side.value,
+        entry_price_cents=bet.entry_price_cents,
+        exit_price_cents=bet.exit_price_cents,
+        quantity=bet.quantity,
+        remaining=bet.remaining_quantity,
+        realized_pnl_cents=bet.realized_pnl_cents,
+        status=bet.status.value,
+    )
+    return bet
+
+
 async def _create_combo_bet_from_pending(
     session: AsyncSession,
     *,

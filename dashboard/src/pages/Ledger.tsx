@@ -5,6 +5,7 @@ import InlineError from '../components/InlineError'
 import PnLChart from '../components/charts/PnLChart'
 import StrategyBreakdown from '../components/charts/StrategyBreakdown'
 import BetMetadataForm from '../components/ledger/BetMetadataForm'
+import ImportFromKalshi from '../components/ledger/ImportFromKalshi'
 import { SportBadge } from '../components/ledger/SportBadge'
 import { KNOWN_SPORTS, badgeSport } from '../lib/sport'
 import { formatET, formatDollars, formatFee, formatPriceCents, formatSignedDollars } from '../lib/format'
@@ -54,6 +55,7 @@ export default function Ledger() {
   const [hideCancelled, setHideCancelled] = useState(true)
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [editingId, setEditingId] = useState<number | null>(null)
+  const [importing, setImporting] = useState(false)
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams()
@@ -104,12 +106,23 @@ export default function Ledger() {
 
   return (
     <div className="space-y-6">
-      <header>
-        <h2 className="text-lg font-semibold text-text">Ledger</h2>
-        <p className="mt-1 text-sm text-text-muted">
-          Every bet, tagged. Filter by any combination of dimensions.
-        </p>
+      <header className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-semibold text-text">Ledger</h2>
+          <p className="mt-1 text-sm text-text-muted">
+            Every bet, tagged. Filter by any combination of dimensions.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setImporting(true)}
+          className="shrink-0 rounded-md border border-border bg-bg-hover px-3 py-1.5 text-sm text-text hover:bg-bg-card"
+        >
+          Import from Kalshi
+        </button>
       </header>
+
+      {importing && <ImportFromKalshi onClose={() => setImporting(false)} />}
 
       {stats.isError && (
         <InlineError message="Couldn't load stats." detail={stats.error} />
