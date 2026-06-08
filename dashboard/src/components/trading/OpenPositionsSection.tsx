@@ -158,11 +158,19 @@ function PositionCardItem({ position: p }: { position: Position }) {
  * blowing out the card. Shows the first few picks, collapses the rest into
  * "+N". Once legs start resolving, chips color (green hit / red miss) and a
  * "X/N hit" summary appears so a live parlay's standing is visible at a glance.
+ *
+ * Unresolved legs are listed first so what's still left to hit is always
+ * visible — and so the "+N" collapse hides already-decided legs before pending
+ * ones. Stable within each group (original leg order preserved).
  */
 function ParlayLegs({ legs }: { legs: ComboLeg[] }) {
   const resolved = legs.filter((l) => l.result !== null)
   const hits = resolved.filter((l) => l.result === l.side).length
-  const shown = legs.slice(0, MAX_PICK_CHIPS)
+  const ordered = [
+    ...legs.filter((l) => l.result === null),
+    ...resolved,
+  ]
+  const shown = ordered.slice(0, MAX_PICK_CHIPS)
   const extra = legs.length - shown.length
 
   return (
