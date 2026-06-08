@@ -32,7 +32,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
@@ -426,14 +426,26 @@ async def compute_ledger_stats(
     # SUM ignores nulls, so this gives realized-P&L on settled bets only).
     # Fees come from Kalshi's authoritative per-fill fee_cost summed into
     # bet.entry_fees_cents / exit_fees_cents (default 0, never NULL).
+    #
+    # Count fees ONLY on settled bets (pnl_cents IS NOT NULL), to match the
+    # realized scope of pnl_cents. Summing fees over ALL bets — including OPEN
+    # ones whose pnl_cents is null — subtracted open positions' entry fees from
+    # net P&L while their P&L contributed nothing, making the Net P&L stat read
+    # worse than the realized result on the PnL chart (which is settled-only).
+    settled_entry_fees = func.coalesce(func.sum(
+        case((Bet.pnl_cents.isnot(None), Bet.entry_fees_cents), else_=0)
+    ), 0)
+    settled_exit_fees = func.coalesce(func.sum(
+        case((Bet.pnl_cents.isnot(None), Bet.exit_fees_cents), else_=0)
+    ), 0)
     agg = (
         await session.execute(
             _filtered(select(
                 func.coalesce(func.sum(Bet.pnl_cents), 0),
                 func.coalesce(func.sum(Bet.stake_cents), 0),
                 func.count(Bet.id),
-                func.coalesce(func.sum(Bet.entry_fees_cents), 0),
-                func.coalesce(func.sum(Bet.exit_fees_cents), 0),
+                settled_entry_fees,
+                settled_exit_fees,
             ))
         )
     ).first()
@@ -452,7 +464,9 @@ async def compute_ledger_stats(
         total_net_pnl_cents / total_stake_cents if total_stake_cents else None
     )
 
-    # Per-strategy breakdown for StrategyBreakdown chart
+    # Per-strategy breakdown for StrategyBreakdown chart. Same settled-only fee
+    # scope as the totals above, so per-strategy net ROI is consistent with the
+    # headline Net P&L.
     strategy_rows = (
         await session.execute(
             _filtered(select(
@@ -460,8 +474,8 @@ async def compute_ledger_stats(
                 func.count(Bet.id),
                 func.coalesce(func.sum(Bet.pnl_cents), 0),
                 func.coalesce(func.sum(Bet.stake_cents), 0),
-                func.coalesce(func.sum(Bet.entry_fees_cents), 0),
-                func.coalesce(func.sum(Bet.exit_fees_cents), 0),
+                settled_entry_fees,
+                settled_exit_fees,
             ).group_by(Bet.strategy))
         )
     ).all()
