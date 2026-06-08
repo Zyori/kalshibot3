@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from src.sports.soccer import (
     is_soccer_ticker,
-    total_goals_threshold,
+    is_total_goals_ticker,
+    total_goals_line,
     total_series_for_game,
 )
 
@@ -28,18 +29,33 @@ def test_unmapped_game_series_returns_none():
     assert total_series_for_game("KXNOTAGAME") is None
 
 
-def test_threshold_from_total_ticker():
-    assert total_goals_threshold("KXINTLFRIENDLYTOTAL-26JUN01COLCRI-1") == 1.5
-    assert total_goals_threshold("KXINTLFRIENDLYTOTAL-26JUN01COLCRI-4") == 4.5
+def test_is_total_goals_ticker():
+    # Presence check on the ticker shape — true for a total slot, regardless of
+    # which line that slot turns out to be.
+    assert is_total_goals_ticker("KXINTLFRIENDLYTOTAL-26JUN01COLCRI-1") is True
+    assert is_total_goals_ticker("KXINTLFRIENDLYTOTAL-26JUN08NEDUZB-2") is True
+    # A moneyline ticker isn't a total.
+    assert is_total_goals_ticker("KXINTLFRIENDLYGAME-26JUN01COLCRI-COL") is False
+    # Non-numeric suffix on a total series isn't a total-goals slot.
+    assert is_total_goals_ticker("KXINTLFRIENDLYTOTAL-26JUN01COLCRI-TIE") is False
 
 
-def test_threshold_none_for_non_total_ticker():
-    # A moneyline ticker isn't a total — no threshold.
-    assert total_goals_threshold("KXINTLFRIENDLYGAME-26JUN01COLCRI-COL") is None
+def test_line_comes_from_label_not_suffix():
+    # The line is parsed from Kalshi's sub-title, NOT the ticker suffix. The
+    # NEDUZB game (2026-06-08) started at Over 1.5 with suffix -2 — proving the
+    # suffix is a slot index, not the line. The old suffix+0.5 formula read this
+    # as 2.5 (the bug this fixes).
+    assert total_goals_line("Over 1.5 goals scored") == 1.5
+    assert total_goals_line("Over 2.5 goals scored") == 2.5
+    assert total_goals_line("Over 3.5 goals scored") == 3.5
+    # Whole-number or oddly-spaced lines still parse.
+    assert total_goals_line("Over 2 goals scored") == 2.0
 
 
-def test_threshold_none_for_garbage_suffix():
-    assert total_goals_threshold("KXINTLFRIENDLYTOTAL-26JUN01COLCRI-TIE") is None
+def test_line_none_for_unparseable_label():
+    assert total_goals_line(None) is None
+    assert total_goals_line("") is None
+    assert total_goals_line("Total goals") is None
 
 
 def test_total_event_ticker_derivation():

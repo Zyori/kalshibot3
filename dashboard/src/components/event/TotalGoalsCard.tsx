@@ -49,7 +49,11 @@ function TotalGoalRow({ total: t }: { total: TotalGoal }) {
         className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-xs hover:bg-bg-hover"
       >
         <span className="flex min-w-0 items-center gap-2">
-          <span className="font-medium text-text">Over {t.threshold.toFixed(1)} goals</span>
+          <span className="font-medium text-text">
+            {t.threshold !== null
+              ? `Over ${t.threshold.toFixed(1)} goals`
+              : t.label ?? 'Over ? goals'}
+          </span>
           {t.position && <PositionPill position={t.position} />}
         </span>
         <span className="flex shrink-0 items-center gap-3">

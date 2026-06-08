@@ -286,16 +286,35 @@ _GAME_TICKER_RE = re.compile(
 )
 
 
-def total_goals_threshold(ticker: str) -> float | None:
-    """The Over/Under line for a total-goals market ticker. The suffix is an
-    integer N meaning 'Over N.5 goals' (KX…TOTAL-26JUN01COLCRI-3 → 3.5).
-    Returns None for a non-total ticker or unexpected suffix."""
+def is_total_goals_ticker(ticker: str) -> bool:
+    """Whether a ticker is a per-game total-goals (Over/Under) market — a
+    presence check only, NOT the line. Use total_goals_line() for the number.
+
+    The ticker suffix is an integer that does NOT have a fixed relationship to
+    the Over/Under line: a game's market set can start at any line (one game
+    lists Over 1.5/2.5/3.5, another 2.5/3.5/4.5), so suffix -2 means "Over 1.5"
+    on one game and "Over 2.5" on another. The suffix is just a slot index, not
+    the threshold — see total_goals_line()."""
     if not any(ticker.startswith(p) for p in SOCCER_TOTAL_SERIES_PREFIXES):
+        return False
+    return ticker.rsplit("-", 1)[-1].isdigit()
+
+
+_OVER_LINE_RE = re.compile(r"\bover\s+(\d+(?:\.\d+)?)\b", re.IGNORECASE)
+
+
+def total_goals_line(yes_sub_title: str | None) -> float | None:
+    """The Over/Under line from Kalshi's market sub-title ('Over 1.5 goals
+    scored' → 1.5). Kalshi's label is the single source of truth for the line —
+    the ticker suffix is only a slot index and varies per game (see
+    is_total_goals_ticker). Returns None if the label is missing or unparseable;
+    the caller orders/labels off the raw text in that rare case."""
+    if not yes_sub_title:
         return None
-    suffix = ticker.rsplit("-", 1)[-1]
-    if not suffix.isdigit():
+    m = _OVER_LINE_RE.search(yes_sub_title)
+    if m is None:
         return None
-    return int(suffix) + 0.5
+    return float(m.group(1))
 
 
 def parse_market_ticker(ticker: str) -> ParsedMarketTicker | None:

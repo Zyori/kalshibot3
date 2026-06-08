@@ -30,9 +30,10 @@ from src.models import Market, Position
 from src.sports.run_of_play import live_payload
 from src.sports.soccer import (
     is_soccer_ticker,
+    is_total_goals_ticker,
     kalshi_category_url,
     league_display_name,
-    total_goals_threshold,
+    total_goals_line,
     total_series_for_game,
 )
 
@@ -119,7 +120,7 @@ async def _fetch_total_goals(
         log.warning("total_goals_fetch_failed", total_event=total_event, error=str(e)[:120])
         return []
 
-    markets = [m for m in resp.markets if total_goals_threshold(m.ticker) is not None]
+    markets = [m for m in resp.markets if is_total_goals_ticker(m.ticker)]
     if not markets:
         return []
 
@@ -151,8 +152,11 @@ async def _fetch_total_goals(
         )
         out.append({
             "ticker": m.ticker,
-            "threshold": total_goals_threshold(m.ticker),  # 1.5 / 2.5 / 3.5 / 4.5
-            "label": m.yes_sub_title,  # "Over 2.5 goals scored"
+            # The line comes from Kalshi's sub-title ("Over 1.5 goals scored"),
+            # not the ticker suffix — the suffix is a per-game slot index that
+            # does NOT encode the line (one game starts at 1.5, another at 2.5).
+            "threshold": total_goals_line(m.yes_sub_title),  # 1.5 / 2.5 / ...
+            "label": m.yes_sub_title,  # "Over 1.5 goals scored"
             "status": m.status,
             "yes_bid_cents": book.yes_best_bid if book else None,
             "yes_ask_cents": book.yes_best_ask if book else None,
@@ -160,7 +164,9 @@ async def _fetch_total_goals(
             "no_ask_cents": book.no_best_ask if book else None,
             "position": _position_payload(held),
         })
-    out.sort(key=lambda d: d["threshold"])
+    # Order by the line; a market whose label didn't parse (threshold None) sorts
+    # last rather than crashing the comparison.
+    out.sort(key=lambda d: (d["threshold"] is None, d["threshold"] or 0.0))
     return out
 
 

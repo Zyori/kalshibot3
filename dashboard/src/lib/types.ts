@@ -168,12 +168,14 @@ export type Suggestion = {
   expires_at: string | null
 }
 
-// One rung of the per-game Over/Under ladder (Over 1.5/2.5/3.5/4.5 goals).
-// Kept separate from ChildMarket so it never enters the price chart.
+// One rung of the per-game Over/Under ladder. The set of lines varies per game
+// (one starts at Over 1.5, another at 2.5), and the line comes from Kalshi's
+// label, not the ticker suffix — so threshold can be null if a label didn't
+// parse (the row then falls back to the raw label text).
 export type TotalGoal = {
   ticker: string
-  threshold: number // 1.5 | 2.5 | 3.5 | 4.5
-  label: string | null // "Over 2.5 goals scored"
+  threshold: number | null // 1.5 | 2.5 | 3.5 | ... — from Kalshi's label
+  label: string | null // "Over 1.5 goals scored"
   status: string
   yes_bid_cents: number | null
   yes_ask_cents: number | null
