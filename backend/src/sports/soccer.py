@@ -300,6 +300,17 @@ def is_total_goals_ticker(ticker: str) -> bool:
     return ticker.rsplit("-", 1)[-1].isdigit()
 
 
+def is_per_game_soccer_ticker(ticker: str) -> bool:
+    """Whether a ticker is a per-game soccer market we can record as a single
+    bet: a match-result moneyline (parse_market_ticker matches) OR a per-game
+    total-goals Over/Under. Excludes combos (their own log flow) and futures
+    (deci-cent priced — the whole-cent money core can't store them; the Futures
+    board is read-only). The import path gates on this so a per-game totals bet
+    (e.g. an Under 1.5) isn't dropped just because its ticker shape differs from
+    a moneyline's."""
+    return parse_market_ticker(ticker) is not None or is_total_goals_ticker(ticker)
+
+
 _OVER_LINE_RE = re.compile(r"\bover\s+(\d+(?:\.\d+)?)\b", re.IGNORECASE)
 
 

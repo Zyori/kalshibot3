@@ -26,6 +26,7 @@ bug worth surfacing, not silently hiding.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -57,7 +58,13 @@ from src.services.bet_service import (
     settle_bets_for_market,
 )
 from src.sports.combo import uniform_combo_sport
-from src.sports.soccer import league_display_name, parse_market_ticker
+from src.sports.soccer import (
+    is_per_game_soccer_ticker,
+    is_total_goals_ticker,
+    league_display_name,
+    parse_market_ticker,
+    total_goals_line,
+)
 from src.sports.tradeable import is_tradeable_ticker
 
 log = get_logger(__name__)
@@ -683,12 +690,33 @@ def _feed_label(ticker: str, side: BetSide, feed: Any) -> str | None:
         return None
     sub = (row.yes_sub_title or "").strip()
     negate = side == BetSide.NO
+    # Totals market: yes_sub_title is "Over N.5 goals scored". A YES hold is
+    # Over, a NO hold is Under. Prefix the matchup so the row is identifiable.
+    if is_total_goals_ticker(ticker):
+        line = total_goals_line(sub)
+        ou = "Under" if negate else "Over"
+        matchup = row.event_title.replace(" vs ", " - ")
+        return (
+            f"{matchup} — {ou} {line:g} goals" if line is not None
+            else f"{matchup} — {ou} goals"
+        )
     if sub.lower() in ("tie", "draw"):
         base = f"{row.event_title.replace(' vs ', ' - ')} DRAW"
         return f"{base.removesuffix(' DRAW')} NOT DRAW" if negate else base
     if not sub:
         return None
     return f"{sub} NOT WIN" if negate else f"{sub} WIN"
+
+
+_TOTALS_MATCHUP_RE = re.compile(r"-\d{2}[A-Z]{3}\d{2}([A-Z]{3})([A-Z]{3})-\d+$")
+
+
+def _totals_matchup(ticker: str) -> str | None:
+    """The 'HOME - AWAY' codes from a totals ticker's matchup block, or None if
+    it doesn't match. Same {date}{HOME}{AWAY} block as a game ticker; only the
+    suffix (a numeric line slot, not a 3-letter selection) differs."""
+    m = _TOTALS_MATCHUP_RE.search(ticker)
+    return f"{m.group(1)} - {m.group(2)}" if m else None
 
 
 def _ticker_label(ticker: str, side: BetSide) -> str | None:
@@ -698,6 +726,14 @@ def _ticker_label(ticker: str, side: BetSide) -> str | None:
     in the picker and the ledger row."""
     parsed = parse_market_ticker(ticker)
     if parsed is None:
+        # Totals ticker (no 3-letter selection, so parse_market_ticker rejects
+        # it): the line isn't recoverable from the ticker — it lives in Kalshi's
+        # label, which an aged-out market no longer carries. Identify it as
+        # Over/Under on the matchup so the row isn't a raw ticker.
+        if is_total_goals_ticker(ticker):
+            matchup = _totals_matchup(ticker)
+            ou = "Under" if side == BetSide.NO else "Over"
+            return f"{matchup} — {ou} goals" if matchup else None
         return None
     league = league_display_name(parsed.series) or parsed.series
     matchup = f"{parsed.home_code} v {parsed.away_code}"
@@ -762,13 +798,12 @@ async def _gather_positions(
     while True:
         resp = await client.get_fills(cursor=cursor, min_ts=min_ts)
         for f in resp.fills:
-            # Per-game soccer match bets only. parse_market_ticker is None for
-            # combos (own log flow) and futures (deci-cent priced — can't be
-            # stored in the whole-cent money core; the Futures board is
-            # read-only for that reason), excluding both in one check.
+            # Per-game soccer only: match-result moneylines AND total-goals
+            # Over/Unders. Excludes combos (own log flow) and futures (deci-cent
+            # priced — can't be stored in the whole-cent money core).
             if (
                 not is_tradeable_ticker(f.ticker)
-                or parse_market_ticker(f.ticker) is None
+                or not is_per_game_soccer_ticker(f.ticker)
             ):
                 continue
             # A buy holds its own side; a sell closes the OPPOSITE side it
