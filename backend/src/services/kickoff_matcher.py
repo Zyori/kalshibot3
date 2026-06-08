@@ -12,10 +12,11 @@ Rules:
   - Date must match (compare YYYY-MM-DD of the Kalshi event's ticker date
     against the ESPN event's local date in the same time zone — we use
     UTC since the ticker is encoded in UTC date too).
-  - At least one Kalshi team token must appear in ESPN's home_names and
-    at least one in ESPN's away_names — direction-sensitive.
-  - If both directions match a single ESPN event (rare; usually home/away
-    is reliable in both sources), pick the directional match.
+  - The two Kalshi teams must match ESPN's two teams (each shares a token
+    with one ESPN side) in EITHER orientation. Home/away is NOT reliable
+    across the two sources — friendlies in particular disagree (Kalshi
+    ESP-PER vs ESPN "ESP @ PER") — so direction must not gate the match;
+    same teams + same league + same date is the high-confidence signal.
 
 Ported from V2's kalshi_market_service.py team-alias logic.
 """
@@ -147,8 +148,16 @@ def find_match(
             espn_date = e.kickoff_utc.date()
             if abs((espn_date - target_date).days) > 1:
                 continue
-        # Direction-sensitive team match.
-        if _names_match(k_home, e.home_names) and _names_match(k_away, e.away_names):
+        # Team match in EITHER orientation. Kalshi and ESPN don't agree on
+        # home/away for every fixture — friendlies especially (ESP-PER: Kalshi
+        # lists Spain-Peru, ESPN lists Peru as host, "ESP @ PER"). Same two
+        # teams + same league (espn_slug) + same date is already high
+        # confidence, so the direction must not gate the match — requiring
+        # Kalshi-home == ESPN-home silently dropped every flipped fixture, which
+        # then fell back to Kalshi's unreliable proxy kickoff time.
+        forward = _names_match(k_home, e.home_names) and _names_match(k_away, e.away_names)
+        reverse = _names_match(k_home, e.away_names) and _names_match(k_away, e.home_names)
+        if forward or reverse:
             candidates.append(e)
 
     if not candidates:
