@@ -21,6 +21,7 @@ identifiers, which would couple us to their schema if it ever shifts.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import time
 from collections.abc import Awaitable, Callable, Iterable
@@ -37,6 +38,9 @@ log = get_logger(__name__)
 
 ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer"
 HTTP_TIMEOUT_S = 8.0
+REFRESH_CEILING_S = 120.0  # hard cap on one full poll pass; a pass that exceeds
+                          # this is hung (not just slow) and is abandoned so the
+                          # loop keeps cycling. A healthy pass is a few seconds.
 POLL_INTERVAL_IDLE_S = 1800   # 30 min when no games are live
 POLL_INTERVAL_LIVE_S = 40     # when at least one game is in progress — keeps
                               # the score/clock within ~1 poll of real time
@@ -590,7 +594,8 @@ class EspnScoreboard:
         """Long-running poller. Initial fetch on start, then adaptive cadence:
         30 min idle, 40s when a game is live, 10s for ~75s after a watched
         market spikes (event-burst — see request_burst)."""
-        await self._refresh_once()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self._refresh_once(), timeout=REFRESH_CEILING_S)
         while not self._stopped:
             live_now = any(e.state == "in" for e in self.snapshot.events)
             if live_now and self._bursting:
@@ -601,12 +606,53 @@ class EspnScoreboard:
                 interval = POLL_INTERVAL_IDLE_S
             await asyncio.sleep(interval)
             try:
-                await self._refresh_once()
+                # Bound the pass: the per-request httpx timeout protects each
+                # call, but a hung connection (pool deadlock, socket stuck in
+                # read without tripping the read timeout) can wedge the whole
+                # pass — observed 2026-06-08, the loop stopped refreshing while
+                # the process stayed alive and logged no error, freezing live
+                # game stats. wait_for abandons a stuck pass so the loop always
+                # reaches the next cycle. The supervisor watchdog is the backstop
+                # if the task dies entirely.
+                await asyncio.wait_for(
+                    self._refresh_once(), timeout=REFRESH_CEILING_S
+                )
+            except TimeoutError:
+                log.warning("espn_refresh_timed_out", ceiling_s=REFRESH_CEILING_S)
             except Exception:  # noqa: BLE001 — never let a bad poll kill the loop
                 log.exception("espn_refresh_failed")
 
     async def stop(self) -> None:
         self._stopped = True
+
+    @property
+    def is_stopped(self) -> bool:
+        """Whether stop() was called — the supervisor watchdog reads this to
+        avoid respawning a loop that's meant to be shutting down."""
+        return self._stopped
+
+    def resume(self) -> None:
+        """Clear the stopped flag before the supervisor watchdog respawns a
+        wedged poll loop, so the fresh run() doesn't exit immediately."""
+        self._stopped = False
+
+    def seconds_since_refresh(self) -> float | None:
+        """Wall-clock seconds since the last successful snapshot swap, or None
+        if it has never refreshed. The supervisor watchdog reads this to detect
+        a wedged/dead poll loop (the snapshot stops advancing while the process
+        stays alive). Uses snapshot.refreshed_at (UTC) — the single timestamp
+        already stamped on every successful pass; no extra state to keep in
+        sync."""
+        if self.snapshot.refreshed_at is None:
+            return None
+        return (datetime.now(timezone.utc) - self.snapshot.refreshed_at).total_seconds()
+
+    @property
+    def has_live_games(self) -> bool:
+        """Whether the last snapshot had a game in progress. Lets the watchdog
+        apply a tight staleness bound only when live data should be flowing —
+        an idle poller legitimately sleeps 30 min between refreshes."""
+        return any(e.state == "in" for e in self.snapshot.events)
 
     async def _refresh_once(self) -> None:
         """One full pass: fetch each slug for the current FETCH_WINDOW.

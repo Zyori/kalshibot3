@@ -75,6 +75,14 @@ BURST_SPIKE_LOOKBACK_S = 45.0
 # volatile post-goal would re-arm the burst every tick and hold the poller at 10s.
 BURST_COOLDOWN_S = 60.0
 
+# ESPN poll-loop staleness thresholds for the supervisor watchdog. The loop's
+# own cadence is adaptive (~40s live, 30 min idle — POLL_INTERVAL_LIVE_S /
+# _IDLE_S), so a stale snapshot only signals a fault relative to what's expected:
+#   - live games present: a refresh is due every ~40s, so >5 min stale is wedged.
+#   - idle: a 30-min gap is healthy; only flag past a coarse bound above it.
+ESPN_STALE_LIVE_S = 300.0
+ESPN_STALE_IDLE_S = 2400.0  # 40 min — comfortably past the 30-min idle interval
+
 
 class Supervisor:
     """Runs background tasks. Single instance per process."""
@@ -187,6 +195,9 @@ class Supervisor:
         self.order_reconciler = OrderReconciler(self._ledger_write_lock)
 
         self._tasks: list[asyncio.Task[None]] = []
+        # The ESPN poll task, held so the staleness watchdog can detect its death
+        # and respawn it (see _espn_staleness_watchdog).
+        self._espn_task: asyncio.Task[None] | None = None
         # Fire-and-forget tasks (e.g. snapshot writes) kept in a set so the event
         # loop holds a strong reference until they finish — a bare create_task
         # whose handle is dropped can be GC'd mid-flight. Self-discarding via the
@@ -771,6 +782,58 @@ class Supervisor:
                 with contextlib.suppress(Exception):
                     await self.kalshi_ws.close()
 
+    async def _espn_staleness_watchdog(self) -> None:
+        """Respawn the ESPN poll loop if it stops advancing while still 'alive'.
+
+        The loop can wedge two ways: the task raises and exits (caught by
+        task.done()), or _refresh_once hangs and the snapshot stops advancing
+        (caught by the refresh age). REFRESH_CEILING_S inside the loop bounds a
+        single hung pass, but if the whole task dies — or hangs above the
+        ceiling — the snapshot freezes and every live game's stats stall while
+        the process and /health stay green (observed 2026-06-08). This is the
+        backstop: a dead/wedged poll loop is replaced with a fresh one.
+
+        Staleness is judged against whether games are live, because the loop's
+        own cadence is adaptive: ~40s when live, 30 min when idle. A 30-min idle
+        gap is healthy, so we only treat a stale snapshot as a fault when live
+        games should be producing refreshes (ESPN_STALE_LIVE_S), and otherwise
+        only at a coarse bound that exceeds the idle interval (ESPN_STALE_IDLE_S).
+        """
+        while True:
+            await asyncio.sleep(WATCHDOG_INTERVAL_S)
+            age = self.espn_scoreboard.seconds_since_refresh()
+            died = self._espn_task is not None and self._espn_task.done()
+            threshold = (
+                ESPN_STALE_LIVE_S if self.espn_scoreboard.has_live_games
+                else ESPN_STALE_IDLE_S
+            )
+            stale = age is not None and age > threshold
+            if not died and not stale:
+                continue
+            # Deliberate shutdown: stop() set the flag and is cancelling tasks.
+            # Don't fight it by respawning a loop that's meant to be ending.
+            if self.espn_scoreboard.is_stopped:
+                return
+            log.warning(
+                "espn_poller_wedged_respawning",
+                refresh_age_s=round(age, 1) if age is not None else None,
+                task_done=died,
+                had_live_games=self.espn_scoreboard.has_live_games,
+            )
+            # Replace the wedged task. A hung _refresh_once won't honor a plain
+            # cancel cleanly, but cancel() + a fresh task is correct: the old
+            # task is abandoned (its httpx clients are context-managed and close
+            # on GC / cancellation), and the new run() does an immediate fetch.
+            if self._espn_task is not None:
+                self._espn_task.cancel()
+                with contextlib.suppress(Exception):
+                    self._tasks.remove(self._espn_task)
+            self.espn_scoreboard.resume()
+            self._espn_task = asyncio.create_task(
+                self.espn_scoreboard.run(), name="espn_scoreboard",
+            )
+            self._tasks.append(self._espn_task)
+
     async def start(self) -> None:
         """Spawn every background task. Idempotent — calling twice is a no-op."""
         if self._tasks:
@@ -804,8 +867,12 @@ class Supervisor:
         # ESPN before market_discovery so the first discovery cycle has a
         # populated snapshot. EspnScoreboard.run() does its initial fetch
         # synchronously before entering the poll loop.
-        self._tasks.append(asyncio.create_task(
+        self._espn_task = asyncio.create_task(
             self.espn_scoreboard.run(), name="espn_scoreboard",
+        )
+        self._tasks.append(self._espn_task)
+        self._tasks.append(asyncio.create_task(
+            self._espn_staleness_watchdog(), name="espn_watchdog",
         ))
         self._tasks.append(asyncio.create_task(
             self.espn_news.run(), name="espn_news",
