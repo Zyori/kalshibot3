@@ -29,6 +29,33 @@ const LEGACY_STRATEGY_LABELS: Record<string, string> = {
   draw_value: 'draw_value (legacy)',
 }
 
+type Row = { strategy: string; roi_pct: number; count: number }
+
+/** Tooltip whose ROI value is green when positive, red when negative — matching
+ * the bar colors. recharts can't color a value per-row via itemStyle (it's
+ * static), so we render the content ourselves. */
+function RoiTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean
+  payload?: Array<{ payload: Row }>
+}) {
+  if (!active || !payload?.length) return null
+  const { strategy, roi_pct, count } = payload[0].payload
+  return (
+    <div className="rounded-md border border-border bg-bg-card px-2.5 py-1.5 text-[11px]">
+      <div className="text-text-muted">{strategy}</div>
+      <div>
+        <span className={roi_pct >= 0 ? 'text-gain' : 'text-loss'}>
+          {roi_pct.toFixed(1)}%
+        </span>
+        <span className="text-text-muted"> ROI (n={count})</span>
+      </div>
+    </div>
+  )
+}
+
 /**
  * Net ROI per strategy as a bar chart. Net = after Kalshi fees. Bars
  * are green when net ROI > 0, red when < 0. Strategies with no settled
@@ -52,28 +79,28 @@ export default function StrategyBreakdown({ stats }: { stats: Stats | undefined 
           No settled bets yet.
         </div>
       ) : (
-        <div className="h-48">
+        <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data} margin={{ top: 4, right: 12, bottom: 4, left: -12 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#2a2d37" />
-              <XAxis dataKey="strategy" stroke="#6b7280" fontSize={10} interval={0} />
+              {/* Strategy names are long and there are many of them — angle the
+                  labels so they don't overlap. interval={0} keeps every bar
+                  labeled; height reserves room for the rotated text. */}
+              <XAxis
+                dataKey="strategy"
+                stroke="#6b7280"
+                fontSize={10}
+                interval={0}
+                angle={-40}
+                textAnchor="end"
+                height={64}
+              />
               <YAxis
                 tickFormatter={(v: number) => `${v.toFixed(0)}%`}
                 stroke="#6b7280"
                 fontSize={10}
               />
-              <Tooltip
-                contentStyle={{
-                  background: '#1a1d27',
-                  border: '1px solid #2a2d37',
-                  borderRadius: 6,
-                  fontSize: 11,
-                }}
-                formatter={(v: number, _name, item) => [
-                  `${v.toFixed(1)}% (n=${(item.payload as { count: number }).count})`,
-                  'ROI',
-                ]}
-              />
+              <Tooltip cursor={{ fill: '#22252f' }} content={<RoiTooltip />} />
               <Bar dataKey="roi_pct">
                 {data.map((d) => (
                   <Cell
