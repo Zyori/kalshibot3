@@ -32,10 +32,19 @@ type ImportedRow = {
 }
 
 // Did this resolved position win, from the holder's perspective? YES holder
-// wins on a "yes" result, NO holder on "no". Drives the ✓/✗ on a settled row.
+// wins on a "yes" result, NO holder on "no". Null when the outcome isn't known
+// (unresolved, or resolved without a result) — drives the ✓/✗ on a settled row.
 function won(p: ImportablePosition): boolean | null {
   if (!p.resolved || p.result === null) return null
   return p.side === p.result
+}
+
+// Three-way P&L color, matching the rest of the ledger: green gain, red loss,
+// muted breakeven (0 is not a gain).
+function pnlTone(cents: number): string {
+  if (cents > 0) return 'text-gain'
+  if (cents < 0) return 'text-loss'
+  return 'text-text-muted'
 }
 
 export default function ImportFromKalshi({ onClose }: { onClose: () => void }) {
@@ -198,7 +207,7 @@ function PositionRow({
           <div className="flex items-center gap-2">
             <span className="truncate text-sm text-text">{p.label ?? p.ticker}</span>
             <span className="shrink-0 text-xs uppercase text-text-muted">{p.side}</span>
-            {p.resolved && (
+            {w !== null && (
               <span
                 className={`shrink-0 text-xs font-semibold ${w ? 'text-gain' : 'text-loss'}`}
               >
@@ -216,13 +225,11 @@ function PositionRow({
             {closed && <span className="text-text">closed</span>}
             {partlyClosed && <span>{p.held_quantity} still held</span>}
             {p.realized_pnl_cents !== null && (
-              <span
-                className={p.realized_pnl_cents >= 0 ? 'text-gain' : 'text-loss'}
-              >
+              <span className={pnlTone(p.realized_pnl_cents)}>
                 {formatSignedDollars(p.realized_pnl_cents)}
               </span>
             )}
-            <span>· {formatET(p.placed_at)}</span>
+            {p.placed_at && <span>· {formatET(p.placed_at)}</span>}
           </div>
         </div>
       </label>
@@ -256,9 +263,7 @@ function ImportResult({
             <span className="flex shrink-0 items-center gap-2">
               {r.realized_pnl_cents !== null && (
                 <span
-                  className={`font-mono tabular-nums text-xs ${
-                    r.realized_pnl_cents >= 0 ? 'text-gain' : 'text-loss'
-                  }`}
+                  className={`font-mono tabular-nums text-xs ${pnlTone(r.realized_pnl_cents)}`}
                 >
                   {formatSignedDollars(r.realized_pnl_cents)}
                 </span>

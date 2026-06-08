@@ -881,6 +881,12 @@ async def list_importable(
                             ticker=ticker, error=str(e)[:120])
                 continue
             for row in sresp.settlements:
+                # Defense in depth: only trust a settlement row that is actually
+                # for this ticker. If Kalshi's server-side ticker filter is ever
+                # loose (or returns a latest-when-empty row), an unguarded read
+                # would tag this position with a FOREIGN market's outcome.
+                if row.ticker != ticker:
+                    continue
                 if row.settlement_value_cents is not None:
                     resolved_result[ticker] = (
                         "yes" if row.settlement_value_cents >= 50 else "no"
@@ -991,6 +997,12 @@ async def import_fills(
             try:
                 sresp = await client.get_settlements(ticker=ticker, limit=1)
                 for row in sresp.settlements:
+                    # Only settle from a row that is actually this ticker — this
+                    # value books real-money P&L on the bet, so a loose Kalshi
+                    # filter returning a foreign row must not reach
+                    # settle_bets_for_market.
+                    if row.ticker != ticker:
+                        continue
                     settle_value = row.settlement_value_cents
                     break
             except Exception as e:  # noqa: BLE001

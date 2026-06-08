@@ -174,3 +174,50 @@ async def test_ledger_cursor_pagination_no_drop_or_dupe(client_ordered: AsyncCli
         if cursor is None:
             break
     assert seen == ["ord-B", "ord-A", "ord-C"]  # in order, each once
+
+
+@pytest.mark.asyncio
+async def test_net_pnl_excludes_open_bet_fees() -> None:
+    """compute_ledger_stats counts fees only on SETTLED bets, so an open
+    position's entry fees don't drag down Net P&L (the stat-vs-chart gap fix).
+    An open bet with entry fees must contribute 0 to total_fees_cents."""
+    from src.api.routes.ledger import compute_ledger_stats
+
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False}, poolclass=StaticPool,
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as s:
+        market = Market(
+            sport=Sport.SOCCER, game_id=None, kalshi_ticker=TICKER,
+            market_type="match_result", title=TICKER, yes_price_cents=None,
+            no_price_cents=None, volume=None, close_time=None,
+            status=MarketStatus.OPEN,
+        )
+        s.add(market)
+        await s.flush()
+        common = dict(
+            sport=Sport.SOCCER, market_id=market.id, side=BetSide.YES,
+            entry_price_cents=40, quantity=10, remaining_quantity=10,
+            remaining_quantity_centi=1000, stake_cents=400,
+            source=BetSource.HUMAN, strategy=Strategy.MANUAL,
+            confidence=Confidence.MEDIUM, timing=Timing.PRE_MATCH, verified=True,
+            placed_at=datetime.now(timezone.utc),
+        )
+        # Settled WON bet: pnl 200, entry fee 10.
+        s.add(Bet(kalshi_order_id="won-1", pnl_cents=200, realized_pnl_cents=200,
+                  entry_fees_cents=10, status=BetStatus.WON, **common))
+        # OPEN bet: no pnl yet, entry fee 15 — must NOT reduce net P&L.
+        s.add(Bet(kalshi_order_id="open-1", entry_fees_cents=15,
+                  status=BetStatus.OPEN, **common))
+        await s.commit()
+
+        stats = await compute_ledger_stats(s)
+        # Only the settled bet's fee counts.
+        assert stats["total_fees_cents"] == 10
+        assert stats["total_pnl_cents"] == 200
+        assert stats["total_net_pnl_cents"] == 190  # 200 - 10, NOT 200 - 25
+    await engine.dispose()

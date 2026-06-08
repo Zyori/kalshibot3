@@ -219,3 +219,116 @@ async def test_reimport_heals_orphan_sells(session: AsyncSession):
     assert sell_rows[0].side == "yes"
     assert bet2.status == BetStatus.WON
     assert bet2.realized_pnl_cents == (93 - 65) * 45
+
+
+@pytest.mark.asyncio
+async def test_rebuy_after_full_close_reopens(session: AsyncSession):
+    """A position fully closed (terminal CLOSED_EARLY) that gets a NEW buy on a
+    re-import must REOPEN — not stay terminal while holding open contracts. The
+    one-way OPEN->terminal latch in recompute would otherwise leave a WON bet
+    with remaining_quantity > 0 that the importer's OPEN-guarded settle never
+    reconciles (the re-import self-heal contract)."""
+    # First import: buy 45 @ 65, sold 45 @ 93 → fully closed, WON.
+    bet1 = await _record(session, [
+        _fill("buy", 65, 45, n=0),
+        _fill("sell", 93, 45, n=1),
+    ])
+    await session.flush()
+    assert bet1.status == BetStatus.WON
+    assert bet1.remaining_quantity == 0
+
+    # Re-import with an additional buy (re-bought 10 on Kalshi after closing).
+    bet2 = await _record(session, [
+        _fill("buy", 65, 45, n=0),
+        _fill("sell", 93, 45, n=1),
+        _fill("buy", 70, 10, n=2),
+    ])
+    await session.flush()
+    assert bet2.id == bet1.id
+    # Reopened: 55 bought, 45 sold → 10 still held, no longer terminal.
+    assert bet2.status == BetStatus.OPEN
+    assert bet2.quantity == 55
+    assert bet2.remaining_quantity == 10
+    assert bet2.exit_type is None
+    assert bet2.settled_at is None
+    assert bet2.pnl_cents is None
+
+
+@pytest.mark.asyncio
+async def test_reimport_of_settled_position_preserves_pnl(session: AsyncSession):
+    """Re-importing a position already settled on a real Kalshi settlement must
+    NOT re-derive its money from fills — the settlement payoff isn't a fill, so
+    recompute would drop it. recompute_bet_from_fills no-ops on a
+    HELD_TO_SETTLEMENT bet, so realized_pnl/pnl/status are preserved."""
+    bet = await _record(session, [
+        _fill("buy", 30, 10, n=0),
+        _fill("sell", 50, 4, n=1),
+    ])
+    await session.flush()
+    await settle_bets_for_market(session, ticker=TICKER, settlement_value_cents=100)
+    await session.refresh(bet)
+    assert bet.status == BetStatus.WON
+    assert bet.realized_pnl_cents == 500  # 80 close + 420 settle
+    assert bet.exit_type == ExitType.HELD_TO_SETTLEMENT
+
+    # Re-import the same fills: must leave the settled money untouched.
+    bet2 = await _record(session, [
+        _fill("buy", 30, 10, n=0),
+        _fill("sell", 50, 4, n=1),
+    ])
+    await session.flush()
+    assert bet2.id == bet.id
+    assert bet2.status == BetStatus.WON
+    assert bet2.realized_pnl_cents == 500
+    assert bet2.pnl_cents == 500
+
+
+@pytest.mark.asyncio
+async def test_losing_settlement_clamps_exit_price(session: AsyncSession):
+    """A YES hold that settles NO (settlement_value 0): side_settle 0 clamps the
+    stored exit price to 1 (the 1-99 column floor), P&L is negative, status LOST."""
+    bet = await _record(session, [_fill("buy", 70, 10, n=0)])
+    await session.flush()
+    await settle_bets_for_market(session, ticker=TICKER, settlement_value_cents=0)
+    await session.refresh(bet)
+    assert bet.status == BetStatus.LOST
+    assert bet.exit_price_cents == 1  # clamped from 0
+    assert bet.realized_pnl_cents == (0 - 70) * 10  # -700¢
+    assert bet.pnl_cents == bet.realized_pnl_cents
+
+
+@pytest.mark.asyncio
+async def test_sub_contract_position_rejected(session: AsyncSession):
+    """A position whose buys sum to < 1 whole contract can't be a Bet (quantity
+    CHECK >= 1) — record_external_position raises rather than insert an invalid
+    row."""
+    sub = ExternalFillInput(
+        trade_id="t-sub", order_id="ord-sub", action="buy",
+        held_price_cents=40, quantity_centi=50, fee_cents=0,
+        created_time=_T0,
+    )
+    with pytest.raises(ValueError, match="sub-contract"):
+        await record_external_position(
+            session, ticker=TICKER, side=BetSide.YES, fills=[sub]
+        )
+
+
+@pytest.mark.asyncio
+async def test_no_side_position_pnl(session: AsyncSession):
+    """A NO/Under hold (held_price = no_price). Closing it is reported by Kalshi
+    as a sell on the YES side, priced here in the held-NO frame. Verifies the
+    held-side framing and the NO branch of settle_bets_for_market produce correct
+    P&L. Models the real NED-UZB Under: bought NO @ 22, sold NO @ 33 → +1100¢."""
+    bet = await record_external_position(
+        session, ticker=TICKER, side=BetSide.NO, fills=[
+            _fill("buy", 22, 50, n=0),
+            _fill("sell", 33, 50, n=1),
+        ],
+    )
+    await session.flush()
+    assert bet.side == BetSide.NO
+    assert bet.entry_price_cents == 22
+    assert bet.exit_price_cents == 33
+    assert bet.remaining_quantity == 0
+    assert bet.status == BetStatus.WON
+    assert bet.realized_pnl_cents == (33 - 22) * 50  # +550¢

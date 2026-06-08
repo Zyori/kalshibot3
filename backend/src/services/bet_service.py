@@ -163,7 +163,16 @@ async def recompute_bet_from_fills(session: AsyncSession, *, bet: Bet) -> None:
     aggregate state in one place.
 
     This is also a natural future home for the buy/sell-path inline
-    recomputes; they currently duplicate slices of this logic."""
+    recomputes; they currently duplicate slices of this logic.
+
+    No-op for a bet settled on a real Kalshi settlement (HELD_TO_SETTLEMENT):
+    its realized P&L comes from the settlement payoff, which is NOT a fill, so
+    re-deriving money from fills would silently drop the settlement portion
+    (e.g. a re-import of an already-settled partial close). A genuine settlement
+    is final — fills don't move its money."""
+    if bet.exit_type == ExitType.HELD_TO_SETTLEMENT:
+        return
+
     fills = (await session.execute(
         select(BetFill).where(BetFill.bet_id == bet.id)
     )).scalars().all()
@@ -195,6 +204,24 @@ async def recompute_bet_from_fills(session: AsyncSession, *, bet: Bet) -> None:
 
     bet.entry_fees_cents = sum((f.fee_cents or 0) for f in buys)
     bet.exit_fees_cents = sum((f.fee_cents or 0) for f in sells)
+
+    # Re-open a self-closed bet that now has open remainder again. The terminal
+    # transition below is a one-way OPEN->terminal latch; without this, a
+    # re-import that adds buy volume to an already-CLOSED_EARLY (ticker, side)
+    # would leave a WON/LOST bet holding open contracts with stale pnl_cents,
+    # and the import route's OPEN-guarded settle would never reconcile it.
+    # Scoped to CLOSED_EARLY only: a HELD_TO_SETTLEMENT bet resolved on a real
+    # Kalshi settlement whose payoff isn't a fill — recompute must never revert
+    # that, so genuine settlements stay terminal.
+    if (
+        bet.remaining_quantity_centi > 0
+        and bet.status in (BetStatus.WON, BetStatus.LOST)
+        and bet.exit_type == ExitType.CLOSED_EARLY
+    ):
+        bet.status = BetStatus.OPEN
+        bet.exit_type = None
+        bet.settled_at = None
+        bet.pnl_cents = None
 
     if bet.remaining_quantity_centi == 0 and bet.status == BetStatus.OPEN and sell_centi > 0:
         bet.status = (
@@ -539,7 +566,7 @@ class ExternalFillInput:
 
     trade_id: str
     order_id: str
-    action: str  # "buy" | "sell"
+    action: Literal["buy", "sell"]
     held_price_cents: int
     quantity_centi: int
     fee_cents: int
@@ -713,7 +740,9 @@ async def record_external_position(
         quantity=bet.quantity,
         remaining=bet.remaining_quantity,
         realized_pnl_cents=bet.realized_pnl_cents,
-        status=bet.status.value,
+        # bet.status is the raw String column value — a plain str on a re-fetched
+        # bet (re-import path), an enum on a fresh insert. str() handles both.
+        status=str(bet.status),
     )
     return bet
 
