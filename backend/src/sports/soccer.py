@@ -328,6 +328,17 @@ def total_goals_line(yes_sub_title: str | None) -> float | None:
     return float(m.group(1))
 
 
+def total_goals_label(yes_sub_title: str | None, event_title: str, *, negate: bool) -> str:
+    """Side-aware totals label off Kalshi's sub-title: a YES hold is Over, a NO
+    hold is Under. '{Home - Away} — Over 1.5 goals', falling back to a line-less
+    'Over goals' when the sub-title doesn't carry the number. Shared by the
+    ledger (importable picker) and the positions list so both read identically."""
+    line = total_goals_line(yes_sub_title)
+    ou = "Under" if negate else "Over"
+    matchup = event_title.replace(" vs ", " - ")
+    return f"{matchup} — {ou} {line:g} goals" if line is not None else f"{matchup} — {ou} goals"
+
+
 def parse_market_ticker(ticker: str) -> ParsedMarketTicker | None:
     """Decode a per-game market ticker into series + home/away/selection codes.
 

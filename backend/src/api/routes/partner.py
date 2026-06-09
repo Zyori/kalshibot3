@@ -74,13 +74,16 @@ async def _recent_trades(session: AsyncSession, limit: int) -> list[dict[str, An
     that handler's params are FastAPI Query() defaults that only resolve
     through the HTTP layer, not a plain function call."""
     stmt = (
-        select(Bet, Market.kalshi_ticker, Market.status)
+        select(Bet, Market.kalshi_ticker, Market.status, Market.title)
         .join(Market, Market.id == Bet.market_id, isouter=True)
         .order_by(Bet.id.desc())
         .limit(limit)
     )
     rows = (await session.execute(stmt)).all()
-    return [_bet_to_dict(b, ticker, status) for b, ticker, status in rows]
+    return [
+        _bet_to_dict(b, ticker, status, market_title=title)
+        for b, ticker, status, title in rows
+    ]
 
 
 def _bankroll_cents(request: Request) -> int | None:

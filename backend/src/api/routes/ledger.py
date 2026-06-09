@@ -63,6 +63,7 @@ from src.sports.soccer import (
     is_total_goals_ticker,
     league_display_name,
     parse_market_ticker,
+    total_goals_label,
     total_goals_line,
 )
 from src.sports.tradeable import is_tradeable_ticker
@@ -124,7 +125,11 @@ async def _combo_leg_sports(
 
 
 def _market_label(
-    b: Bet, ticker: str | None, leg_count: int = 0, missed_count: int = 0
+    b: Bet,
+    ticker: str | None,
+    leg_count: int = 0,
+    missed_count: int = 0,
+    market_title: str | None = None,
 ) -> str:
     """Human-readable market: 'League — Home v Away — Selection'. Prefers full
     team names (captured from ESPN at placement), falls back to the 3-letter
@@ -140,6 +145,16 @@ def _market_label(
             return ticker or "Parlay"
         suffix = f" · {missed_count} missed" if missed_count else ""
         return f"Parlay ({leg_count} legs{suffix})"
+    # Totals (Over/Under): no team selection, so the per-game branch below can't
+    # label them. The line lives in Kalshi's stored title ("Over 1.5 goals
+    # scored" → "Over 1.5 goals"), captured at order time. Older bets without a
+    # stored title fall back to the matchup-only label from the ticker codes.
+    if ticker and is_total_goals_ticker(ticker):
+        line = total_goals_line(market_title)
+        if line is not None:
+            return f"Over {line:g} goals"
+        matchup = _totals_matchup(ticker)
+        return f"{matchup} — Over goals" if matchup else (ticker or "Over goals")
     if b.home_code is None or b.away_code is None:
         return ticker or "—"
     league = league_display_name(b.event_series) or b.event_series or "Soccer"
@@ -165,6 +180,7 @@ def _bet_to_dict(
     leg_count: int = 0,
     missed_count: int = 0,
     leg_sport: str | None = None,
+    market_title: str | None = None,
 ) -> dict[str, Any]:
     fees_cents = (b.entry_fees_cents or 0) + (b.exit_fees_cents or 0)
     # Show running net PnL on partial closes. pnl_cents is None while the
@@ -180,7 +196,7 @@ def _bet_to_dict(
         # non-combo bet. Display-only — `sport` stays 'combo'.
         "leg_sport": leg_sport,
         "ticker": ticker,
-        "market_label": _market_label(b, ticker, leg_count, missed_count),
+        "market_label": _market_label(b, ticker, leg_count, missed_count, market_title),
         "leg_count": leg_count,
         "missed_leg_count": missed_count,
         "market_status": market_status,
@@ -276,7 +292,7 @@ async def list_bets(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Paginated bet history. Cursor is the last seen bet.id (descending)."""
-    stmt = select(Bet, Market.kalshi_ticker, Market.status).join(
+    stmt = select(Bet, Market.kalshi_ticker, Market.status, Market.title).join(
         Market, Market.id == Bet.market_id, isouter=True
     )
     stmt = _apply_filters(
@@ -314,16 +330,16 @@ async def list_bets(
     rows = (await session.execute(stmt)).all()
     has_more = len(rows) > limit
     rows = rows[:limit]
-    combo_ids = [b.id for b, _t, _s in rows if b.sport == Sport.COMBO]
+    combo_ids = [b.id for b, _t, _s, _ti in rows if b.sport == Sport.COMBO]
     leg_counts, missed_counts = await _combo_counts(session, combo_ids)
     leg_sports = await _combo_leg_sports(session, combo_ids)
     out = [
         _bet_to_dict(
             b, ticker, market_status,
             leg_counts.get(b.id, 0), missed_counts.get(b.id, 0),
-            leg_sports.get(b.id),
+            leg_sports.get(b.id), market_title,
         )
-        for b, ticker, market_status in rows
+        for b, ticker, market_status, market_title in rows
     ]
     next_cursor = rows[-1][0].id if has_more and rows else None
     return {"bets": out, "next_cursor": next_cursor}
@@ -704,16 +720,8 @@ def _feed_label(ticker: str, side: BetSide, feed: Any) -> str | None:
         return None
     sub = (row.yes_sub_title or "").strip()
     negate = side == BetSide.NO
-    # Totals market: yes_sub_title is "Over N.5 goals scored". A YES hold is
-    # Over, a NO hold is Under. Prefix the matchup so the row is identifiable.
     if is_total_goals_ticker(ticker):
-        line = total_goals_line(sub)
-        ou = "Under" if negate else "Over"
-        matchup = row.event_title.replace(" vs ", " - ")
-        return (
-            f"{matchup} — {ou} {line:g} goals" if line is not None
-            else f"{matchup} — {ou} goals"
-        )
+        return total_goals_label(sub, row.event_title, negate=negate)
     if sub.lower() in ("tie", "draw"):
         base = f"{row.event_title.replace(' vs ', ' - ')} DRAW"
         return f"{base.removesuffix(' DRAW')} NOT DRAW" if negate else base
@@ -1127,6 +1135,7 @@ async def edit_bet_metadata(
         leg_count,
         missed_count,
         leg_sport,
+        market.title if market else None,
     )
 
 

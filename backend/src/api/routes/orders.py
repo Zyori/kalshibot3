@@ -125,6 +125,24 @@ def _resolve_team_names(request: Request, ticker: str) -> tuple[str | None, str 
     return (None, None)
 
 
+def _resolve_market_title(request: Request, ticker: str) -> str | None:
+    """Kalshi's human market title from the live discovery feed (the
+    FeedMarket's yes_sub_title, e.g. "Over 1.5 goals scored"). This is the only
+    place the totals Over/Under line is captured at order time — the ticker
+    suffix is a slot index, not the line. None when the feed has no row yet;
+    the bet then falls back to the ticker as its label."""
+    supervisor = getattr(request.app.state, "supervisor", None)
+    if supervisor is None:
+        return None
+    feed = supervisor.market_discovery.get_feed()
+    for bucket in (feed.live, feed.upcoming, feed.recent):
+        for m in bucket:
+            if m.ticker == ticker:
+                title: str | None = m.yes_sub_title
+                return title
+    return None
+
+
 async def _open_position_qty(
     session: AsyncSession, *, ticker: str, side: str,
 ) -> int:
@@ -251,6 +269,7 @@ async def place_order(
         action=body.action,
         home_name=home_name,
         away_name=away_name,
+        market_title=_resolve_market_title(request, body.ticker),
     )
     await session.commit()
 

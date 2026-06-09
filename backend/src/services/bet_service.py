@@ -267,6 +267,7 @@ async def record_placed_order(
     human_reasoning: str | None = None,
     home_name: str | None = None,
     away_name: str | None = None,
+    market_title: str | None = None,
 ) -> Bet | None:
     """Persist a freshly-placed order.
 
@@ -300,7 +301,9 @@ async def record_placed_order(
         log.info("bet_record_skipped_duplicate", order_id=order.order_id)
         return existing
 
-    market_id = await _get_or_create_market(session, ticker=order.ticker)
+    market_id = await _get_or_create_market(
+        session, ticker=order.ticker, title=market_title
+    )
     parsed = parse_market_ticker(order.ticker)
     # Record the entry price for the SIDE we actually bought. Kalshi's order
     # response populates BOTH yes_price and no_price (complementary: a NO buy at
@@ -1442,7 +1445,11 @@ async def settle_bets_for_market(
 
 
 async def _get_or_create_market(
-    session: AsyncSession, *, ticker: str, market_type: str = "match_result"
+    session: AsyncSession,
+    *,
+    ticker: str,
+    market_type: str = "match_result",
+    title: str | None = None,
 ) -> int:
     """Return market_id for a ticker, inserting a minimal row if absent.
 
@@ -1453,6 +1460,11 @@ async def _get_or_create_market(
 
     `market_type` defaults to "match_result" (the per-game case); combo
     recording passes "combo" since a multivariate market isn't a match result.
+
+    `title` is Kalshi's human market title (e.g. "Over 1.5 goals scored"),
+    passed by the order path from the live feed. It's the only place the
+    totals Over/Under line is knowable — the ticker suffix is just a slot
+    index — so we persist it on insert. Falls back to the ticker when absent.
     """
     from src.core.types import MarketStatus
     from src.models import Market
@@ -1466,7 +1478,7 @@ async def _get_or_create_market(
         game_id=None,
         kalshi_ticker=ticker,
         market_type=market_type,
-        title=ticker,  # better title is filled in by the discovery poller
+        title=title or ticker,
         yes_price_cents=None,
         no_price_cents=None,
         volume=None,
