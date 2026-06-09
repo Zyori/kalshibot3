@@ -8,15 +8,17 @@
  * full OrderPanel for that market — tradeable like any other, routed through the
  * same confirm-then-place path.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import type { MarketBook } from '../../contexts/WebSocketProvider'
 import type { TotalGoal } from '../../lib/types'
 import { bestAsk, bestBid } from '../../lib/book'
+import DepthLadder from '../trading/DepthLadder'
 import OpenOrdersCard from '../trading/OpenOrdersCard'
 import OrderPanel from '../trading/OrderPanel'
 import PositionPill from '../trading/PositionPill'
+import TopOfBook from '../trading/TopOfBook'
 
 export default function TotalGoalsCard({ totals }: { totals: TotalGoal[] }) {
   // Only show rungs that are still tradeable (active). A finalized/closed rung
@@ -61,7 +63,7 @@ function TotalGoalRow({ total: t }: { total: TotalGoal }) {
           <span className="text-[10px] text-text-muted">{expanded ? '−' : '+'}</span>
         </span>
       </button>
-      {expanded && <TotalGoalBody ticker={t.ticker} snapshot={t} />}
+      {expanded && <TotalGoalBody ticker={t.ticker} />}
     </li>
   )
 }
@@ -83,29 +85,59 @@ function TotalQuote({ total: t }: { total: TotalGoal }) {
   )
 }
 
-function TotalGoalBody({ ticker, snapshot }: { ticker: string; snapshot: TotalGoal }) {
+type MarketDetailResponse = {
+  ticker: string
+  yes: Array<{ price: number; qty: number }>
+  no: Array<{ price: number; qty: number }>
+}
+
+function TotalGoalBody({ ticker }: { ticker: string }) {
   const queryClient = useQueryClient()
   const { data: book } = useQuery<MarketBook | undefined>({
     queryKey: ['book', ticker],
     queryFn: () => undefined,
     enabled: false,
   })
-  // Seed the cache from the event-endpoint snapshot so the panel opens with a
-  // real top-of-book before the first WS delta. The backend WS-subscribes these
-  // totals tickers on event-page load (events.py) and the tier dispatcher prunes
-  // them when the game goes DONE, so live deltas keep ['book', ticker] fresh —
-  // this seed just covers the gap until the first one lands.
-  if (book === undefined && (snapshot.yes_bid_cents !== null || snapshot.yes_ask_cents !== null)) {
-    queryClient.setQueryData<MarketBook>(['book', ticker], {
-      ticker,
-      yes: snapshot.yes_bid_cents !== null ? { [snapshot.yes_bid_cents]: 1 } : {},
-      no: snapshot.no_bid_cents !== null ? { [snapshot.no_bid_cents]: 1 } : {},
-    })
-  }
+  // Snapshot-on-expand for full depth — same path as the moneyline MarketCard.
+  // /api/markets returns every resting level (not just top-of-book), which is
+  // what surfaces the bid/ask gap on thin totals markets. The backend
+  // WS-subscribes these totals tickers on event-page load (events.py), so live
+  // deltas keep ['book', ticker] fresh after the seed.
+  const snapshot = useQuery<MarketDetailResponse>({
+    queryKey: ['market_snapshot', ticker],
+    queryFn: async () => {
+      const res = await fetch(`/api/markets/${encodeURIComponent(ticker)}`)
+      if (!res.ok) throw new Error(`/api/markets: ${res.status}`)
+      return res.json()
+    },
+    staleTime: Infinity,
+  })
+  useEffect(() => {
+    if (!snapshot.data) return
+    // Seed only when empty — a re-expand must not clobber the live exact-float
+    // WS book with rounded REST ints. Mirrors MarketCard's ws_owned guard.
+    queryClient.setQueryData<MarketBook>(
+      ['book', ticker],
+      (prev) =>
+        prev ?? {
+          ticker,
+          yes: Object.fromEntries(snapshot.data.yes.map((l) => [l.price, l.qty])),
+          no: Object.fromEntries(snapshot.data.no.map((l) => [l.price, l.qty])),
+        },
+    )
+  }, [snapshot.data, ticker, queryClient])
+
   return (
-    <div className="grid gap-3 border-t border-border p-3 lg:grid-cols-2">
-      <OrderPanel ticker={ticker} book={book} />
-      <OpenOrdersCard ticker={ticker} />
+    <div className="space-y-3 border-t border-border p-3">
+      <TopOfBook book={book} />
+      <div className="grid gap-3 md:grid-cols-2">
+        <DepthLadder title="YES depth" side={book?.yes ?? {}} />
+        <DepthLadder title="NO depth" side={book?.no ?? {}} />
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <OrderPanel ticker={ticker} book={book} />
+        <OpenOrdersCard ticker={ticker} />
+      </div>
     </div>
   )
 }
