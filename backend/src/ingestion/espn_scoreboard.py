@@ -50,6 +50,17 @@ POLL_INTERVAL_BURST_S = 10    # when a watched market just spiked (likely a goal
                               # so the burst's only cost is a few extra requests.
 BURST_WINDOW_S = 75           # how long a single burst request stays hot before
                               # decaying back to the live cadence
+KICKOFF_IMMINENT_LEAD_S = 900   # 15 min BEFORE a scheduled kickoff: start polling
+                              # at the live cadence so we catch the pre->in flip
+                              # within ~40s of the real start.
+KICKOFF_IMMINENT_LAG_S = 7200   # 2 h AFTER a scheduled kickoff while a game is
+                              # still 'pre' in our snapshot: ESPN hasn't flipped it
+                              # live yet, or our snapshot is stale across it. Keep
+                              # the fast cadence so a game that kicked off during an
+                              # idle sleep (e.g. right after a restart) can't stay
+                              # invisible for the full 30-min idle interval. Bounds
+                              # the window so a permanently-mislabeled fixture
+                              # doesn't pin the poller fast forever.
 FETCH_WINDOW_DAYS_BACK = 1  # yesterday — covers UTC/ET date-boundary games
 FETCH_WINDOW_DAYS_FORWARD = 3  # today + next 2 days
 # Total window: 4 days. ESPN buckets events by US-local date, so a Kalshi
@@ -600,7 +611,11 @@ class EspnScoreboard:
             live_now = any(e.state == "in" for e in self.snapshot.events)
             if live_now and self._bursting:
                 interval = POLL_INTERVAL_BURST_S
-            elif live_now:
+            elif live_now or self.kickoff_imminent:
+                # kickoff_imminent keeps the fast cadence around a scheduled
+                # start even before the snapshot shows the game 'in' — so a game
+                # kicking off during an idle sleep is caught within ~40s, not
+                # after the 30-min idle interval.
                 interval = POLL_INTERVAL_LIVE_S
             else:
                 interval = POLL_INTERVAL_IDLE_S
@@ -653,6 +668,29 @@ class EspnScoreboard:
         apply a tight staleness bound only when live data should be flowing —
         an idle poller legitimately sleeps 30 min between refreshes."""
         return any(e.state == "in" for e in self.snapshot.events)
+
+    @property
+    def kickoff_imminent(self) -> bool:
+        """Whether a game is about to start (or should already have) based on
+        scheduled kickoff — independent of whether the snapshot shows it 'in' yet.
+
+        Closes a blind spot: 'live vs idle' judged only from observed 'in' games
+        means a game that kicks off during a 30-min idle sleep (e.g. right after a
+        restart near kickoff) stays invisible until the next idle wake — long past
+        kickoff. The kickoff times are already in the snapshot (every EspnEvent
+        carries kickoff_utc), so we use them: a 'pre' event from
+        KICKOFF_IMMINENT_LEAD_S before to KICKOFF_IMMINENT_LAG_S after its kickoff
+        means we should be on the fast cadence. Drives both the poll loop's
+        interval and the watchdog's staleness bound, so they never disagree on
+        whether fast polling is due."""
+        now = datetime.now(timezone.utc)
+        for e in self.snapshot.events:
+            if e.state != "pre":
+                continue
+            delta_s = (now - e.kickoff_utc).total_seconds()
+            if -KICKOFF_IMMINENT_LEAD_S <= delta_s <= KICKOFF_IMMINENT_LAG_S:
+                return True
+        return False
 
     async def _refresh_once(self) -> None:
         """One full pass: fetch each slug for the current FETCH_WINDOW.

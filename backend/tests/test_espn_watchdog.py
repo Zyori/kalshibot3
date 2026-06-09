@@ -31,11 +31,17 @@ class FakeScoreboard:
     `run()` is a cancellable sleep — a real asyncio task, no network."""
 
     def __init__(
-        self, *, age: float | None, live: bool, stopped: bool = False
+        self,
+        *,
+        age: float | None,
+        live: bool,
+        stopped: bool = False,
+        kickoff_imminent: bool = False,
     ) -> None:
         self._age = age
         self._live = live
         self._stopped = stopped
+        self._kickoff_imminent = kickoff_imminent
         self.resume_called = 0
         self.run_started = 0
 
@@ -45,6 +51,10 @@ class FakeScoreboard:
     @property
     def has_live_games(self) -> bool:
         return self._live
+
+    @property
+    def kickoff_imminent(self) -> bool:
+        return self._kickoff_imminent
 
     @property
     def is_stopped(self) -> bool:
@@ -98,6 +108,24 @@ def test_respawn_when_idle_gap_exceeds_idle_threshold():
     sb = FakeScoreboard(age=ESPN_STALE_IDLE_S + 1, live=False)
     sup = _sup(sb, None)
     assert sup._espn_should_respawn() is True
+
+
+def test_respawn_when_kickoff_imminent_and_stale_past_live_threshold():
+    # The Armenia case: no game shows 'in' yet (the poller slept through the
+    # kickoff with a pre-kickoff snapshot), but a kickoff is imminent and the
+    # snapshot is stale past the LIVE threshold. The kickoff_imminent arm must
+    # apply the tight bound and respawn — not wait for the 40-min idle bound.
+    sb = FakeScoreboard(age=ESPN_STALE_LIVE_S + 60, live=False, kickoff_imminent=True)
+    sup = _sup(sb, None)
+    assert sup._espn_should_respawn() is True
+
+
+def test_no_respawn_when_kickoff_imminent_but_fresh():
+    # Imminent kickoff but the poller is refreshing fast (fresh snapshot) — the
+    # tight bound applies, the gap is under it, so no respawn.
+    sb = FakeScoreboard(age=10.0, live=False, kickoff_imminent=True)
+    sup = _sup(sb, None)
+    assert sup._espn_should_respawn() is False
 
 
 def test_no_respawn_before_first_refresh():

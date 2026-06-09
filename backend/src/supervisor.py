@@ -793,11 +793,13 @@ class Supervisor:
         the process and /health stay green (observed 2026-06-08). This is the
         backstop: a dead/wedged poll loop is replaced with a fresh one.
 
-        Staleness is judged against whether games are live, because the loop's
-        own cadence is adaptive: ~40s when live, 30 min when idle. A 30-min idle
-        gap is healthy, so we only treat a stale snapshot as a fault when live
-        games should be producing refreshes (ESPN_STALE_LIVE_S), and otherwise
-        only at a coarse bound that exceeds the idle interval (ESPN_STALE_IDLE_S).
+        Staleness is judged against whether fast data is due — a game live OR a
+        kickoff imminent — because the loop's cadence is adaptive: ~40s then, 30
+        min when genuinely idle. A 30-min idle gap is healthy, so we only treat a
+        stale snapshot as a fault when refreshes should be flowing
+        (ESPN_STALE_LIVE_S), and otherwise at a coarse bound that exceeds the idle
+        interval (ESPN_STALE_IDLE_S). Including imminent kickoffs (not just
+        observed-live games) is what catches a poller that slept through a start.
         """
         while True:
             await asyncio.sleep(WATCHDOG_INTERVAL_S)
@@ -817,10 +819,14 @@ class Supervisor:
         does the sleeping; this does the deciding (so it's testable in isolation)."""
         died = self._espn_task is not None and self._espn_task.done()
         age = self.espn_scoreboard.seconds_since_refresh()
-        threshold = (
-            ESPN_STALE_LIVE_S if self.espn_scoreboard.has_live_games
-            else ESPN_STALE_IDLE_S
+        # Tight bound whenever fast data is due — live games OR an imminent
+        # kickoff. Without the kickoff_imminent arm, a poller that slept through a
+        # kickoff (idle snapshot shows nothing live) would be judged against the
+        # 40-min idle bound and not respawned until long after the game started.
+        fast_due = (
+            self.espn_scoreboard.has_live_games or self.espn_scoreboard.kickoff_imminent
         )
+        threshold = ESPN_STALE_LIVE_S if fast_due else ESPN_STALE_IDLE_S
         stale = age is not None and age > threshold
         return died or stale
 
