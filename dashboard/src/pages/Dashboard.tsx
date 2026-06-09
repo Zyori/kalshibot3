@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import InlineError from '../components/InlineError'
 import Skeleton from '../components/Skeleton'
 import OpenPositionsSection from '../components/trading/OpenPositionsSection'
-import { formatET, formatMatchClock } from '../lib/format'
+import { formatET, formatMatchClock, isPlayedOut } from '../lib/format'
 
 type FeedMarket = {
   ticker: string
@@ -251,11 +251,13 @@ function EventRow({ group, compact }: { group: EventGroup; compact: boolean }) {
   )
   const time = matchLabel ?? formatET(group.open_time)
   // Live score header — shown for in-progress games (and finals when we
-  // got a score from ESPN). Hidden for pre-game and when ESPN didn't match.
+  // got a score from ESPN). Hidden for pre-game, when ESPN didn't match, and
+  // for a Canceled/Postponed/Abandoned game whose 0-0 is meaningless.
   const hasScore =
     group.home_score !== null &&
     group.away_score !== null &&
-    (group.espn_state === 'in' || group.espn_state === 'post')
+    (group.espn_state === 'in' ||
+      (group.espn_state === 'post' && isPlayedOut(group.espn_status_detail)))
   // Outcome order: put TIE last, otherwise alphabetical by yes_sub_title.
   // Stable across renders so the price chips don't reshuffle.
   const sorted = [...group.markets].sort((a, b) => {

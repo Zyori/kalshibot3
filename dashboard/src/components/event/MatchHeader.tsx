@@ -11,7 +11,7 @@
  * just the team names + kickoff time. The caller passes a fallback title
  * for that case (event_title).
  */
-import { formatET } from '../../lib/format'
+import { formatET, isPlayedOut, postStateLabel } from '../../lib/format'
 import type { EventDetail } from '../../lib/types'
 
 export default function MatchHeader({
@@ -58,6 +58,8 @@ export default function MatchHeader({
         homeScore={live?.home.score ?? null}
         awayScore={live?.away.score ?? null}
         fallbackTitle={detail.event_title ?? decoded}
+        // A Canceled/Postponed/Abandoned game's 0-0 is meaningless — hide it.
+        suppressScore={detail.espn_state === 'post' && !isPlayedOut(detail.espn_status_detail)}
       />
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
@@ -87,17 +89,19 @@ function ScoreLine({
   homeScore,
   awayScore,
   fallbackTitle,
+  suppressScore = false,
 }: {
   homeName: string | null
   awayName: string | null
   homeScore: number | null
   awayScore: number | null
   fallbackTitle: string
+  suppressScore?: boolean
 }) {
   if (!homeName || !awayName) {
     return <h2 className="text-lg font-semibold text-text">{fallbackTitle}</h2>
   }
-  const showScores = homeScore !== null && awayScore !== null
+  const showScores = !suppressScore && homeScore !== null && awayScore !== null
   return (
     <div className="flex flex-wrap items-baseline gap-x-3">
       <span className="text-lg font-semibold text-text">{homeName}</span>
@@ -218,7 +222,7 @@ function LastEventLine({
 function stateLabel(detail: EventDetail): string | null {
   if (!detail.espn_state) return null
   if (detail.espn_state === 'pre') return null
-  if (detail.espn_state === 'post') return 'Final'
+  if (detail.espn_state === 'post') return postStateLabel(detail.espn_status_detail)
   // 'in' — espn_clock typically already carries the minute label
   return detail.espn_clock ?? detail.espn_status_detail ?? 'Live'
 }

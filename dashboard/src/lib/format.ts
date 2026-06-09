@@ -74,6 +74,28 @@ const ET_TZ = 'America/New_York'
  * Falls back to ESPN's status_detail when it carries a clearer label
  * (e.g. 'HT', 'FT', 'AET') than we can derive ourselves.
  */
+/**
+ * Label for an ESPN 'post' state. ESPN collapses every ended-or-not-played
+ * game into state 'post' — a real Final, but also Canceled / Postponed /
+ * Abandoned matches that never produced a score. Name those so a 0-0 doesn't
+ * read as a played-out draw; only a normally-finished game says 'Final'.
+ * Returns whether the game actually finished, so callers can suppress the
+ * score for a match that never happened.
+ */
+export function postStateLabel(statusDetail: string | null | undefined): string {
+  const d = (statusDetail ?? '').trim().toLowerCase()
+  if (d.includes('cancel')) return 'Canceled'
+  if (d.includes('postpon')) return 'Postponed'
+  if (d.includes('abandon')) return 'Abandoned'
+  return 'Final'
+}
+
+/** Whether an ESPN 'post' state represents a normally-completed game (a real
+ * Final with a meaningful score) vs a Canceled/Postponed/Abandoned match. */
+export function isPlayedOut(statusDetail: string | null | undefined): boolean {
+  return postStateLabel(statusDetail) === 'Final'
+}
+
 export function formatMatchClock(
   state: string | null | undefined,
   period: number | null | undefined,
@@ -89,7 +111,7 @@ export function formatMatchClock(
     // kickoff time, which is what the user actually wants to see.
     return isPreGameWindow(kickoffIso) ? 'Pre-game' : null
   }
-  if (state === 'post') return 'Final'
+  if (state === 'post') return postStateLabel(statusDetail)
   if (state !== 'in') return null
 
   // Halftime: ESPN sets shortDetail to 'HT' (or sometimes 'Halftime').
