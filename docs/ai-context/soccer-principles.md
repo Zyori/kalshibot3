@@ -12,12 +12,19 @@ Read `global-principles.md` first — this adds soccer-specific game-state reads
 
 ## The three core setups
 
-**1. Underdog scores early → consider the DRAW (mean reversion).**
-The favorite usually claws ONE goal back, which swings the draw price up. Buy the draw cheap
-(~20–28¢), target +50–75%, and sell into the equalizer spike — almost never hold to settle.
-- Stronger if the underdog's goal was lucky/chippy (against the run of play) AND the favorite is
-  getting **shots, especially shots on target.**
-- Skip if the favorite is toothless (no shots on target, generating nothing) — no equalizer comes.
+**1. Underdog scores early → mean reversion (DRAW or FAVORITE, by favorite strength).**
+The early underdog goal is an outlier the favorite usually corrects — but *what* you buy depends on
+how strong the favorite is. Read it off the favorite's **pre-goal moneyline**:
+- **Heavy favorite (≥65¢ pre-goal) → back the FAVORITE to win.** A genuinely dominant side concedes
+  early and still wins outright more often than it merely draws — so buy the favorite, not the draw.
+  Stronger the earlier the goal and the more it's chippy/lucky (against the run of play).
+- **Smaller favorite (<65¢ pre-goal) → back the DRAW.** Here the favorite usually claws ONE goal
+  back, which swings the draw price up. Buy the draw cheap (~20–28¢), target +50–75%, and sell into
+  the equalizer spike — almost never hold to settle.
+- Either way: stronger if the underdog's goal was lucky/chippy AND the favorite is getting **shots,
+  especially shots on target.**
+- Skip if the favorite is toothless (no shots on target, generating nothing) — no comeback comes,
+  for the win *or* the draw.
 
 **2. Favorite scores early AND is playing well → consider the FAVORITE (mean confirmation).**
 Take the favorite if there's value left, especially if they're performing strongly. The first
@@ -29,6 +36,16 @@ goal confirms them (first goal → ~70% no-defeat).
 20–25 min of passive play and strong defense. 0-0 is an unlikely *final* outcome, but there's
 draw/under value to hold and sell before the game ends. Options: Draw, Under 0.5, Under 1.5.
 - Harder to read — teams can be explosive. Treat as lower conviction; ride the drift, sell early.
+
+**4. Early goal panic-dumps the UNDER → buy the floor, scalp the bounce (scalp).**
+An early goal hammers Under 1.5 to the bottom of the book as the market overreacts to one event. The
+edge is **the overreaction, not the game going quiet** — an early goal actually argues for *more*
+goals (the game opens up; see line 76), so you are NOT betting it stays low. You're buying a
+mispriced floor and selling the bounce.
+- Buy Under 1.5 when it's dumped to **≤7¢** — great value at 7¢ or less; the asymmetry is the point.
+- This is a **scalp: in and out.** Target a quick double-up off the bounce, exit, don't marry it.
+  Do not hold it as a thesis that the game finishes under — the run of play is against you, so the
+  exit discipline carries the whole trade.
 
 ## Reading the run of play
 
