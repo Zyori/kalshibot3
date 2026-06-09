@@ -801,38 +801,58 @@ class Supervisor:
         """
         while True:
             await asyncio.sleep(WATCHDOG_INTERVAL_S)
-            age = self.espn_scoreboard.seconds_since_refresh()
-            died = self._espn_task is not None and self._espn_task.done()
-            threshold = (
-                ESPN_STALE_LIVE_S if self.espn_scoreboard.has_live_games
-                else ESPN_STALE_IDLE_S
-            )
-            stale = age is not None and age > threshold
-            if not died and not stale:
-                continue
-            # Deliberate shutdown: stop() set the flag and is cancelling tasks.
-            # Don't fight it by respawning a loop that's meant to be ending.
-            if self.espn_scoreboard.is_stopped:
-                return
-            log.warning(
-                "espn_poller_wedged_respawning",
-                refresh_age_s=round(age, 1) if age is not None else None,
-                task_done=died,
-                had_live_games=self.espn_scoreboard.has_live_games,
-            )
-            # Replace the wedged task. A hung _refresh_once won't honor a plain
-            # cancel cleanly, but cancel() + a fresh task is correct: the old
-            # task is abandoned (its httpx clients are context-managed and close
-            # on GC / cancellation), and the new run() does an immediate fetch.
-            if self._espn_task is not None:
-                self._espn_task.cancel()
-                with contextlib.suppress(Exception):
-                    self._tasks.remove(self._espn_task)
-            self.espn_scoreboard.resume()
-            self._espn_task = asyncio.create_task(
-                self.espn_scoreboard.run(), name="espn_scoreboard",
-            )
-            self._tasks.append(self._espn_task)
+            if self._espn_should_respawn():
+                # Deliberate shutdown: stop() set the flag and is cancelling
+                # tasks. Don't fight it by respawning a loop meant to be ending.
+                if self.espn_scoreboard.is_stopped:
+                    return
+                self._respawn_espn_task()
+
+    def _espn_should_respawn(self) -> bool:
+        """Whether the ESPN poll loop has wedged and needs replacing. Two faults:
+        the task raised and exited (task.done()), or _refresh_once hangs and the
+        snapshot stops advancing past the staleness threshold. Threshold is
+        adaptive: tight when games are live (a refresh is due ~40s), coarse when
+        idle (a 30-min gap is healthy). Pure read of current state — the loop
+        does the sleeping; this does the deciding (so it's testable in isolation)."""
+        died = self._espn_task is not None and self._espn_task.done()
+        age = self.espn_scoreboard.seconds_since_refresh()
+        threshold = (
+            ESPN_STALE_LIVE_S if self.espn_scoreboard.has_live_games
+            else ESPN_STALE_IDLE_S
+        )
+        stale = age is not None and age > threshold
+        return died or stale
+
+    def _respawn_espn_task(self) -> None:
+        """Cancel the wedged ESPN task and start a fresh one. A hung
+        _refresh_once won't honor a plain cancel cleanly, but cancel() + a new
+        task is correct: the old task is abandoned (its httpx clients are
+        context-managed and close on GC / cancellation), and the new run() does
+        an immediate fetch. Exactly one task is tracked after this returns."""
+        age = self.espn_scoreboard.seconds_since_refresh()
+        log.warning(
+            "espn_poller_wedged_respawning",
+            refresh_age_s=round(age, 1) if age is not None else None,
+            task_done=self._espn_task is not None and self._espn_task.done(),
+            had_live_games=self.espn_scoreboard.has_live_games,
+        )
+        if self._espn_task is not None:
+            # If the task died by raising, retrieve the exception so asyncio
+            # doesn't log "Task exception was never retrieved" — this path fires
+            # exactly when the loop crashed, so the trace is worth surfacing.
+            if self._espn_task.done() and not self._espn_task.cancelled():
+                exc = self._espn_task.exception()
+                if exc is not None:
+                    log.warning("espn_poller_crashed", error=repr(exc)[:200])
+            self._espn_task.cancel()
+            with contextlib.suppress(Exception):
+                self._tasks.remove(self._espn_task)
+        self.espn_scoreboard.resume()
+        self._espn_task = asyncio.create_task(
+            self.espn_scoreboard.run(), name="espn_scoreboard",
+        )
+        self._tasks.append(self._espn_task)
 
     async def start(self) -> None:
         """Spawn every background task. Idempotent — calling twice is a no-op."""
