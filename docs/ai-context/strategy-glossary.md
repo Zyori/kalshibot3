@@ -37,6 +37,12 @@ if conviction is below that, no bet gets placed, so there's no `none`
 bucket. The three values describe **degrees of yes**, anchored to a
 rough multiple of your standard unit.
 
+**1 unit = $25.** This is the dollar anchor for the multiples below — when
+staging a suggestion, size `suggested_size_cents` off this (medium ≈ 2500,
+high ≈ 5000, low ≈ 1250) unless the user names a size. It's a soft default,
+not a cap: the user sizes freely and the backend never blocks. Treat it as the
+starting point you'd round from, scaled by edge and the specific read.
+
 Record what you *felt at order time*. **Do not retag confidence after a
 bet resolves** — it poisons the calibration signal the AI uses to learn
 when your gut is sharp.

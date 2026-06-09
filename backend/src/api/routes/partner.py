@@ -29,7 +29,7 @@ from datetime import datetime
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,11 +56,18 @@ router = APIRouter()
 log = get_logger(__name__)
 
 RECENT_TRADES_LIMIT = 100
-"""How many recent bets the partner gets as ledger context — enough detail to
-read the recent arc, while history_stats carries the all-time aggregates."""
+"""Hard ceiling on recent bets in the context package. The orienting call
+defaults to RECENT_TRADES_DEFAULT (small); a caller wanting the full arc passes
+?recent_limit= up to this cap. history_stats carries the all-time aggregates
+regardless, so a small default loses no behavioral signal."""
+
+RECENT_TRADES_DEFAULT = 5
+"""Default recent-trade count for the no-arg orienting call. The full trade
+objects dominate the payload (~1KB each); 5 reads the recent arc without the
+~30KB tail of 100. Bump per-request with ?recent_limit= when reviewing history."""
 
 
-async def _recent_trades(session: AsyncSession) -> list[dict[str, Any]]:
+async def _recent_trades(session: AsyncSession, limit: int) -> list[dict[str, Any]]:
     """Last N bets, newest first — same select shape + serializer as
     GET /ledger (Bet left-joined to Market, ordered by id desc, rendered by
     _bet_to_dict). Querying directly rather than calling list_bets() because
@@ -70,7 +77,7 @@ async def _recent_trades(session: AsyncSession) -> list[dict[str, Any]]:
         select(Bet, Market.kalshi_ticker, Market.status)
         .join(Market, Market.id == Bet.market_id, isouter=True)
         .order_by(Bet.id.desc())
-        .limit(RECENT_TRADES_LIMIT)
+        .limit(limit)
     )
     rows = (await session.execute(stmt)).all()
     return [_bet_to_dict(b, ticker, status) for b, ticker, status in rows]
@@ -102,6 +109,7 @@ def _price_series(request: Request, ticker: str | None) -> list[dict[str, Any]]:
 async def partner_context(
     request: Request,
     event: str | None = None,
+    recent_limit: int = Query(RECENT_TRADES_DEFAULT, ge=0, le=RECENT_TRADES_LIMIT),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """One-call context package for the partner.
@@ -113,6 +121,10 @@ async def partner_context(
     Without `event`: the global book — all open positions + recent trades +
     bankroll, no run-of-play (the partner asks about a specific game when it
     wants the live read).
+
+    `recent_limit` caps the recent_trades list (default RECENT_TRADES_DEFAULT,
+    up to RECENT_TRADES_LIMIT). The default keeps the orienting call small;
+    history_stats still carries the full all-time aggregates either way.
 
     Soccer-only and read-only, inherited from the composed handlers. An
     unknown/non-soccer event ticker is refused by get_event (400/404), which
@@ -128,7 +140,7 @@ async def partner_context(
         "scope": "event" if event else "book",
         "bankroll_cents": _bankroll_cents(request),
         "positions": positions["positions"],
-        "recent_trades": await _recent_trades(session),
+        "recent_trades": await _recent_trades(session, recent_limit),
         # Aggregate behavioral history so the partner can spot patterns the last
         # 20 trades don't show — win-rate and net P&L overall AND per strategy.
         # Same single source the Settings/Ledger charts use (ledger_stats), so

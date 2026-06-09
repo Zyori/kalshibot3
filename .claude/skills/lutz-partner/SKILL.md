@@ -78,12 +78,31 @@ the start of a session — it shows what's open and the bankroll.
 ## Pulling context
 
 ```bash
-# whole book — positions, recent trades, bankroll, standings for held teams
-curl -s http://127.0.0.1:8000/api/partner/context | jq
+# whole book — positions, recent trades, bankroll, standings for held teams.
+# recent_trades defaults to the last 5 (keeps this call small); history_stats
+# always carries the full all-time aggregates, so the default loses no signal.
+curl -sf http://127.0.0.1:8000/api/partner/context | jq
+
+# reviewing the recent arc — pull more trades (cap 100) when you actually need
+# the trade-by-trade history beyond the aggregate
+curl -sf "http://127.0.0.1:8000/api/partner/context?recent_limit=40" | jq
 
 # one game — adds run-of-play + that event's markets + your position on each,
 # plus event_standings (both teams' group table) and event_h2h
-curl -s "http://127.0.0.1:8000/api/partner/context?event=KXWCGAME-26JUN11MEXRSA" | jq
+curl -sf "http://127.0.0.1:8000/api/partner/context?event=KXWCGAME-26JUN11MEXRSA" | jq
+
+# discover what games exist — the soccer board grouped by time-state.
+# This is how you find an event ticker you don't already know: list
+# what's live/upcoming and read the ticker off the row. Reach for this
+# FIRST when the user names a game without a ticker ("size this friendly
+# parlay", "what's on tonight") — never guess a ticker, look it up here.
+curl -s http://127.0.0.1:8000/api/markets/feed | jq
+# → {live: [...], upcoming: [...], recent: [...], refreshed_at}
+#   each row: ticker, event_ticker, event_title, market_title, series,
+#   league, status, yes_bid_cents, yes_ask_cents, volume, bucket, and the
+#   ESPN score header (home/away name + score, espn_state/clock). Refreshes
+#   every 60s. Soccer-only by construction — the discovery poller never
+#   ingests non-soccer, so the whole board is safe to read.
 
 # full WC group tables (all 12 groups) — on demand, when you want the whole
 # picture beyond the teams you hold or the one game in scope
@@ -98,9 +117,31 @@ ticker (e.g. market `KXWCGAME-26JUN11MEXRSA-MEX` → event
 `KXWCGAME-26JUN11MEXRSA`). Non-soccer tickers are refused — this app is
 soccer-only and must never touch the user's other Kalshi positions.
 
+**Introspect, don't invent.** Use `curl -sf` (not bare `curl -s`) for every
+read — `-f` makes curl exit non-zero on an HTTP error, so a wrong route fails
+loudly instead of handing you `{"detail":"Not Found"}` that looks like data.
+When a call fails or comes back empty and you're unsure it's the right path,
+the answer is one call away: `GET http://127.0.0.1:8000/openapi.json` and read
+`.paths` for the real route. A wrong route returns a clean `404
+{"detail":"Not Found"}` — that's a "wrong path," not "the data doesn't exist."
+Never read a 404 or an empty result as "I can't see it" and then theorize to
+fill the gap. Find the route, then read the data. Never size or call a trade on
+a guess when the real number is one introspected endpoint away.
+
 Numbers from this endpoint are byte-identical to what the site shows (it
 composes the same serializers). If the context says a position is +52%, the
 site says +52%.
+
+**Validating a combo/parlay's price.** A combo (Kalshi MVE market) quotes one
+combined mid for the whole bundle. To sanity-check whether that price is cheap
+or rich, price the legs yourself: pull each leg's market with `curl -sf
+http://127.0.0.1:8000/api/markets/<LEG_TICKER>`, take each leg's mid as an
+implied probability (¢ ≈ %), and multiply them for the naive joint. If the
+combo trades well below that product it's cheap (the book is pricing in
+correlation or just thin); well above, it's rich. The leg tickers come from the
+combo itself — `/api/combos` hydrates each leg's `leg_ticker`. This is a
+back-of-envelope check (it assumes independence, which legs rarely are), but it
+catches a combo that's mispriced by a wide margin before you stage it.
 
 ## Exit post-mortems — `GET /api/ledger/{bet_id}/snapshots`
 
