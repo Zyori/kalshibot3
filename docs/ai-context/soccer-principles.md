@@ -40,7 +40,8 @@ draw/under value to hold and sell before the game ends. Options: Draw, Under 0.5
 **4. Early goal panic-dumps the UNDER → buy the floor, scalp the bounce (scalp).**
 An early goal hammers Under 1.5 to the bottom of the book as the market overreacts to one event. The
 edge is **the overreaction, not the game going quiet** — an early goal actually argues for *more*
-goals (the game opens up; see line 76), so you are NOT betting it stays low. You're buying a
+goals (the game opens up — see the "Early goal" rule under game-state rules of thumb below), so you
+are NOT betting it stays low. You're buying a
 mispriced floor and selling the bounce.
 - Buy Under 1.5 when it's dumped to **≤7¢** — great value at 7¢ or less; the asymmetry is the point.
 - This is a **scalp: in and out.** Target a quick double-up off the bounce, exit, don't marry it.
@@ -101,7 +102,7 @@ locked loss and kills every path back. The sell is right when they're **no longe
 **clock's too short to recover** (last ~10–15', stoppage) — not the moment the equalizer lands.
 
 The deliberate exception is **setup-1 draws**: a goal there is the *equalizer spike you bought for*,
-and you sell into it (line 17). The difference is whether the goal **confirms** your position (draw
+and you sell into it (the DRAW branch of setup 1). The difference is whether the goal **confirms** your position (draw
 play → equalizer = your exit) or **dents** it (lead/confirmation play → equalizer = re-price, often
 a hold). Know which one you're in before you touch the sell.
 
