@@ -297,15 +297,20 @@ function applyEvent(qc: ReturnType<typeof useQueryClient>, event: WsEvent) {
       // `position_synced` signal it emits, which fires post-commit. Refetching
       // on `fill` would race that sync and read pre-fill state.
       qc.invalidateQueries({ queryKey: ['ledger'] })
+      qc.invalidateQueries({ queryKey: ['ledger_stats'] })
       return
     }
     case 'position_synced': {
       // A position reconciliation committed. Refetch everything that carries
       // position data: the event page (markets[].position lives in ['event']),
-      // the positions list, and the ledger (unrealized P&L tracks positions).
+      // the positions list, and the ledger list + stats (the stats strip,
+      // P&L graph, and strategy breakdown all derive from closed bets, so a
+      // close must refresh them too — they're a separate query key from the
+      // ['ledger'] list and don't invalidate with it).
       qc.invalidateQueries({ queryKey: ['event'] })
       qc.invalidateQueries({ queryKey: ['positions'] })
       qc.invalidateQueries({ queryKey: ['ledger'] })
+      qc.invalidateQueries({ queryKey: ['ledger_stats'] })
       return
     }
     case 'market_lifecycle': {
