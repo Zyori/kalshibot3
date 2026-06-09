@@ -28,6 +28,14 @@ import Skeleton from '../components/Skeleton'
 import type { MarketBook } from '../contexts/WebSocketProvider'
 import type { ChildMarket, EventDetail } from '../lib/types'
 
+// Poll cadence by game state: live games change fast, pre-match slowly,
+// settled not at all. null (no ESPN match yet) is treated as pre-match.
+function eventRefetchMs(state: EventDetail['espn_state']): number {
+  if (state === 'in') return 10_000
+  if (state === 'post') return 60_000
+  return 30_000 // pre / null — prompt enough to catch kickoff
+}
+
 export default function EventView() {
   const { eventTicker = '' } = useParams<{ eventTicker: string }>()
   const decoded = decodeURIComponent(eventTicker)
@@ -43,7 +51,12 @@ export default function EventView() {
       }
       return res.json()
     },
-    refetchInterval: 10_000,
+    // Cadence follows game state: only a LIVE game's run-of-play changes fast.
+    // A pre-match game barely moves (poll 30s so kickoff is still noticed
+    // promptly), and a settled one is frozen (60s). Avoids hammering a static
+    // pre-match page every 10s for hours during a busy WC slate.
+    refetchInterval: (query) =>
+      eventRefetchMs(query.state.data?.espn_state ?? null),
   })
 
   // Seed every child's book cache on event load so collapsed cards show
