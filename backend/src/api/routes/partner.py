@@ -163,6 +163,11 @@ async def partner_context(
         ev = await get_event(event, request, session)
         for m in ev.get("markets", []):
             m["price_history"] = _price_series(request, m.get("ticker"))
+        # Over/Under rungs live in their own array (events._fetch_total_goals) and
+        # are WS-subscribed too, so the sampler already buffers their mids. Attach
+        # the same trajectory so LUTZ reads "the over is climbing", not a snapshot.
+        for m in ev.get("total_goals", []):
+            m["price_history"] = _price_series(request, m.get("ticker"))
         out["event"] = ev
         # Recent news tagged to THIS game's teams — injuries, lineups,
         # suspensions LUTZ should factor into the read. Scoped to the two teams
