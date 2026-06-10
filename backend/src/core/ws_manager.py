@@ -25,6 +25,7 @@ from typing import Any
 from fastapi import WebSocket
 
 from src.core.logging import get_logger
+from src.kalshi.live_state import LiveState
 from src.kalshi.ws_wire import (
     Fill,
     KalshiWsMessage,
@@ -42,22 +43,21 @@ FLUSH_INTERVAL_S = 0.5
 def _collapse_key(msg: KalshiWsMessage) -> str | None:
     """Key for coalescing. Returns None if the message must be kept verbatim.
 
-    Orderbook updates collapse per (type, ticker) — only the latest matters
-    because each carries full or partial state. Fills and user_orders never
-    collapse — every one is a discrete event the UI cares about.
+    Both orderbook snapshot and delta collapse to ONE per-ticker `book` key:
+    the browser is sent the full current book (read from LiveState at serialize
+    time), so only the latest update per ticker per flush window matters — an
+    earlier snapshot or delta is fully superseded by re-reading the book. Fills
+    and user_orders never collapse — every one is a discrete event the UI cares
+    about.
     """
-    if isinstance(msg, OrderbookSnapshot):
-        return f"snapshot:{msg.msg.market_ticker}"
-    if isinstance(msg, OrderbookDelta):
-        # Deltas are per-price-level; collapsing them would drop liquidity
-        # movements between two browser flushes. Keep all of them.
-        return None
+    if isinstance(msg, (OrderbookSnapshot, OrderbookDelta)):
+        return f"book:{msg.msg.market_ticker}"
     if isinstance(msg, MarketLifecycle):
         return f"lifecycle:{msg.msg.market_ticker}"
     return None
 
 
-def _serialize(msg: KalshiWsMessage) -> dict[str, Any] | None:
+def _serialize(msg: KalshiWsMessage, live_state: LiveState) -> dict[str, Any] | None:
     """Browser-side payload. Single canonical schema, regardless of channel.
 
     Returns None for message types the browser doesn't care about (subscribe
@@ -67,21 +67,16 @@ def _serialize(msg: KalshiWsMessage) -> dict[str, Any] | None:
     silently killing the entire broadcast flush loop, which is what happened
     when Subscribed/Unsubscribed/Ok were added to KalshiWsMessage.
     """
-    if isinstance(msg, OrderbookSnapshot):
-        return {
-            "type": "orderbook_snapshot",
-            "ticker": msg.msg.market_ticker,
-            "yes": [{"price": l.price_cents, "qty": l.quantity} for l in msg.msg.yes],
-            "no":  [{"price": l.price_cents, "qty": l.quantity} for l in msg.msg.no],
-        }
-    if isinstance(msg, OrderbookDelta):
-        return {
-            "type": "orderbook_delta",
-            "ticker": msg.msg.market_ticker,
-            "price": msg.msg.price_cents,
-            "delta": msg.msg.delta,
-            "side": msg.msg.side,
-        }
+    if isinstance(msg, (OrderbookSnapshot, OrderbookDelta)):
+        # Don't forward the raw snapshot/delta — send the full current book that
+        # LiveState (the authoritative, guarded copy) holds AFTER this message
+        # was applied. The browser stores it verbatim and never reconstructs a
+        # book from deltas, which is what produced the crossed/empty-book bug on
+        # lopsided markets. One book shape (MarketBook.to_wire) for REST + WS.
+        book = live_state.books.get(msg.msg.market_ticker)
+        if book is None:
+            return None
+        return {"type": "book", **book.to_wire()}
     if isinstance(msg, Fill):
         return {
             "type": "fill",
@@ -119,7 +114,10 @@ def _serialize(msg: KalshiWsMessage) -> dict[str, Any] | None:
 class BroadcastManager:
     """Fan-out hub for browser clients. Single instance per process."""
 
-    def __init__(self) -> None:
+    def __init__(self, live_state: LiveState) -> None:
+        # Authoritative book store. _serialize reads the full current book from
+        # here for every orderbook update instead of forwarding raw deltas.
+        self._live_state = live_state
         self._clients: set[WebSocket] = set()
         # Coalesced messages, keyed for replacement; un-coalesced messages
         # accumulate in _pending_list.
@@ -153,21 +151,11 @@ class BroadcastManager:
             if key is None:
                 self._pending_list.append(msg)
             else:
-                # A snapshot supersedes every delta for the same ticker that
-                # arrived earlier in this flush window. The flush emits collapsed
-                # snapshots before the delta list, so a pre-snapshot delta left
-                # in _pending_list would be applied to the post-snapshot baseline
-                # on the browser — a transient mispriced level. Drop those stale
-                # deltas now.
-                if isinstance(msg, OrderbookSnapshot):
-                    ticker = msg.msg.market_ticker
-                    self._pending_list = [
-                        m for m in self._pending_list
-                        if not (
-                            isinstance(m, OrderbookDelta)
-                            and m.msg.market_ticker == ticker
-                        )
-                    ]
+                # Orderbook snapshot and delta share one `book:<ticker>` key, so
+                # the latest update wins per flush window — and since serialize
+                # re-reads the full book from LiveState, an earlier update is
+                # fully superseded regardless of order. No pre-snapshot-delta
+                # cleanup needed: there are no raw deltas on the wire anymore.
                 self._pending_collapsed[key] = msg
 
     async def consume_queue(self, queue: asyncio.Queue[KalshiWsMessage]) -> None:
@@ -233,7 +221,7 @@ class BroadcastManager:
         if not self._clients:
             return  # nobody listening; drop the batch
 
-        events = [s for s in (_serialize(m) for m in batch) if s is not None]
+        events = [s for s in (_serialize(m, self._live_state) for m in batch) if s is not None]
         events.extend(app_events)
         if not events:
             return

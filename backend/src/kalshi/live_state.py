@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from src.kalshi.ws_wire import (
     BookLevel,
@@ -139,6 +140,24 @@ class MarketBook:
         the new snapshot will repopulate atomically."""
         self.yes.levels = {}
         self.no.levels = {}
+
+    def to_wire(self) -> dict[str, Any]:
+        """Full current book as a browser-ready dict — levels (whole contracts,
+        highest price first) plus the four derived top-of-book prices. This is
+        THE canonical book shape: the markets REST route and the WS `book`
+        broadcast both serialize through here, so the browser sees one identical
+        shape on cold load and on every live update. The browser stores it
+        verbatim and never re-derives a book from raw deltas — that second,
+        unguarded reconstruction was the source of the crossed/empty-book bug."""
+        return {
+            "ticker": self.ticker,
+            "yes": [{"price": p, "qty": q} for p, q in sorted(self.yes.int_levels().items(), reverse=True)],
+            "no":  [{"price": p, "qty": q} for p, q in sorted(self.no.int_levels().items(), reverse=True)],
+            "yes_bid_cents": self.yes_best_bid,
+            "yes_ask_cents": self.yes_best_ask,
+            "no_bid_cents": self.no_best_bid,
+            "no_ask_cents": self.no_best_ask,
+        }
 
 
 @dataclass

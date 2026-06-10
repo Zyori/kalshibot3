@@ -89,7 +89,7 @@ class Supervisor:
 
     def __init__(self) -> None:
         self.live_state = LiveState()
-        self.broadcast = BroadcastManager()
+        self.broadcast = BroadcastManager(self.live_state)
         # The queue from Kalshi WS consumer to the broadcaster. Bounded so a
         # slow broadcaster can't grow memory forever; oldest dropped on
         # overflow (handled in the consumer via put_nowait + suppress).

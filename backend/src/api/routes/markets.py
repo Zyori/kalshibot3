@@ -166,14 +166,8 @@ async def get_market(ticker: str, request: Request) -> dict[str, Any]:
     import time
     age = (time.monotonic() - book.last_update) if book.last_update else None
     return {
-        "ticker": book.ticker,
+        **book.to_wire(),
         "status": book.status,
-        "yes": [{"price": p, "qty": q} for p, q in sorted(book.yes.int_levels().items(), reverse=True)],
-        "no":  [{"price": p, "qty": q} for p, q in sorted(book.no.int_levels().items(), reverse=True)],
-        "yes_bid_cents": book.yes_best_bid,
-        "yes_ask_cents": book.yes_best_ask,
-        "no_bid_cents": book.no_best_bid,
-        "no_ask_cents": book.no_best_ask,
         "last_update_ago_s": round(age, 2) if age is not None else None,
         **metadata,
     }

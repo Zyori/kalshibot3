@@ -279,3 +279,72 @@ class TestFillTouchesTimestamp:
             ),
         ))
         assert s.last_ws_message_at > before
+
+
+class TestToWire:
+    """MarketBook.to_wire is the single canonical browser-bound book shape —
+    REST (/api/markets) and the WS `book` event both serialize through it, so
+    the browser sees one identical shape on cold load and live update."""
+
+    def test_wire_shape_levels_and_derived_prices(self) -> None:
+        s = LiveState()
+        s.apply_orderbook_snapshot(_snapshot(
+            "KX-1",
+            yes_levels=[(40, 25), (42, 100), (41, 50)],  # deliberately unsorted
+            no_levels=[(58, 60), (59, 30)],
+        ))
+        wire = s.books["KX-1"].to_wire()
+        # Levels sorted highest-price-first, as whole contracts.
+        assert wire["yes"] == [
+            {"price": 42, "qty": 100},
+            {"price": 41, "qty": 50},
+            {"price": 40, "qty": 25},
+        ]
+        assert wire["no"] == [{"price": 59, "qty": 30}, {"price": 58, "qty": 60}]
+        # Derived top-of-book matches the MarketBook properties.
+        assert wire["yes_bid_cents"] == 42
+        assert wire["yes_ask_cents"] == 41  # 100 - max(NO bid 59)
+        assert wire["no_bid_cents"] == 59
+        assert wire["no_ask_cents"] == 58  # 100 - max(YES bid 42)
+        assert wire["ticker"] == "KX-1"
+
+    def test_empty_side_yields_null_prices(self) -> None:
+        s = LiveState()
+        s.apply_orderbook_snapshot(_snapshot("KX-1", [(95, 10)], []))  # NO side empty
+        wire = s.books["KX-1"].to_wire()
+        assert wire["yes"] == [{"price": 95, "qty": 10}]
+        assert wire["no"] == []
+        assert wire["yes_bid_cents"] == 95
+        assert wire["yes_ask_cents"] is None   # no NO bids to derive from
+        assert wire["no_bid_cents"] is None
+        assert wire["no_ask_cents"] == 5       # 100 - 95
+
+
+class TestBroadcastSerialize:
+    """The browser must receive a full `book` event built from the authoritative
+    LiveState book, never a raw delta it has to reassemble."""
+
+    def test_orderbook_messages_serialize_to_full_book(self) -> None:
+        from src.core.ws_manager import _serialize
+
+        s = LiveState()
+        s.apply_orderbook_snapshot(_snapshot("KX-1", [(95, 10)], [(4, 7)]))
+        # A delta arrives and is applied to LiveState first (as in ws.listen).
+        s.apply_orderbook_delta(_delta("KX-1", "yes", 95, -10))  # drains the 95 level
+
+        # Serializing EITHER the snapshot or the delta yields the current full
+        # book (post-delta) read from LiveState — not the raw message payload.
+        out = _serialize(_delta("KX-1", "yes", 95, -10), s)
+        assert out is not None
+        assert out["type"] == "book"
+        assert out["yes"] == []                 # 95 level drained
+        assert out["no"] == [{"price": 4, "qty": 7}]
+        assert out["yes_bid_cents"] is None
+        assert out["no_bid_cents"] == 4
+
+    def test_unknown_ticker_serializes_to_none(self) -> None:
+        from src.core.ws_manager import _serialize
+
+        s = LiveState()
+        # A book message for a ticker LiveState never saw → nothing to send.
+        assert _serialize(_delta("KX-GONE", "yes", 50, 5), s) is None

@@ -21,19 +21,20 @@ import { useQueryClient } from '@tanstack/react-query'
 // Mirrors src/core/ws_manager.py _serialize(). Keep this in sync with the
 // backend — any divergence means events get dropped silently here.
 
-type OrderbookSnapshotEvent = {
-  type: 'orderbook_snapshot'
+// Full current book for one market, computed server-side from the
+// authoritative (guarded) LiveState book. The browser stores this verbatim —
+// it does NOT reconstruct a book from deltas. Mirrors MarketBook.to_wire() on
+// the backend and the /api/markets/{ticker} REST shape; one book shape for
+// cold load and live updates.
+type BookEvent = {
+  type: 'book'
   ticker: string
   yes: Array<{ price: number; qty: number }>
   no: Array<{ price: number; qty: number }>
-}
-
-type OrderbookDeltaEvent = {
-  type: 'orderbook_delta'
-  ticker: string
-  price: number
-  delta: number
-  side: 'yes' | 'no'
+  yes_bid_cents: number | null
+  yes_ask_cents: number | null
+  no_bid_cents: number | null
+  no_ask_cents: number | null
 }
 
 type FillEvent = {
@@ -95,8 +96,7 @@ type NudgeEvent = {
 }
 
 type WsEvent =
-  | OrderbookSnapshotEvent
-  | OrderbookDeltaEvent
+  | BookEvent
   | FillEvent
   | UserOrderEvent
   | MarketLifecycleEvent
@@ -112,7 +112,7 @@ type WsPayload = { events: WsEvent[] }
 // these via useQuery(['book', ticker]) etc.
 
 export type BookSide = Record<number, number>
-"price_cents → quantity. Empty levels are absent (we delete on quantity → 0)."
+"price_cents → whole-contract quantity. Server-rounded (MarketBook.to_wire); empty levels are already absent."
 
 export type MarketBook = {
   ticker: string
@@ -236,36 +236,21 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
 
 function applyEvent(qc: ReturnType<typeof useQueryClient>, event: WsEvent) {
   switch (event.type) {
-    case 'orderbook_snapshot': {
+    case 'book': {
+      // Full current book from the server's authoritative LiveState. Store it
+      // verbatim — overwrite, never merge. The browser does NO delta math: the
+      // backend already applied every update to a guarded book (crossed/locked
+      // detection + REST resync) and sends us the result. This is the single
+      // source of truth; the old client-side delta reconstruction is gone, and
+      // with it the crossed/empty-book bug it caused on lopsided markets.
       const yes: BookSide = {}
       const no: BookSide = {}
-      for (const l of event.yes) if (l.qty > 0) yes[l.price] = l.qty
-      for (const l of event.no) if (l.qty > 0) no[l.price] = l.qty
+      for (const l of event.yes) yes[l.price] = l.qty
+      for (const l of event.no) no[l.price] = l.qty
       qc.setQueryData<MarketBook>(queryKeyForBook(event.ticker), {
         ticker: event.ticker,
         yes,
         no,
-      })
-      return
-    }
-    case 'orderbook_delta': {
-      // event.delta is Kalshi's fixed-point delta and can be FRACTIONAL
-      // (e.g. 330.96); only the running per-level sum is integral. Store the
-      // EXACT running sum (never round the stored value — that would lose the
-      // fraction across deltas and re-introduce the drift). Presence is derived
-      // from the SAME rounding the display uses (Math.round, see DepthLadder):
-      // a level is kept iff it rounds to >= 1 contract, so a stored level never
-      // renders as 0. Mirrors backend BookSide.apply_delta (live_state.py) —
-      // keep the two in lockstep. See the 2026-05-29 stale-book investigation.
-      qc.setQueryData<MarketBook>(queryKeyForBook(event.ticker), (prev) => {
-        const base: MarketBook = prev ?? { ticker: event.ticker, yes: {}, no: {} }
-        const sideKey = event.side
-        const sideMap: BookSide = { ...base[sideKey] }
-        const current = sideMap[event.price] ?? 0
-        const next = current + event.delta
-        if (Math.round(next) < 1) delete sideMap[event.price]
-        else sideMap[event.price] = next
-        return { ...base, [sideKey]: sideMap }
       })
       return
     }

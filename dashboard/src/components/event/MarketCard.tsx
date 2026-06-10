@@ -175,10 +175,9 @@ function ExpandedBody({ ticker, heldQuantity }: { ticker: string; heldQuantity: 
   })
   useEffect(() => {
     if (!snapshot.data) return
-    // Seed only when the cache is empty. The card re-fetches on every
-    // expand/collapse; without this guard a re-expand would clobber the live
-    // exact-float WS book with rounded REST ints. Producer no-ops once WS owns
-    // the cache. Frontend counterpart to the backend ws_owned guard.
+    // Cold-start seed for the book cache (REST and WS share one book shape now).
+    // `prev ??` so a re-expand's REST read can't clobber a live WS `book` frame
+    // that already owns the cache; the WS handler itself always overwrites.
     queryClient.setQueryData<MarketBook>(
       ['book', ticker],
       (prev) =>

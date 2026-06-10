@@ -102,7 +102,7 @@ function TotalGoalBody({ ticker }: { ticker: string }) {
   // /api/markets returns every resting level (not just top-of-book), which is
   // what surfaces the bid/ask gap on thin totals markets. The backend
   // WS-subscribes these totals tickers on event-page load (events.py), so live
-  // deltas keep ['book', ticker] fresh after the seed.
+  // `book` frames keep ['book', ticker] fresh after the seed.
   const snapshot = useQuery<MarketDetailResponse>({
     queryKey: ['market_snapshot', ticker],
     queryFn: async () => {
@@ -114,8 +114,9 @@ function TotalGoalBody({ ticker }: { ticker: string }) {
   })
   useEffect(() => {
     if (!snapshot.data) return
-    // Seed only when empty — a re-expand must not clobber the live exact-float
-    // WS book with rounded REST ints. Mirrors MarketCard's ws_owned guard.
+    // Cold-start seed only — `prev ??` so a re-expand's REST read can't clobber
+    // a live WS `book` frame that already owns the cache (REST and WS share one
+    // book shape now; the WS handler always overwrites).
     queryClient.setQueryData<MarketBook>(
       ['book', ticker],
       (prev) =>

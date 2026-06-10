@@ -59,10 +59,12 @@ export default function EventView() {
       eventRefetchMs(query.state.data?.espn_state ?? null),
   })
 
-  // Seed every child's book cache on event load so collapsed cards show
-  // a real top-of-book in their header (without the user having to expand
-  // each one to trigger a snapshot). Always overwrite from REST — the
-  // server runs a locked-book resync before responding.
+  // Seed every child's book cache on event load so collapsed cards show a real
+  // top-of-book in their header before the first WS `book` frame lands. REST
+  // and WS now carry the identical book shape (MarketBook.to_wire), and the WS
+  // `book` handler overwrites unconditionally — so this is a pure cold-start
+  // seed. `prev ??` keeps a WS frame that beat us here from being clobbered by
+  // the (slightly older) REST read; once WS owns the cache it stays authoritative.
   const queryClient = useQueryClient()
   useEffect(() => {
     if (!data?.markets) return
@@ -76,11 +78,6 @@ export default function EventView() {
               | null,
           ) => {
             if (!snap) return
-            // Seed only when the cache is empty. If WS deltas have already
-            // populated this book, the producer no-ops — a REST snapshot
-            // (rounded ints) must not clobber the live exact-float WS state.
-            // The WS snapshot handler, which IS authoritative, still overwrites
-            // unconditionally. Frontend counterpart to the backend ws_owned guard.
             queryClient.setQueryData<MarketBook>(
               ['book', m.ticker],
               (prev) =>
