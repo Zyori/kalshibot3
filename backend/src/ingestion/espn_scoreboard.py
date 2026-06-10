@@ -42,17 +42,17 @@ REFRESH_CEILING_S = 120.0  # hard cap on one full poll pass; a pass that exceeds
                           # this is hung (not just slow) and is abandoned so the
                           # loop keeps cycling. A healthy pass is a few seconds.
 POLL_INTERVAL_IDLE_S = 1800   # 30 min when no games are live
-POLL_INTERVAL_LIVE_S = 40     # when at least one game is in progress — keeps
+POLL_INTERVAL_LIVE_S = 20     # when at least one game is in progress — keeps
                               # the score/clock within ~1 poll of real time
 POLL_INTERVAL_BURST_S = 10    # when a watched market just spiked (likely a goal/
                               # red card) — tighten to catch the /summary detail
-                              # within ~10s instead of ~40s. ESPN is free + unmetered,
+                              # within ~10s instead of ~20s. ESPN is free + unmetered,
                               # so the burst's only cost is a few extra requests.
 BURST_WINDOW_S = 75           # how long a single burst request stays hot before
                               # decaying back to the live cadence
 KICKOFF_IMMINENT_LEAD_S = 900   # 15 min BEFORE a scheduled kickoff: start polling
                               # at the live cadence so we catch the pre->in flip
-                              # within ~40s of the real start.
+                              # within ~20s of the real start.
 KICKOFF_IMMINENT_LAG_S = 7200   # 2 h AFTER a scheduled kickoff while a game is
                               # still 'pre' in our snapshot: ESPN hasn't flipped it
                               # live yet, or our snapshot is stale across it. Keep
@@ -593,7 +593,7 @@ class EspnScoreboard:
     def request_burst(self) -> None:
         """Tighten the poll cadence to ~10s for BURST_WINDOW_S. Called when a
         watched market just moved sharply (likely a goal / red card) so the
-        /summary detail lands within ~10s instead of ~40s. Idempotent — a fresh
+        /summary detail lands within ~10s instead of ~20s. Idempotent — a fresh
         spike just re-extends the window; overlapping spikes don't stack."""
         self._burst_until = time.monotonic() + BURST_WINDOW_S
 
@@ -603,7 +603,7 @@ class EspnScoreboard:
 
     async def run(self) -> None:
         """Long-running poller. Initial fetch on start, then adaptive cadence:
-        30 min idle, 40s when a game is live, 10s for ~75s after a watched
+        30 min idle, 20s when a game is live, 10s for ~75s after a watched
         market spikes (event-burst — see request_burst)."""
         with contextlib.suppress(Exception):
             await asyncio.wait_for(self._refresh_once(), timeout=REFRESH_CEILING_S)
@@ -614,7 +614,7 @@ class EspnScoreboard:
             elif live_now or self.kickoff_imminent:
                 # kickoff_imminent keeps the fast cadence around a scheduled
                 # start even before the snapshot shows the game 'in' — so a game
-                # kicking off during an idle sleep is caught within ~40s, not
+                # kicking off during an idle sleep is caught within ~20s, not
                 # after the 30-min idle interval.
                 interval = POLL_INTERVAL_LIVE_S
             else:
@@ -715,7 +715,7 @@ class EspnScoreboard:
             deduped[ev.espn_id] = ev
 
         # Enrich live games with the richer /summary feed (per-shot stream +
-        # extra boxscore stats). Live-only: the bounded set, on the same 40s
+        # extra boxscore stats). Live-only: the bounded set, on the same 20s
         # cadence this refresh already runs at. One game's summary failing is
         # swallowed — the scoreboard data for every game still stands.
         #

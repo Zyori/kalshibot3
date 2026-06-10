@@ -76,9 +76,9 @@ BURST_SPIKE_LOOKBACK_S = 45.0
 BURST_COOLDOWN_S = 60.0
 
 # ESPN poll-loop staleness thresholds for the supervisor watchdog. The loop's
-# own cadence is adaptive (~40s live, 30 min idle — POLL_INTERVAL_LIVE_S /
+# own cadence is adaptive (~20s live, 30 min idle — POLL_INTERVAL_LIVE_S /
 # _IDLE_S), so a stale snapshot only signals a fault relative to what's expected:
-#   - live games present: a refresh is due every ~40s, so >5 min stale is wedged.
+#   - live games present: a refresh is due every ~20s, so >5 min stale is wedged.
 #   - idle: a 30-min gap is healthy; only flag past a coarse bound above it.
 ESPN_STALE_LIVE_S = 300.0
 ESPN_STALE_IDLE_S = 2400.0  # 40 min — comfortably past the 30-min idle interval
@@ -532,7 +532,7 @@ class Supervisor:
         """Burst the ESPN poller when a live game's market mid jumps sharply — the
         book reprices on a goal/red card seconds before the ESPN feed catches up, so
         a sharp jump is our earliest signal that an event just fired. Bursting gets
-        the /summary detail (which event, the shots) within ~10s instead of ~40s.
+        the /summary detail (which event, the shots) within ~10s instead of ~20s.
 
         Reads the same price_history the tape uses; no new sampling. Per-event: a
         spike on either side of a match bursts that game's poll once, then a cooldown
@@ -794,7 +794,7 @@ class Supervisor:
         backstop: a dead/wedged poll loop is replaced with a fresh one.
 
         Staleness is judged against whether fast data is due — a game live OR a
-        kickoff imminent — because the loop's cadence is adaptive: ~40s then, 30
+        kickoff imminent — because the loop's cadence is adaptive: ~20s then, 30
         min when genuinely idle. A 30-min idle gap is healthy, so we only treat a
         stale snapshot as a fault when refreshes should be flowing
         (ESPN_STALE_LIVE_S), and otherwise at a coarse bound that exceeds the idle
@@ -814,7 +814,7 @@ class Supervisor:
         """Whether the ESPN poll loop has wedged and needs replacing. Two faults:
         the task raised and exited (task.done()), or _refresh_once hangs and the
         snapshot stops advancing past the staleness threshold. Threshold is
-        adaptive: tight when games are live (a refresh is due ~40s), coarse when
+        adaptive: tight when games are live (a refresh is due ~20s), coarse when
         idle (a 30-min gap is healthy). Pure read of current state — the loop
         does the sleeping; this does the deciding (so it's testable in isolation)."""
         died = self._espn_task is not None and self._espn_task.done()
