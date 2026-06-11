@@ -1476,6 +1476,12 @@ async def _get_or_create_market(
 
     existing = await session.scalar(select(Market).where(Market.kalshi_ticker == ticker))
     if existing is not None:
+        # Backfill a real title onto a row first inserted with only the ticker
+        # (the position syncer and the no-title order paths seed title=ticker).
+        # The totals Over/Under line lives only in this title, so a row stuck at
+        # the raw ticker relabels totals bets as the ticker suffix in the ledger.
+        if title and title != ticker and existing.title in (None, ticker):
+            existing.title = title
         return existing.id
 
     m = Market(
