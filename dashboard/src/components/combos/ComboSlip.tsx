@@ -92,12 +92,22 @@ export default function ComboSlip({
       )}
 
       {legs.length >= 2 && estPrice !== null && (
-        <div className="mb-3 flex items-baseline justify-between rounded border border-border bg-bg-card px-3 py-2 text-xs">
-          <span className="text-text-muted">Est. price</span>
-          <span className="font-mono tabular-nums text-text">
-            ~{estPrice}¢
-            <span className="ml-1 text-[10px] text-text-muted">(real on quote)</span>
-          </span>
+        <div className="mb-3 space-y-1 rounded border border-border bg-bg-card px-3 py-2 text-xs">
+          <div className="flex items-baseline justify-between">
+            <span className="text-text-muted">Est. price</span>
+            <span className="font-mono tabular-nums text-text">
+              ~{estPrice}¢
+              <span className="ml-1 text-[10px] text-text-muted">(real on quote)</span>
+            </span>
+          </div>
+          {countN >= 1 && (
+            <div className="flex items-baseline justify-between">
+              <span className="text-text-muted">Est. cost ({countN} ×)</span>
+              <span className="font-mono tabular-nums text-text">
+                ~{formatDollars(estPrice * countN)}
+              </span>
+            </div>
+          )}
         </div>
       )}
 
