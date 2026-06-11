@@ -30,6 +30,22 @@ tendencies, ref behavior). This is **the user's knowledge**, captured over time.
   threat; many attempts are from outside the box. Read their pressure off clean
   inside-box chances, not shot count or corners.
 
+## Argentina
+- 2026-06-10 (vs Iceland): Overrated fan favorite. Looked sloppy against Iceland
+  (who are weak) — the name carries more weight than the performance. Fade the
+  reputation premium when they're priced as a heavy favorite.
+
+## Senegal
+- 2026-06-10: Chumpy — lacking offensively. Will get slaughtered against real
+  teams. Don't back them into quality opposition.
+
+## Croatia
+- 2026-06-10: Market doesn't understand how to price them. Great draw team or
+  upset team — value lives in the draw/upset lines, not the outright.
+
+## Scotland
+- 2026-06-10: Strong offense, look aggressive and solid. A team to back, not fade.
+
 <!-- Template — one section per team:
 ## Team Name
 - YYYY-MM-DD: short observation (context, e.g. opponent/minute)
