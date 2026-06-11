@@ -10,6 +10,7 @@ import {
   formatMatchClock,
   formatPercent,
   formatPriceCents,
+  formatReturnPct,
   formatSignedDollars,
 } from '../lib/format'
 import type { Bet, LedgerStats, Suggestion } from '../lib/types'
@@ -208,14 +209,17 @@ function OpenPositionsTile() {
             const pnl = p.unrealized_pnl_cents
             const tone =
               pnl === null ? 'text-text-muted' : pnl >= 0 ? 'text-gain' : 'text-loss'
-            // % return on cost basis (entry × qty). Both the exact fractional
-            // entry and quantity are on the row, so derive here rather than
-            // adding a backend field. null when we can't compute (no entry/pnl).
+            // Return on cost basis (entry × qty), as a ratio for formatReturnPct.
+            // This is an OPEN position: gross UNREALIZED P&L over entry notional.
+            // It deliberately differs from the ledger's row ROI (realized NET
+            // P&L over committed capital incl. entry fees) — different numerator
+            // (unrealized vs realized) and denominator (no fee field on the
+            // /api/positions shape). Don't "unify" them; the data isn't the same.
             const entry = p.avg_entry_price ?? p.avg_entry_price_cents
             const costCents = entry !== null ? entry * p.quantity : null
-            const pct =
+            const returnRatio =
               pnl !== null && costCents !== null && costCents > 0
-                ? (pnl / costCents) * 100
+                ? pnl / costCents
                 : null
             return (
               <li key={`${p.ticker}:${p.side}`}>
@@ -234,10 +238,8 @@ function OpenPositionsTile() {
                   </span>
                   <span className={`shrink-0 font-mono tabular-nums ${tone}`}>
                     {pnl === null ? '—' : formatSignedDollars(pnl)}
-                    {pct !== null && (
-                      <span className="ml-1">
-                        ({pct >= 0 ? '+' : ''}{pct.toFixed(1)}%)
-                      </span>
+                    {returnRatio !== null && (
+                      <span className="ml-1">({formatReturnPct(returnRatio, 1)})</span>
                     )}
                   </span>
                 </Link>

@@ -70,6 +70,27 @@ export function formatPercent(
   return `${(value * 100).toFixed(decimals)}%`
 }
 
+/**
+ * Signed return-on-capital, as a percent. Input is a ratio (0.1234 → "+12%").
+ * The leading "+" on gains is the point — this is the ROI idiom shared by the
+ * ledger rows and the position tiles, where return is computed as
+ * pnl / committed-capital (entry notional + entry fees: fees are real capital
+ * out the door, so they count in the denominator). `null` → "—".
+ *   formatReturnPct(0.1234)        -> "+12%"
+ *   formatReturnPct(-0.5)          -> "-50%"
+ *   formatReturnPct(0.1234, 1)     -> "+12.3%"
+ *   formatReturnPct(null)          -> "—"
+ */
+export function formatReturnPct(
+  ratio: number | null | undefined,
+  decimals = 0,
+): string {
+  if (ratio === null || ratio === undefined) return '—'
+  const pct = ratio * 100
+  const sign = pct >= 0 ? '+' : ''
+  return `${sign}${pct.toFixed(decimals)}%`
+}
+
 const ET_TZ = 'America/New_York'
 
 /**

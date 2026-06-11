@@ -8,7 +8,7 @@ import BetMetadataForm from '../components/ledger/BetMetadataForm'
 import ImportFromKalshi from '../components/ledger/ImportFromKalshi'
 import { SportBadge } from '../components/ledger/SportBadge'
 import { KNOWN_SPORTS, badgeSport } from '../lib/sport'
-import { formatET, formatDollars, formatFee, formatPercent, formatPriceCents, formatSignedDollars } from '../lib/format'
+import { formatET, formatDollars, formatFee, formatPercent, formatPriceCents, formatReturnPct, formatSignedDollars } from '../lib/format'
 import type { Bet, BetFillsResponse, BetLegsResponse, LedgerStats as Stats } from '../lib/types'
 
 type LedgerResponse = { bets: Bet[]; next_cursor: number | null }
@@ -398,7 +398,7 @@ function BetRow({
   // fee was in the numerator but not the denominator. The fee was real
   // capital out the door — count it on both sides.
   const committed = bet.stake_cents + bet.entry_fees_cents
-  const returnPct = net === null || committed === 0 ? null : (net / committed) * 100
+  const returnRatio = net === null || committed === 0 ? null : net / committed
   const statusCls =
     bet.status === 'won'
       ? 'text-gain'
@@ -461,9 +461,7 @@ function BetRow({
           )}
         </td>
         <td className={`px-3 py-2 text-right font-mono tabular-nums text-xs ${pnlCls}`}>
-          {returnPct === null
-            ? '—'
-            : `${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(0)}%`}
+          {formatReturnPct(returnRatio)}
         </td>
         <td className="px-3 py-2 text-xs">
           <span>{bet.strategy}</span>
