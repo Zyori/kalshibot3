@@ -21,11 +21,13 @@ def test_non_soccer_still_refused():
 
 def test_game_series_maps_to_total():
     assert total_series_for_game("KXINTLFRIENDLYGAME") == "KXINTLFRIENDLYTOTAL"
+    # World Cup per-game totals: KXWCGAME → KXWCTOTAL (verified 2026-06-11 against
+    # live markets on the WC opener). Every WC game now pulls its O/U event.
+    assert total_series_for_game("KXWCGAME") == "KXWCTOTAL"
 
 
 def test_unmapped_game_series_returns_none():
-    # World Cup per-game totals aren't listed yet — no mapping until verified.
-    assert total_series_for_game("KXWCGAME") is None
+    # An unknown game series has no totals mapping.
     assert total_series_for_game("KXNOTAGAME") is None
 
 
@@ -67,7 +69,16 @@ def test_total_event_ticker_derivation():
     )
 
 
+def test_total_event_ticker_world_cup():
+    from src.api.routes.events import _total_goals_event_ticker
+    # World Cup game event → totals event: same date+matchup, KXWCTOTAL prefix.
+    assert (
+        _total_goals_event_ticker("KXWCGAME-26JUN11MEXRSA")
+        == "KXWCTOTAL-26JUN11MEXRSA"
+    )
+
+
 def test_total_event_ticker_none_for_unmapped_league():
     from src.api.routes.events import _total_goals_event_ticker
-    # World Cup has no per-game total series mapped yet.
-    assert _total_goals_event_ticker("KXWCGAME-26JUN27COLPOR") is None
+    # An unmapped game series derives no totals event.
+    assert _total_goals_event_ticker("KXNOTAGAME-26JUN27COLPOR") is None

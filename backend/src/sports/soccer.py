@@ -98,11 +98,14 @@ SOCCER_GAME_SERIES: tuple[str, ...] = tuple(SOCCER_GAME_SERIES_NAMES.keys())
 # ESPN slugs — add an entry only after confirming live markets exist for it.
 #
 # Verified 2026-06-01 with live markets (KXINTLFRIENDLYTOTAL-26JUN01COLCRI-N).
-# World Cup PER-GAME totals are not listed yet (WC is weeks out; Kalshi lists
-# per-game O/U near match time). When they appear, add the game→total mapping
-# here — likely KXWCGAME → KX<something>; confirm the real series name first.
+# World Cup per-game totals: KXWCGAME → KXWCTOTAL, same {DATE}{MATCHUP} suffix
+# (KXWCGAME-26JUN11MEXRSA ↔ KXWCTOTAL-26JUN11MEXRSA). Verified 2026-06-11 against
+# live markets on the WC opener (KXWCTOTAL-26JUN11MEXRSA-{1..6}, "Over N.5 goals
+# scored"). NOT KXWCGAMEGOALS — that's the tournament "highest scoring match"
+# aggregate, not a per-game O/U.
 SOCCER_TOTAL_SERIES: dict[str, str] = {
     "KXINTLFRIENDLYGAME": "KXINTLFRIENDLYTOTAL",
+    "KXWCGAME": "KXWCTOTAL",
 }
 
 # Tuple of total-series prefixes, for cross-market isolation. These are soccer
