@@ -25,18 +25,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from src.core.types import dollars_str_to_cents as _dollar_str_to_cents
 
 
-# === Conversion helpers — single source of truth ===
-
-def dollars_to_cents(amount: float | int) -> int:
-    """Convert a dollar amount to integer cents. Banker's rounding."""
-    return int(round(amount * 100))
-
-
-def cents_to_dollars(cents: int) -> float:
-    """Convert integer cents back to dollars (for display only)."""
-    return cents / 100.0
-
-
 # === Common base ===
 
 class WireModel(BaseModel):

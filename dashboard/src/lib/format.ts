@@ -53,6 +53,23 @@ export function formatPriceCents(price: number | null | undefined): string {
   return `${text}¢`
 }
 
+/**
+ * Fraction → percent string. Input is a ratio (0.1234 → "12.3%"), not an
+ * already-scaled percent. `null`/`undefined` → "—".
+ *   formatPercent(0.1234)        -> "12.3%"
+ *   formatPercent(0.5, 0)        -> "50%"
+ *   formatPercent(null)          -> "—"
+ * Unsigned: callers that want a leading "+" on gains add it themselves (the
+ * P&L-return case), since most percent columns (ROI, win-rate) don't sign.
+ */
+export function formatPercent(
+  value: number | null | undefined,
+  decimals = 1,
+): string {
+  if (value === null || value === undefined) return '—'
+  return `${(value * 100).toFixed(decimals)}%`
+}
+
 const ET_TZ = 'America/New_York'
 
 /**

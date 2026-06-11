@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import type { MarketBook } from '../../contexts/WebSocketProvider'
 import { bestAsk, bestBid } from '../../lib/book'
+import { formatDollars } from '../../lib/format'
 import { contractsForUnits } from '../../lib/units'
 
 type PositionsResponse = {
@@ -364,7 +365,7 @@ export default function OrderPanel({
       <div className="mb-3 flex items-baseline justify-between text-sm">
         <span className="text-text-muted">Total</span>
         <span className="font-mono tabular-nums text-text">
-          {count} × {price}¢ = ${((count * price) / 100).toFixed(2)}
+          {count} × {price}¢ = {formatDollars(count * price)}
         </span>
       </div>
 

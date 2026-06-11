@@ -4,7 +4,7 @@
  * source for this pill so every card that surfaces a held position reads the
  * same.
  */
-import { formatPriceCents } from '../../lib/format'
+import { formatPriceCents, formatSignedDollars } from '../../lib/format'
 import type { ChildPosition } from '../../lib/types'
 
 export default function PositionPill({ position: p }: { position: ChildPosition }) {
@@ -30,7 +30,7 @@ export default function PositionPill({ position: p }: { position: ChildPosition 
       </span>
       {pnl !== null && (
         <span className={`font-mono tabular-nums ${tone}`}>
-          {pnl >= 0 ? '+' : ''}${(pnl / 100).toFixed(2)}
+          {formatSignedDollars(pnl)}
         </span>
       )}
     </span>

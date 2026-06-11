@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
-from src.core.types import BetSide, Sport, position_avg_entry_price, utc_iso
+from src.core.types import BetSide, Sport, position_base_fields, utc_iso
 from src.ingestion.market_discovery import MarketFeed
 from src.models import Bet, ComboLeg, Position
 from src.sports.combo import combo_leg_pick, uniform_combo_sport
@@ -142,18 +142,9 @@ async def list_positions(
             "leg_sport": info.sport if info else None,
             # Compact per-leg picks for the card chips (combos only).
             "legs": info.legs if info else None,
-            "side": p.side,
-            "quantity": p.quantity,
-            "avg_entry_price_cents": p.avg_entry_price_cents,
-            "avg_entry_price": position_avg_entry_price(
-                p.cost_basis_cents, p.fees_paid_cents, p.quantity,
-                p.avg_entry_price_cents,
-            ),
-            "cost_basis_cents": p.cost_basis_cents,
-            "current_price_cents": p.current_price_cents,
-            "unrealized_pnl_cents": p.unrealized_pnl_cents,
-            "realized_pnl_cents": p.realized_pnl_cents,
-            "fees_paid_cents": p.fees_paid_cents,
+            # Shared money fields (side/size/entry/basis/pnl/fees) — same shape
+            # as the /events route, owned by position_base_fields.
+            **position_base_fields(p),
             "last_synced": utc_iso(p.last_synced),
         }
 

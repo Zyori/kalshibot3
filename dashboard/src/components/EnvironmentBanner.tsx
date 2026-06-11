@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
+import { formatDollars } from '../lib/format'
+
 type HealthResponse = {
   app: string
   environment: 'demo' | 'production'
@@ -87,21 +89,21 @@ function BankrollPill({ availableCents }: { availableCents: number | null }) {
     <Pill
       className="border-border text-text-muted"
       title={
-        `Available $${(availableCents / 100).toFixed(2)} · ` +
-        `Deployed $${(deployed / 100).toFixed(2)} on ${data?.total_bets ?? 0} open bets`
+        `Available ${formatDollars(availableCents)} · ` +
+        `Deployed ${formatDollars(deployed)} on ${data?.total_bets ?? 0} open bets`
       }
     >
       <span className="font-mono tabular-nums">
-        ${(availableCents / 100).toFixed(2)}
+        {formatDollars(availableCents)}
       </span>
       <span className="mx-1 text-text-muted">/</span>
       <span className="font-mono tabular-nums text-action">
-        ${(deployed / 100).toFixed(2)}
+        {formatDollars(deployed)}
       </span>
       <span className="ml-1 text-[10px] uppercase text-text-muted">free/deployed</span>
       {total > 0 && (
         <span className="ml-2 text-[10px] text-text-muted">
-          (total ${(total / 100).toFixed(2)})
+          (total {formatDollars(total)})
         </span>
       )}
     </Pill>
@@ -111,9 +113,7 @@ function BankrollPill({ availableCents }: { availableCents: number | null }) {
 function KalshiPill({ kalshi }: { kalshi: HealthResponse['kalshi'] }) {
   if (kalshi.ok) {
     const dollars =
-      kalshi.balance_cents !== null
-        ? `$${(kalshi.balance_cents / 100).toFixed(2)}`
-        : '—'
+      kalshi.balance_cents !== null ? formatDollars(kalshi.balance_cents) : '—'
     return (
       <Pill
         className="border-gain text-gain"

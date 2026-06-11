@@ -8,6 +8,7 @@ import { useSuggestions } from '../hooks/useSuggestions'
 import {
   formatET,
   formatMatchClock,
+  formatPercent,
   formatPriceCents,
   formatSignedDollars,
 } from '../lib/format'
@@ -468,13 +469,10 @@ function HistorySection({ sport }: { sport: string }) {
                 : undefined
             }
           />
-          <Stat
-            label="Win rate"
-            value={s.win_rate === null ? '—' : `${(s.win_rate * 100).toFixed(0)}%`}
-          />
+          <Stat label="Win rate" value={formatPercent(s.win_rate, 0)} />
           <Stat
             label="Net ROI"
-            value={s.net_roi === null ? '—' : `${(s.net_roi * 100).toFixed(1)}%`}
+            value={formatPercent(s.net_roi)}
             tone={s.net_roi === null ? undefined : s.net_roi > 0 ? 'gain' : 'loss'}
           />
         </div>

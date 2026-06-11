@@ -9,7 +9,7 @@ import {
   YAxis,
 } from 'recharts'
 
-import { formatET } from '../../lib/format'
+import { formatDollars, formatET } from '../../lib/format'
 
 type Bet = {
   placed_at: string | null
@@ -67,7 +67,7 @@ export default function PnLChart({ bets }: { bets: Bet[] }) {
                   fontSize: 11,
                 }}
                 labelFormatter={(t) => (typeof t === 'string' ? formatET(t) : '')}
-                formatter={(v: number) => [`$${(v / 100).toFixed(2)}`, 'Cumulative']}
+                formatter={(v: number) => [formatDollars(v), 'Cumulative']}
               />
               <Line
                 type="stepAfter"

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import NewType
+from typing import Any, NewType, Protocol
 
 
 def utc_iso(dt: datetime | None) -> str | None:
@@ -76,6 +76,41 @@ def position_avg_entry_price(
     if cost_basis_cents is not None and quantity > 0:
         return round((cost_basis_cents + (fees_paid_cents or 0)) / quantity, 2)
     return fallback
+
+
+class _PositionFields(Protocol):
+    """Structural view of the Position columns the wire base shape reads. Typed
+    as a Protocol so this leaf module needs no import of the ORM model (which
+    would risk a cycle and drag SQLAlchemy into the types layer). Member types
+    must match Position's columns exactly — Protocol attributes are invariant."""
+    side: BetSide
+    quantity: int
+    avg_entry_price_cents: int
+    cost_basis_cents: int | None
+    current_price_cents: int | None
+    unrealized_pnl_cents: int | None
+    realized_pnl_cents: int | None
+    fees_paid_cents: int | None
+
+
+def position_base_fields(p: _PositionFields) -> dict[str, Any]:
+    """The position fields shared by the /positions and /events serializers —
+    side, size, entry, basis, current price, P&L, fees. ONE definition so the
+    two routes can't drift on a money field. Each route spreads this and adds
+    its own extras (events: nothing; positions: ticker/label/sport/legs/synced)."""
+    return {
+        "side": p.side,
+        "quantity": p.quantity,
+        "avg_entry_price_cents": p.avg_entry_price_cents,
+        "avg_entry_price": position_avg_entry_price(
+            p.cost_basis_cents, p.fees_paid_cents, p.quantity, p.avg_entry_price_cents,
+        ),
+        "cost_basis_cents": p.cost_basis_cents,
+        "current_price_cents": p.current_price_cents,
+        "unrealized_pnl_cents": p.unrealized_pnl_cents,
+        "realized_pnl_cents": p.realized_pnl_cents,
+        "fees_paid_cents": p.fees_paid_cents,
+    }
 
 BasisPoints = NewType("BasisPoints", int)
 """Hundredths of a percent. 10000 = 100%, 25 = 0.25%."""

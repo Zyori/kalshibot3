@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
-import { formatPriceCents } from '../../lib/format'
+import { formatDollars, formatPriceCents } from '../../lib/format'
 import type { Suggestion } from '../../lib/types'
 
 /**
@@ -53,7 +53,7 @@ export default function SuggestionCard({
           <span className="text-text-muted">{suggestion.confidence}</span>
         </span>
         <span className="font-mono tabular-nums text-text-muted">
-          ${(sizeUnits / 100).toFixed(2)}
+          {formatDollars(sizeUnits)}
         </span>
       </div>
 

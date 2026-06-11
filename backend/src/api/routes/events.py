@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.db import get_session
 from src.core.logging import get_logger
-from src.core.types import position_avg_entry_price, utc_iso
+from src.core.types import position_base_fields, utc_iso
 from src.kalshi.rest import KalshiRestClient
 from src.models import Market, Position
 from src.sports.run_of_play import live_payload
@@ -43,24 +43,11 @@ log = get_logger(__name__)
 
 def _position_payload(held: Position | None) -> dict[str, Any] | None:
     """The position block attached to a market dict (moneyline child or
-    total-goals rung). Single source for this shape so both readers stay in
-    sync. None when nothing is held on either side of the ticker."""
+    total-goals rung). None when nothing is held on either side of the ticker.
+    The field shape is owned by position_base_fields (shared with /positions)."""
     if held is None:
         return None
-    return {
-        "side": held.side,
-        "quantity": held.quantity,
-        "avg_entry_price_cents": held.avg_entry_price_cents,
-        "avg_entry_price": position_avg_entry_price(
-            held.cost_basis_cents, held.fees_paid_cents, held.quantity,
-            held.avg_entry_price_cents,
-        ),
-        "cost_basis_cents": held.cost_basis_cents,
-        "current_price_cents": held.current_price_cents,
-        "unrealized_pnl_cents": held.unrealized_pnl_cents,
-        "realized_pnl_cents": held.realized_pnl_cents,
-        "fees_paid_cents": held.fees_paid_cents,
-    }
+    return position_base_fields(held)
 
 
 async def _positions_by_ticker_side(

@@ -11,36 +11,7 @@ from src.kalshi.schemas import (
     Quote,
     Settlement,
     SettlementsResponse,
-    cents_to_dollars,
-    dollars_to_cents,
 )
-
-
-class TestCentsConversion:
-    """Round-trip and edge cases. This is the only place dollars touch cents."""
-
-    @pytest.mark.parametrize(
-        "dollars,cents",
-        [
-            (0, 0),
-            (1, 100),
-            (1.23, 123),
-            (0.01, 1),
-            (99.99, 9999),
-            (1234.56, 123456),
-        ],
-    )
-    def test_dollars_to_cents(self, dollars: float, cents: int) -> None:
-        assert dollars_to_cents(dollars) == cents
-
-    def test_cents_to_dollars(self) -> None:
-        assert cents_to_dollars(123) == 1.23
-        assert cents_to_dollars(0) == 0.0
-        assert cents_to_dollars(9999) == 99.99
-
-    def test_round_trip_integer_dollars(self) -> None:
-        for d in range(0, 1000, 17):
-            assert cents_to_dollars(dollars_to_cents(d)) == float(d)
 
 
 class TestPriceRangeEnforcement:

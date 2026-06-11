@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
 import InlineError from '../InlineError'
-import { formatPriceCents } from '../../lib/format'
+import { formatPriceCents, formatSignedDollars } from '../../lib/format'
 
 type Position = {
   ticker: string
@@ -72,9 +72,7 @@ export default function PositionCard({ ticker }: { ticker: string }) {
                 </div>
               </div>
               <div className={`text-right font-mono tabular-nums text-sm ${pnlTone}`}>
-                {pnl === null
-                  ? '—'
-                  : `${pnl >= 0 ? '+' : ''}$${(pnl / 100).toFixed(2)}`}
+                {pnl === null ? '—' : formatSignedDollars(pnl)}
               </div>
             </li>
           )

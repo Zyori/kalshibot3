@@ -8,7 +8,7 @@ import BetMetadataForm from '../components/ledger/BetMetadataForm'
 import ImportFromKalshi from '../components/ledger/ImportFromKalshi'
 import { SportBadge } from '../components/ledger/SportBadge'
 import { KNOWN_SPORTS, badgeSport } from '../lib/sport'
-import { formatET, formatDollars, formatFee, formatPriceCents, formatSignedDollars } from '../lib/format'
+import { formatET, formatDollars, formatFee, formatPercent, formatPriceCents, formatSignedDollars } from '../lib/format'
 import type { Bet, BetFillsResponse, BetLegsResponse, LedgerStats as Stats } from '../lib/types'
 
 type LedgerResponse = { bets: Bet[]; next_cursor: number | null }
@@ -217,16 +217,14 @@ function StatsStrip({ stats }: { stats: Stats | undefined }) {
     })
     items.push({
       label: 'Net ROI',
-      value: stats.net_roi === null ? '—' : `${(stats.net_roi * 100).toFixed(1)}%`,
-      sub:
-        stats.roi === null
-          ? undefined
-          : `${(stats.roi * 100).toFixed(1)}% gross`,
+      value: formatPercent(stats.net_roi),
+      // sub vanishes (undefined) when there's no gross ROI — not an em-dash.
+      sub: stats.roi === null ? undefined : `${formatPercent(stats.roi)} gross`,
       tone: stats.net_roi === null ? undefined : stats.net_roi > 0 ? 'gain' : 'loss',
     })
     items.push({
       label: 'Win rate',
-      value: stats.win_rate === null ? '—' : `${(stats.win_rate * 100).toFixed(0)}%`,
+      value: formatPercent(stats.win_rate, 0),
     })
     items.push({
       label: 'Net P&L',
