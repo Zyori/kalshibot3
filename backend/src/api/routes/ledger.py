@@ -803,6 +803,35 @@ def _held_price(fill: RestFill, side: BetSide) -> int:
     return fill.yes_price if side == BetSide.YES else fill.no_price
 
 
+async def _resolved_settlement_cents(
+    client: KalshiRestClient, ticker: str
+) -> int | None:
+    """Settlement value (cents) for a ticker, or None if it isn't resolved yet.
+
+    Two guards, both money-safety-critical, so this lives in ONE place that
+    both the import picker (display) and the import commit (books real P&L) call:
+      * Skip any row whose ticker != ours. Kalshi's server-side filter is
+        trusted but not load-bearing — a loose filter must never tag a position
+        with a FOREIGN market's outcome.
+      * Skip a None-valued (scalar / not-yet-normalized) row and keep scanning.
+        The latest settlement row can exist before it carries a value; reading
+        limit=1 would let that None block discovery of a real valued row. Mirrors
+        settlement_sweeper's skip-and-retry. Returns None when none is valued
+        yet, leaving the position OPEN for the sweeper.
+    """
+    try:
+        resp = await client.get_settlements(ticker=ticker, limit=10)
+    except Exception as e:  # noqa: BLE001
+        log.warning("settlement_check_failed", ticker=ticker, error=str(e)[:120])
+        return None
+    for row in resp.settlements:
+        if row.ticker != ticker:
+            continue
+        if row.settlement_value_cents is not None:
+            return row.settlement_value_cents
+    return None
+
+
 async def _gather_positions(
     client: KalshiRestClient, min_ts: int
 ) -> dict[tuple[str, str], list[RestFill]]:
@@ -882,24 +911,9 @@ async def list_importable(
         # Settlement status per distinct ticker (one query each — small set).
         resolved_result: dict[str, str] = {}
         for ticker in {t for (t, _s) in unlinked}:
-            try:
-                sresp = await client.get_settlements(ticker=ticker, limit=1)
-            except Exception as e:  # noqa: BLE001
-                log.warning("importable_settlement_check_failed",
-                            ticker=ticker, error=str(e)[:120])
-                continue
-            for row in sresp.settlements:
-                # Defense in depth: only trust a settlement row that is actually
-                # for this ticker. If Kalshi's server-side ticker filter is ever
-                # loose (or returns a latest-when-empty row), an unguarded read
-                # would tag this position with a FOREIGN market's outcome.
-                if row.ticker != ticker:
-                    continue
-                if row.settlement_value_cents is not None:
-                    resolved_result[ticker] = (
-                        "yes" if row.settlement_value_cents >= 50 else "no"
-                    )
-                break
+            cents = await _resolved_settlement_cents(client, ticker)
+            if cents is not None:
+                resolved_result[ticker] = "yes" if cents >= 50 else "no"
 
     out: list[ImportablePosition] = []
     for (ticker, side_str), fills in unlinked.items():
@@ -1001,21 +1015,7 @@ async def import_fills(
                 continue
 
             # Settlement status — fetched outside the lock (network).
-            settle_value: int | None = None
-            try:
-                sresp = await client.get_settlements(ticker=ticker, limit=1)
-                for row in sresp.settlements:
-                    # Only settle from a row that is actually this ticker — this
-                    # value books real-money P&L on the bet, so a loose Kalshi
-                    # filter returning a foreign row must not reach
-                    # settle_bets_for_market.
-                    if row.ticker != ticker:
-                        continue
-                    settle_value = row.settlement_value_cents
-                    break
-            except Exception as e:  # noqa: BLE001
-                log.warning("import_settlement_check_failed",
-                            ticker=ticker, error=str(e)[:120])
+            settle_value = await _resolved_settlement_cents(client, ticker)
 
             async with ledger_guard(lock):
                 bet = await record_external_position(
