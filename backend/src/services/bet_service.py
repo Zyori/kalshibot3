@@ -171,6 +171,11 @@ async def recompute_bet_from_fills(session: AsyncSession, *, bet: Bet) -> None:
     (e.g. a re-import of an already-settled partial close). A genuine settlement
     is final — fills don't move its money."""
     if bet.exit_type == ExitType.HELD_TO_SETTLEMENT:
+        # A genuine settlement is final, but a sell whose fee backfills after
+        # settlement still owes its fee to exit_fees_cents. Refresh the derived,
+        # settlement-independent fee aggregate before skipping the quantity/P&L
+        # re-derivation (which the settlement payoff, not fills, owns).
+        await _recompute_bet_fees(session, bet=bet)
         return
 
     fills = (await session.execute(
