@@ -29,49 +29,18 @@ from collections.abc import Awaitable, Callable
 
 from src.core.db import get_session_factory
 from src.core.logging import get_logger
-from src.core.types import BetSide, BetStatus, MarketStatus, Sport, dollars_str_to_cents
+from src.core.types import BetSide, BetStatus, dollars_str_to_cents
 from src.kalshi.live_state import LiveState, MarketBook
 from src.kalshi.rest import KalshiRestClient
 from src.kalshi.schemas import PortfolioPosition
 from src.models import Bet, Market, Position
+from src.services.bet_service import _get_or_create_market, _ticker_to_sport
 from src.sports.combo import is_combo_ticker
 from src.sports.tradeable import is_tradeable_ticker
-
-
-def _ticker_sport(ticker: str) -> Sport:
-    """Sport for a tracked ticker. Combos are their own category; everything
-    else this app tracks is soccer. Mirrors bet_service._ticker_to_sport so a
-    combo position never gets mislabeled soccer (which would pollute the
-    soccer-only stats Sport.COMBO exists to keep clean)."""
-    return Sport.COMBO if is_combo_ticker(ticker) else Sport.SOCCER
 
 log = get_logger(__name__)
 
 POLL_INTERVAL_S = 60
-
-
-async def _get_or_create_market_id(session: AsyncSession, *, ticker: str) -> int:
-    """Same helper as bet_service — kept duplicated for clarity; both need it
-    and importing across services would pull in extra concerns."""
-    existing = await session.scalar(select(Market).where(Market.kalshi_ticker == ticker))
-    if existing is not None:
-        return existing.id
-
-    m = Market(
-        sport=_ticker_sport(ticker),
-        game_id=None,
-        kalshi_ticker=ticker,
-        market_type="combo" if is_combo_ticker(ticker) else "match_result",
-        title=ticker,
-        yes_price_cents=None,
-        no_price_cents=None,
-        volume=None,
-        close_time=None,
-        status=MarketStatus.OPEN,
-    )
-    session.add(m)
-    await session.flush()
-    return m.id
 
 
 def _signed_position_to_side_and_qty(signed: int) -> tuple[BetSide, int]:
@@ -161,7 +130,11 @@ async def _upsert_position(
     position and opened a YES one on the same ticker).
     """
     side, qty = _signed_position_to_side_and_qty(p.position)
-    market_id = await _get_or_create_market_id(session, ticker=p.ticker)
+    market_id = await _get_or_create_market(
+        session,
+        ticker=p.ticker,
+        market_type="combo" if is_combo_ticker(p.ticker) else "match_result",
+    )
     opposite_side = BetSide.NO if side is BetSide.YES else BetSide.YES
 
     # Drop any cached row on the opposite side — the current Kalshi snapshot
@@ -192,7 +165,7 @@ async def _upsert_position(
     cost_basis = abs(p.market_exposure)
     if existing is None:
         new_row = Position(
-            sport=_ticker_sport(p.ticker),
+            sport=_ticker_to_sport(p.ticker),
             kalshi_ticker=p.ticker,
             market_id=market_id,
             side=side,
