@@ -63,6 +63,14 @@ WATCHDOG_INTERVAL_S = 15.0
 BACKOFF_BASE_S = 1.0
 BACKOFF_MAX_S = 30.0
 SUBSCRIBE_BATCH_SIZE = 100
+
+# The data-silence backstop must sit above the ping cadence: the library's
+# ping/pong already covers a fully-dead socket faster, so STALENESS_TIMEOUT_S is
+# only meaningful as the slower alive-but-silent catch. Pinned so a future ping
+# tune can't invert them and turn the staleness watchdog into a reconnect storm.
+assert STALENESS_TIMEOUT_S > PING_INTERVAL_S, (
+    "STALENESS_TIMEOUT_S must exceed the ping cadence"
+)
 """Kalshi caps tickers-per-subscribe in the docs at 100."""
 
 

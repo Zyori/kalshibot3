@@ -29,7 +29,13 @@ from src.core.logging import get_logger
 from src.core.ws_manager import BroadcastManager
 from src.ingestion.espn_news import EspnNews
 from src.ingestion.wc_standings import WcStandings
-from src.ingestion.espn_scoreboard import EspnEvent, EspnScoreboard
+from src.ingestion.espn_scoreboard import (
+    POLL_INTERVAL_IDLE_S,
+    POLL_INTERVAL_LIVE_S,
+    REFRESH_CEILING_S,
+    EspnEvent,
+    EspnScoreboard,
+)
 from src.ingestion.market_discovery import FeedMarket, MarketDiscovery, MarketFeed
 from src.kalshi.live_state import LiveState
 from src.kalshi.rest import KalshiRestClient
@@ -82,6 +88,21 @@ BURST_COOLDOWN_S = 60.0
 #   - idle: a 30-min gap is healthy; only flag past a coarse bound above it.
 ESPN_STALE_LIVE_S = 300.0
 ESPN_STALE_IDLE_S = 2400.0  # 40 min — comfortably past the 30-min idle interval
+
+# Pin the watchdog-vs-cadence invariants so a future cadence tune (e.g. the
+# 40s->20s live change) can't silently desync them: a stale bound must sit ABOVE
+# the cadence it judges, or the watchdog flags a healthy loop and churns it. A
+# pass that completes within REFRESH_CEILING_S must likewise not look stale.
+# These fail loud at import rather than degrading a watchdog at 2am mid-match.
+assert ESPN_STALE_LIVE_S > POLL_INTERVAL_LIVE_S, (
+    "ESPN_STALE_LIVE_S must exceed the live poll cadence"
+)
+assert ESPN_STALE_IDLE_S > POLL_INTERVAL_IDLE_S, (
+    "ESPN_STALE_IDLE_S must exceed the idle poll cadence"
+)
+assert ESPN_STALE_LIVE_S > REFRESH_CEILING_S, (
+    "ESPN_STALE_LIVE_S must exceed the single-pass ceiling"
+)
 
 
 class Supervisor:
