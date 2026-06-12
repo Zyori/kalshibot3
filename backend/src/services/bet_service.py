@@ -1433,7 +1433,14 @@ async def settle_bets_for_market(
         # else: bet was already fully closed via sells; exit_price set then.
 
         bet.pnl_cents = bet.realized_pnl_cents
-        bet.status = BetStatus.WON if (bet.realized_pnl_cents or 0) > 0 else BetStatus.LOST
+        # WON/LOST is the OUTCOME of the bet, not the sign of its P&L. A bet
+        # held to settlement won iff its own side resolved true — side_settle
+        # is that side's payoff (>=50 ⇒ this side won). You can scalp most of a
+        # position out at a profit and still LOSE the bet when the held shares
+        # settle worthless (e.g. a Draw YES sold into a spike, game not a draw:
+        # net realized +, outcome lost). Keying status off P&L sign mislabeled
+        # exactly those rows as WON.
+        bet.status = BetStatus.WON if side_settle >= 50 else BetStatus.LOST
         bet.exit_type = ExitType.HELD_TO_SETTLEMENT
         bet.settled_at = settled_at
         bet.version += 1
