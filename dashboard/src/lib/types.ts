@@ -13,6 +13,9 @@ export type Bet = {
   market_label: string
   leg_count: number
   market_status: 'open' | 'closed' | 'settled' | null
+  // Which side the market resolved to. Held-to-settlement shares pay 100¢ if
+  // this matches the bet's side, else 0¢ — independent of won/lost status.
+  market_settlement: 'yes' | 'no' | null
   market_id: number
   kalshi_order_id: string | null
   side: 'yes' | 'no'

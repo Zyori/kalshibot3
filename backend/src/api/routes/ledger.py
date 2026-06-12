@@ -181,6 +181,7 @@ def _bet_to_dict(
     missed_count: int = 0,
     leg_sport: str | None = None,
     market_title: str | None = None,
+    market_settlement: str | None = None,
 ) -> dict[str, Any]:
     fees_cents = (b.entry_fees_cents or 0) + (b.exit_fees_cents or 0)
     # Show running net PnL on partial closes. pnl_cents is None while the
@@ -200,6 +201,11 @@ def _bet_to_dict(
         "leg_count": leg_count,
         "missed_leg_count": missed_count,
         "market_status": market_status,
+        # Which side the market resolved to (yes/no), or None if unsettled.
+        # The held-to-settlement row uses this to show how the held shares
+        # actually paid off (100¢ if the bet's side matches, else 0¢) —
+        # distinct from the bet's won/lost status, which is net-P&L sign.
+        "market_settlement": market_settlement,
         "market_id": b.market_id,
         "kalshi_order_id": b.kalshi_order_id,
         "side": b.side,
@@ -292,7 +298,9 @@ async def list_bets(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Paginated bet history. Cursor is the last seen bet.id (descending)."""
-    stmt = select(Bet, Market.kalshi_ticker, Market.status, Market.title).join(
+    stmt = select(
+        Bet, Market.kalshi_ticker, Market.status, Market.title, Market.settlement
+    ).join(
         Market, Market.id == Bet.market_id, isouter=True
     )
     stmt = _apply_filters(
@@ -330,16 +338,16 @@ async def list_bets(
     rows = (await session.execute(stmt)).all()
     has_more = len(rows) > limit
     rows = rows[:limit]
-    combo_ids = [b.id for b, _t, _s, _ti in rows if b.sport == Sport.COMBO]
+    combo_ids = [b.id for b, _t, _s, _ti, _se in rows if b.sport == Sport.COMBO]
     leg_counts, missed_counts = await _combo_counts(session, combo_ids)
     leg_sports = await _combo_leg_sports(session, combo_ids)
     out = [
         _bet_to_dict(
             b, ticker, market_status,
             leg_counts.get(b.id, 0), missed_counts.get(b.id, 0),
-            leg_sports.get(b.id), market_title,
+            leg_sports.get(b.id), market_title, market_settlement,
         )
-        for b, ticker, market_status, market_title in rows
+        for b, ticker, market_status, market_title, market_settlement in rows
     ]
     next_cursor = rows[-1][0].id if has_more and rows else None
     return {"bets": out, "next_cursor": next_cursor}
@@ -1136,6 +1144,7 @@ async def edit_bet_metadata(
         missed_count,
         leg_sport,
         market.title if market else None,
+        market.settlement if market else None,
     )
 
 

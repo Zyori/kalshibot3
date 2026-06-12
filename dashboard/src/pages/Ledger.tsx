@@ -712,7 +712,7 @@ function FillsList({
         ))}
         {heldToSettlement && (
           <SettlementRow
-            won={bet.status === 'won'}
+            heldSharesWon={bet.market_settlement === bet.side}
             quantityCenti={settledCenti}
             settledAt={bet.settled_at}
           />
@@ -765,15 +765,18 @@ function FillRow({ fill: f }: { fill: BetFill }) {
 
 // Terminal resolution row for a bet held to settlement. Not a real fill —
 // settlement has no Kalshi trade — so it's styled as its own thing: an amber
-// "settled" verb (an action, like a sell). The held side pays 100¢ on a win,
-// 0¢ on a loss; that pure payoff, not bet.exit_price_cents (which is clamped to
-// 1-99 and blended with any earlier sells), is what resolved this position.
+// "settled" verb (an action, like a sell). This row shows how the HELD shares
+// paid off: 100¢ if the bet's side matched the market outcome, else 0¢. That's
+// the outcome of those specific contracts — independent of the bet's overall
+// won/lost status, which is the sign of net P&L across all fills. You can sell
+// most of a position out at a profit (status: won) and still have the held
+// shares settle to 0¢ here.
 function SettlementRow({
-  won,
+  heldSharesWon,
   quantityCenti,
   settledAt,
 }: {
-  won: boolean
+  heldSharesWon: boolean
   quantityCenti: number
   settledAt: string | null
 }) {
@@ -783,9 +786,9 @@ function SettlementRow({
       <span className="text-right font-mono tabular-nums text-text">
         {fmtQty(quantityCenti)}
       </span>
-      <span className="text-right font-mono tabular-nums text-text">{won ? 100 : 0}¢</span>
-      <span className={`text-[10px] uppercase ${won ? 'text-gain' : 'text-loss'}`}>
-        {won ? 'won' : 'lost'}
+      <span className="text-right font-mono tabular-nums text-text">{heldSharesWon ? 100 : 0}¢</span>
+      <span className={`text-[10px] uppercase ${heldSharesWon ? 'text-gain' : 'text-loss'}`}>
+        {heldSharesWon ? 'won' : 'lost'}
       </span>
       <span className="text-[10px] text-text-muted">{formatET(settledAt) || ''}</span>
       <span className="text-right font-mono tabular-nums text-text-muted">—</span>
