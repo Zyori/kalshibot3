@@ -229,9 +229,12 @@ async def recompute_bet_from_fills(session: AsyncSession, *, bet: Bet) -> None:
         bet.pnl_cents = None
 
     if bet.remaining_quantity_centi == 0 and bet.status == BetStatus.OPEN and sell_centi > 0:
-        bet.status = (
-            BetStatus.WON if (bet.realized_pnl_cents or 0) > 0 else BetStatus.LOST
+        # WON/LOST = sign of NET P&L (gross minus fees, set just above),
+        # matching the ledger's Net P&L column.
+        net_pnl = (bet.realized_pnl_cents or 0) - (
+            (bet.entry_fees_cents or 0) + (bet.exit_fees_cents or 0)
         )
+        bet.status = BetStatus.WON if net_pnl > 0 else BetStatus.LOST
         bet.exit_type = ExitType.CLOSED_EARLY
         bet.settled_at = datetime.now(timezone.utc)
         bet.pnl_cents = bet.realized_pnl_cents
@@ -1159,10 +1162,12 @@ async def record_fill(session: AsyncSession, fill: Fill) -> list[tuple[int, Snap
         if is_first_sell:
             captures.append((opener.id, SnapshotPhase.EXIT_OPEN))
         if opener.remaining_quantity_centi == 0:
-            opener.status = (
-                BetStatus.WON if (opener.realized_pnl_cents or 0) > 0
-                else BetStatus.LOST
+            # WON/LOST = sign of NET P&L (gross minus fees), matching the
+            # ledger's Net P&L column. Fees were just recomputed above.
+            net_pnl = (opener.realized_pnl_cents or 0) - (
+                (opener.entry_fees_cents or 0) + (opener.exit_fees_cents or 0)
             )
+            opener.status = BetStatus.WON if net_pnl > 0 else BetStatus.LOST
             opener.exit_type = ExitType.CLOSED_EARLY
             opener.settled_at = datetime.now(timezone.utc)
             opener.pnl_cents = opener.realized_pnl_cents
@@ -1433,14 +1438,20 @@ async def settle_bets_for_market(
         # else: bet was already fully closed via sells; exit_price set then.
 
         bet.pnl_cents = bet.realized_pnl_cents
-        # WON/LOST is the OUTCOME of the bet, not the sign of its P&L. A bet
-        # held to settlement won iff its own side resolved true — side_settle
-        # is that side's payoff (>=50 ⇒ this side won). You can scalp most of a
-        # position out at a profit and still LOSE the bet when the held shares
-        # settle worthless (e.g. a Draw YES sold into a spike, game not a draw:
-        # net realized +, outcome lost). Keying status off P&L sign mislabeled
-        # exactly those rows as WON.
-        bet.status = BetStatus.WON if side_settle >= 50 else BetStatus.LOST
+        # WON/LOST is the sign of the bet's NET P&L on the market — did this
+        # position make money — not whether the final outcome went our way.
+        # You can scalp a position out at a profit and have the held shares
+        # settle worthless (Draw YES sold into a spike, game not a draw): the
+        # outcome lost but the position is green, so it's WON. Net = gross minus
+        # all fees, the same figure the ledger's Net P&L column shows, so the
+        # green/red number and the won/lost label always agree. (Fees arrive
+        # async via fills_sync; on a razor-thin scalp the label can lag one fee
+        # tick until they land — negligible at these stakes, self-heals on the
+        # next status write.)
+        net_pnl = (bet.realized_pnl_cents or 0) - (
+            (bet.entry_fees_cents or 0) + (bet.exit_fees_cents or 0)
+        )
+        bet.status = BetStatus.WON if net_pnl > 0 else BetStatus.LOST
         bet.exit_type = ExitType.HELD_TO_SETTLEMENT
         bet.settled_at = settled_at
         bet.version += 1
