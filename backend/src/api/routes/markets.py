@@ -216,7 +216,7 @@ async def get_trades(ticker: str, request: Request) -> dict[str, Any]:
 
     async with KalshiRestClient() as client:
         try:
-            raw = await fetch_all_trades(client, ticker)
+            raw = await fetch_all_trades(client, ticker, cutoff_ts=cutoff_ts)
         except Exception as e:  # noqa: BLE001
             log.warning("get_trades_failed", ticker=ticker, error=str(e)[:200])
             raise HTTPException(status_code=502, detail=f"kalshi trades fetch failed: {e}") from e

@@ -319,20 +319,24 @@ export default function OrderPanel({
           ghost-share guard would refuse an oversell anyway, but this never even
           offers it). Only shown when there's a position to dump. */}
       {heldOnThisSide > 0 && (
-        <div className="mb-3">
-          <QuickButton
-            label={`DUMP all ${heldOnThisSide} ${side.toUpperCase()}`}
-            subLabel={quickSell === null ? 'no bid' : `${heldOnThisSide} @ ${quickSell}¢`}
-            disabled={quickSell === null || place.isPending}
-            resetKey={`dump:${side}:${quickSell}:${heldOnThisSide}`}
-            onConfirm={() => {
-              if (quickSell === null) return
-              setPrice(quickSell)
-              setCount(heldOnThisSide)
-              holdPrice()
-              submit({ action: 'sell', price_override: quickSell, count_override: heldOnThisSide, post_only_override: false })
-            }}
-          />
+        <div className="mb-3 flex justify-center">
+          <div className="w-3/5 min-w-[12rem]">
+            <QuickButton
+              label={`DUMP all ${heldOnThisSide} ${side.toUpperCase()}`}
+              subLabel={quickSell === null ? 'no bid' : `${heldOnThisSide} @ ${quickSell}¢`}
+              disabled={quickSell === null || place.isPending}
+              resetKey={`dump:${side}:${quickSell}:${heldOnThisSide}`}
+              holdMs={DUMP_HOLD_MS}
+              tone="dump"
+              onConfirm={() => {
+                if (quickSell === null) return
+                setPrice(quickSell)
+                setCount(heldOnThisSide)
+                holdPrice()
+                submit({ action: 'sell', price_override: quickSell, count_override: heldOnThisSide, post_only_override: false })
+              }}
+            />
+          </div>
         </div>
       )}
 
@@ -519,12 +523,23 @@ function NumberField({
 }
 
 // Two-step confirm for order buttons: first click arms; then press-and-hold
-// HOLD_MS to fire. Defeats both accidental single clicks and double-clicks —
+// `holdMs` to fire. Defeats both accidental single clicks and double-clicks —
 // nothing submits without a deliberate sustained press. Releasing early, or
 // not arming first, does nothing. `disabled` resets everything.
 const HOLD_MS = 2000
 
-function useHoldToConfirm(onConfirm: () => void, disabled: boolean, resetKey: string) {
+// DUMP fires faster: exiting into volatility is time-sensitive, and a 2s hold
+// has cost real money sitting on a spike. ~⅔ shorter than the standard hold —
+// still a sustained press (no accidental single-click), just quick enough to
+// bail in a fast tape.
+const DUMP_HOLD_MS = 700
+
+function useHoldToConfirm(
+  onConfirm: () => void,
+  disabled: boolean,
+  resetKey: string,
+  holdMs: number = HOLD_MS,
+) {
   const [armed, setArmed] = useState(false)
   const [progress, setProgress] = useState(0) // 0..1 fill while holding
   const rafRef = useRef<number | null>(null)
@@ -564,7 +579,7 @@ function useHoldToConfirm(onConfirm: () => void, disabled: boolean, resetKey: st
     startRef.current = performance.now()
     const tick = () => {
       const elapsed = performance.now() - startRef.current
-      const p = Math.min(1, elapsed / HOLD_MS)
+      const p = Math.min(1, elapsed / holdMs)
       setProgress(p)
       if (p >= 1) {
         cancelHold()
@@ -585,7 +600,7 @@ function useHoldToConfirm(onConfirm: () => void, disabled: boolean, resetKey: st
 }
 
 function QuickButton({
-  label, subLabel, onConfirm, disabled, title, resetKey,
+  label, subLabel, onConfirm, disabled, title, resetKey, holdMs, tone = 'action',
 }: {
   label: string
   subLabel: string
@@ -593,8 +608,19 @@ function QuickButton({
   disabled: boolean
   title?: string
   resetKey: string
+  holdMs?: number
+  tone?: 'action' | 'dump'
 }) {
-  const { armed, progress, pressStart, pressEnd } = useHoldToConfirm(onConfirm, disabled, resetKey)
+  const { armed, progress, pressStart, pressEnd } = useHoldToConfirm(onConfirm, disabled, resetKey, holdMs)
+  // 'action' = amber outline (standard quick-sell). 'dump' = solid red, the
+  // close-everything button — visually distinct so it can't be mistaken for a
+  // partial sell, with a brighter hold-fill since it fires fast.
+  const shell =
+    tone === 'dump'
+      ? 'border-loss bg-loss text-bg hover:bg-loss/90'
+      : 'border-action bg-bg text-action hover:bg-bg-hover'
+  const fill = tone === 'dump' ? 'bg-bg/30' : 'bg-action/20'
+  const subTone = tone === 'dump' ? 'text-bg/80' : 'text-text-muted'
   return (
     <button
       type="button"
@@ -603,18 +629,18 @@ function QuickButton({
       onPointerLeave={pressEnd}
       disabled={disabled}
       title={title}
-      className="relative flex select-none flex-col items-center overflow-hidden rounded-md border border-action bg-bg px-3 py-2 text-action hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+      className={`relative flex select-none flex-col items-center overflow-hidden rounded-md border px-3 py-2 disabled:cursor-not-allowed disabled:opacity-40 ${shell}`}
     >
       {armed && (
         <span
-          className="absolute inset-y-0 left-0 bg-action/20"
+          className={`absolute inset-y-0 left-0 ${fill}`}
           style={{ width: `${progress * 100}%` }}
         />
       )}
       <span className="relative text-sm font-semibold">
         {armed ? 'Hold to confirm' : label}
       </span>
-      <span className="relative text-xs font-mono tabular-nums text-text-muted">{subLabel}</span>
+      <span className={`relative font-mono text-xs tabular-nums ${subTone}`}>{subLabel}</span>
     </button>
   )
 }

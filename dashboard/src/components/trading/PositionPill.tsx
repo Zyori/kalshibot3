@@ -11,6 +11,11 @@ export default function PositionPill({ position: p }: { position: ChildPosition 
   const pnl = p.unrealized_pnl_cents
   const tone =
     pnl === null ? 'text-text-muted' : pnl >= 0 ? 'text-gain' : 'text-loss'
+  // Profit/loss already banked on the shares sold so far (Kalshi's realized
+  // PnL for this still-open position). Only shown once something's been sold —
+  // a fresh, untouched position has realized 0 and would just be noise.
+  const realized = p.realized_pnl_cents
+  const realizedTone = realized !== null && realized >= 0 ? 'text-gain' : 'text-loss'
   // avg_entry_price is the fee-inclusive all-in cost basis (matches kalshi.com):
   // (cost + Kalshi fees) / quantity. It runs ~1-2¢ above the raw fill price on
   // taker fills, so we label it "all-in" and show the raw fill price + the
@@ -31,6 +36,15 @@ export default function PositionPill({ position: p }: { position: ChildPosition 
       {pnl !== null && (
         <span className={`font-mono tabular-nums ${tone}`}>
           {formatSignedDollars(pnl)}
+        </span>
+      )}
+      {realized !== null && realized !== 0 && (
+        <span
+          className={`font-mono tabular-nums ${realizedTone}`}
+          title="Realized P&L — locked in on shares already sold"
+        >
+          {formatSignedDollars(realized)}
+          <span className="ml-0.5 text-[9px] text-text-muted">locked</span>
         </span>
       )}
     </span>
