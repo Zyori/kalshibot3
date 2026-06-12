@@ -9,7 +9,7 @@ import ImportFromKalshi from '../components/ledger/ImportFromKalshi'
 import { SportBadge } from '../components/ledger/SportBadge'
 import { KNOWN_SPORTS, badgeSport } from '../lib/sport'
 import { formatET, formatDollars, formatFee, formatPercent, formatPriceCents, formatReturnPct, formatSignedDollars } from '../lib/format'
-import type { Bet, BetFillsResponse, BetLegsResponse, LedgerStats as Stats } from '../lib/types'
+import type { Bet, BetFill, BetFillsResponse, BetLegsResponse, LedgerStats as Stats } from '../lib/types'
 
 type LedgerResponse = { bets: Bet[]; next_cursor: number | null }
 
@@ -579,7 +579,7 @@ function BetDetail({
               )}
             </dl>
           )}
-          {isCombo ? <LegsList query={legs} /> : <FillsList query={fills} />}
+          {isCombo ? <LegsList query={legs} /> : <FillsList query={fills} bet={bet} />}
         </div>
       </td>
     </tr>
@@ -658,8 +658,10 @@ function ForceSettleControl({ bet }: { bet: Bet }) {
 
 function FillsList({
   query,
+  bet,
 }: {
   query: ReturnType<typeof useQuery<BetFillsResponse>>
+  bet: Bet
 }) {
   if (query.isPending) {
     return <div className="h-24 animate-pulse rounded-md border border-border bg-bg-card" />
@@ -672,55 +674,122 @@ function FillsList({
     )
   }
   const fills = query.data.fills
-  if (fills.length === 0) {
+  // A bet ridden to a Kalshi settlement has no sell fill — settlement isn't a
+  // trade. Synthesize a terminal "settled" row so the resolution reads as the
+  // explicit close it economically is (a sell at 100¢ on a win, 0¢ on a loss),
+  // rather than the user inferring it from the missing exit. The held portion =
+  // total quantity minus whatever was sold off earlier via real fills.
+  const heldToSettlement = bet.exit_type === 'held_to_settlement'
+  const soldCenti = fills
+    .filter((f) => f.action === 'sell')
+    .reduce((sum, f) => sum + f.quantity_centi, 0)
+  const settledCenti = bet.quantity * 100 - soldCenti
+
+  if (fills.length === 0 && !heldToSettlement) {
     return (
       <div className="rounded-md border border-border bg-bg-card p-3 text-xs text-text-muted">
         No fills recorded yet.
       </div>
     )
   }
+  const rowCount = fills.length + (heldToSettlement ? 1 : 0)
   return (
     <div className="rounded-md border border-border bg-bg-card">
       <div className="border-b border-border px-3 py-2 text-xs uppercase tracking-wide text-text-muted">
-        Fills ({fills.length})
+        Fills ({rowCount})
+      </div>
+      <div className={`${FILL_GRID} border-b border-border px-3 py-1 text-[10px] uppercase tracking-wide text-text-muted`}>
+        <span></span>
+        <span className="text-right">Qty</span>
+        <span className="text-right">Price</span>
+        <span></span>
+        <span>Time</span>
+        <span className="text-right">Fee</span>
       </div>
       <ul className="divide-y divide-border">
-        {fills.map((f) => {
-          const qty =
-            f.quantity_centi % 100 === 0
-              ? String(f.quantity_centi / 100)
-              : (f.quantity_centi / 100).toFixed(2)
-          const taker = f.is_taker === true
-          return (
-            <li
-              key={f.id}
-              className="grid grid-cols-[auto_1fr_auto] items-center gap-3 px-3 py-1.5 text-xs"
-            >
-              <span
-                className={`font-mono uppercase ${
-                  f.action === 'buy' ? 'text-action' : 'text-gain'
-                }`}
-              >
-                {f.action}
-              </span>
-              <span className="font-mono tabular-nums text-text">
-                {qty} @ {f.price_cents}¢
-                <span className="ml-2 text-[10px] uppercase text-text-muted">
-                  {taker ? 'taker' : 'maker'}
-                </span>
-              </span>
-              <span className="font-mono tabular-nums text-text-muted">
-                {f.fee_cents === null
-                  ? 'fee pending'
-                  : f.fee_cents === 0
-                  ? '$0.00 fee'
-                  : `${formatFee(f.fee_cents)} fee`}
-              </span>
-            </li>
-          )
-        })}
+        {fills.map((f) => (
+          <FillRow key={f.id} fill={f} />
+        ))}
+        {heldToSettlement && (
+          <SettlementRow
+            won={bet.status === 'won'}
+            quantityCenti={settledCenti}
+            settledAt={bet.settled_at}
+          />
+        )}
       </ul>
     </div>
+  )
+}
+
+// Shared column template so every fill row and the settlement row align:
+// action | qty | price | maker/taker | time | fee.
+const FILL_GRID =
+  'grid grid-cols-[3.5rem_2.5rem_2.5rem_3rem_1fr_auto] items-center gap-2'
+
+function fmtQty(quantityCenti: number): string {
+  return quantityCenti % 100 === 0
+    ? String(quantityCenti / 100)
+    : (quantityCenti / 100).toFixed(2)
+}
+
+function FillRow({ fill: f }: { fill: BetFill }) {
+  const taker = f.is_taker === true
+  return (
+    <li className={`${FILL_GRID} px-3 py-1.5 text-xs`}>
+      <span
+        className={`font-mono uppercase ${
+          f.action === 'buy' ? 'text-action' : 'text-gain'
+        }`}
+      >
+        {f.action}
+      </span>
+      <span className="text-right font-mono tabular-nums text-text">
+        {fmtQty(f.quantity_centi)}
+      </span>
+      <span className="text-right font-mono tabular-nums text-text">{f.price_cents}¢</span>
+      <span className="text-[10px] uppercase text-text-muted">
+        {taker ? 'taker' : 'maker'}
+      </span>
+      <span className="text-[10px] text-text-muted">
+        {f.created_time ? formatET(f.created_time, { timeOnly: true }) : ''}
+      </span>
+      <span className="text-right font-mono tabular-nums text-text-muted">
+        {f.fee_cents === null
+          ? 'pending'
+          : `${formatFee(f.fee_cents)}`}
+      </span>
+    </li>
+  )
+}
+
+// Terminal resolution row for a bet held to settlement. Not a real fill —
+// settlement has no Kalshi trade — so it's styled as its own thing: an amber
+// "settled" verb (an action, like a sell). The held side pays 100¢ on a win,
+// 0¢ on a loss; that pure payoff, not bet.exit_price_cents (which is clamped to
+// 1-99 and blended with any earlier sells), is what resolved this position.
+function SettlementRow({
+  won,
+  quantityCenti,
+  settledAt,
+}: {
+  won: boolean
+  quantityCenti: number
+  settledAt: string | null
+}) {
+  return (
+    <li className={`${FILL_GRID} bg-action/5 px-3 py-1.5 text-xs`}>
+      <span className="font-mono uppercase text-action">settled</span>
+      <span className="text-right font-mono tabular-nums text-text">
+        {fmtQty(quantityCenti)}
+      </span>
+      <span className="text-right font-mono tabular-nums text-text">{won ? 100 : 0}¢</span>
+      <span className={`text-[10px] uppercase ${won ? 'text-gain' : 'text-loss'}`}>
+        {won ? 'won' : 'lost'}
+      </span>
+      <span className="text-[10px] text-text-muted">{formatET(settledAt) || ''}</span>
+      <span className="text-right font-mono tabular-nums text-text-muted">—</span>
+    </li>
   )
 }
 
