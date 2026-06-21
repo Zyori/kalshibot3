@@ -114,6 +114,20 @@ SOCCER_TOTAL_SERIES: dict[str, str] = {
 SOCCER_TOTAL_SERIES_PREFIXES: tuple[str, ...] = tuple(SOCCER_TOTAL_SERIES.values())
 
 
+# Per-game goal-spread (handicap) series. Kalshi lists a spread as its own
+# series/event — same {date}{matchup} suffix as the moneyline, but each market
+# is "{Favorite} wins by more than {line} goals?" with a ticker suffix of the
+# favorite's 3-letter code + a slot digit (e.g. KXWCSPREAD-26JUN19USAAUS-USA2 =
+# "USA wins by more than 1.5 goals"). Like the totals, the slot digit is only an
+# index — the line lives in the market title, not the suffix — and the series
+# name is NOT a clean swap off the game prefix, so each is hand-verified against
+# live markets before being added here.
+#
+# Verified 2026-06-21 against live World Cup markets (KXWCSPREAD-26JUN19USAAUS-*,
+# KXWCSPREAD-26JUN13HTISCO-*): one market per (favorite, line) slot.
+SOCCER_SPREAD_SERIES_PREFIXES: tuple[str, ...] = ("KXWCSPREAD",)
+
+
 def total_series_for_game(game_series: str) -> str | None:
     """The total-goals series paired with a game series, or None if we don't
     have (a confirmed) one. Discovery uses this to fetch the O/U event for a
@@ -264,6 +278,7 @@ def is_soccer_ticker(ticker: str) -> bool:
     return (
         any(ticker.startswith(p) for p in SOCCER_GAME_SERIES)
         or any(ticker.startswith(p) for p in SOCCER_TOTAL_SERIES_PREFIXES)
+        or any(ticker.startswith(p) for p in SOCCER_SPREAD_SERIES_PREFIXES)
         or any(ticker.startswith(p) for p in WORLD_CUP_DERIVATIVE_SERIES)
     )
 
@@ -303,15 +318,30 @@ def is_total_goals_ticker(ticker: str) -> bool:
     return ticker.rsplit("-", 1)[-1].isdigit()
 
 
+def is_spread_ticker(ticker: str) -> bool:
+    """Whether a ticker is a per-game goal-spread (handicap) market — '{Favorite}
+    wins by more than {line} goals'. Presence check only; the line lives in the
+    title (see spread_line). The suffix is the favorite's 3-letter code + a slot
+    digit (e.g. -USA2), so the matchup-block regex below — not the moneyline
+    parser — identifies it."""
+    if not any(ticker.startswith(p) for p in SOCCER_SPREAD_SERIES_PREFIXES):
+        return False
+    return _SPREAD_TICKER_RE.search(ticker) is not None
+
+
 def is_per_game_soccer_ticker(ticker: str) -> bool:
     """Whether a ticker is a per-game soccer market we can record as a single
-    bet: a match-result moneyline (parse_market_ticker matches) OR a per-game
-    total-goals Over/Under. Excludes combos (their own log flow) and futures
-    (deci-cent priced — the whole-cent money core can't store them; the Futures
-    board is read-only). The import path gates on this so a per-game totals bet
-    (e.g. an Under 1.5) isn't dropped just because its ticker shape differs from
-    a moneyline's."""
-    return parse_market_ticker(ticker) is not None or is_total_goals_ticker(ticker)
+    bet: a match-result moneyline (parse_market_ticker matches), a per-game
+    total-goals Over/Under, OR a goal-spread (handicap). Excludes combos (their
+    own log flow) and futures (deci-cent priced — the whole-cent money core can't
+    store them; the Futures board is read-only). The import path gates on this so
+    a per-game totals/spread bet isn't dropped just because its ticker shape
+    differs from a moneyline's."""
+    return (
+        parse_market_ticker(ticker) is not None
+        or is_total_goals_ticker(ticker)
+        or is_spread_ticker(ticker)
+    )
 
 
 _OVER_LINE_RE = re.compile(r"\bover\s+(\d+(?:\.\d+)?)\b", re.IGNORECASE)
@@ -340,6 +370,64 @@ def total_goals_label(yes_sub_title: str | None, event_title: str, *, negate: bo
     ou = "Under" if negate else "Over"
     matchup = event_title.replace(" vs ", " - ")
     return f"{matchup} — {ou} {line:g} goals" if line is not None else f"{matchup} — {ou} goals"
+
+
+# Spread ticker suffix: the favorite's 3-letter code + a slot digit, e.g.
+# -USA2. The matchup block ({date}{HOME}{AWAY}) is identical to a game ticker;
+# only the suffix shape (code+digit, not a bare 3-letter selection) differs,
+# which is what tells a spread apart from a moneyline.
+_SPREAD_TICKER_RE = re.compile(
+    r"-\d{2}[A-Z]{3}\d{2}(?P<home>[A-Z]{3})(?P<away>[A-Z]{3})-(?P<fav>[A-Z]{3})\d+$"
+)
+
+# "USA wins by more than 1.5 goals" → 1.5. The favorite and line both come from
+# the title — the ticker suffix digit is only a per-event slot index (like the
+# totals), so the title is the single source of truth for the number.
+_SPREAD_LINE_RE = re.compile(r"by\s+(?:more\s+than|over)\s+(\d+(?:\.\d+)?)", re.IGNORECASE)
+
+
+def spread_line(yes_sub_title: str | None) -> float | None:
+    """The handicap line from Kalshi's spread sub-title ('USA wins by more than
+    1.5 goals' → 1.5), or None when the label is missing/unparseable."""
+    if not yes_sub_title:
+        return None
+    m = _SPREAD_LINE_RE.search(yes_sub_title)
+    return float(m.group(1)) if m else None
+
+
+def spread_favorite_code(ticker: str) -> str | None:
+    """The favored team's 3-letter code from a spread ticker (the suffix before
+    the slot digit), or None if the ticker isn't a spread shape."""
+    m = _SPREAD_TICKER_RE.search(ticker)
+    return m.group("fav") if m else None
+
+
+def spread_label(
+    ticker: str, yes_sub_title: str | None, event_title: str | None, *, negate: bool
+) -> str | None:
+    """Side-aware spread label: a YES hold backs the favorite to cover, a NO hold
+    fades it. '{Home - Away} — USA -1.5' / '... — USA +1.5 (NO)'. The favorite
+    code comes from the ticker; the line from the title (None → line-less). The
+    matchup prefers the event title's team names, falling back to the ticker
+    codes. Shared by the importable picker and the ledger so both read the same."""
+    fav = spread_favorite_code(ticker)
+    if fav is None:
+        return None
+    line = spread_line(yes_sub_title)
+    matchup = _spread_matchup(ticker, event_title)
+    # YES = favorite covers (-line); NO = favorite fails to cover (the +line side).
+    sign = "+" if negate else "-"
+    handicap = f"{fav} {sign}{line:g}" if line is not None else f"{fav} {sign}spread"
+    return f"{matchup} — {handicap}" if matchup else handicap
+
+
+def _spread_matchup(ticker: str, event_title: str | None) -> str | None:
+    """'Home - Away' for a spread, from the event title's names when present,
+    else the ticker's 3-letter codes."""
+    if event_title:
+        return event_title.replace(" vs ", " - ")
+    m = _SPREAD_TICKER_RE.search(ticker)
+    return f"{m.group('home')} - {m.group('away')}" if m else None
 
 
 def parse_market_ticker(ticker: str) -> ParsedMarketTicker | None:

@@ -595,6 +595,7 @@ async def record_external_position(
     timing: Timing = Timing.PRE_MATCH,
     human_reasoning: str | None = None,
     tags: list[str] | None = None,
+    market_title: str | None = None,
 ) -> Bet:
     """Reconstruct a single-market position placed on kalshi.com into one bet.
 
@@ -649,7 +650,12 @@ async def record_external_position(
         select(Bet).where(Bet.client_order_id == synthetic_coid)
     )
     if bet is None:
-        market_id = await _get_or_create_market(session, ticker=ticker)
+        # market_title carries Kalshi's human title ("USA wins by more than 1.5
+        # goals"), the only place a totals/spread line is knowable — the ticker
+        # suffix is just a slot index. Persisted so the ledger label shows it.
+        market_id = await _get_or_create_market(
+            session, ticker=ticker, title=market_title
+        )
         parsed = parse_market_ticker(ticker)
         bet = Bet(
             sport=Sport.SOCCER,
@@ -715,6 +721,13 @@ async def record_external_position(
         # Re-import: keep quantity in sync with the buys (it drives remaining)
         # but otherwise let recompute_bet_from_fills re-derive everything.
         bet.quantity = quantity
+        # Backfill the market title for a bet first imported before titles were
+        # captured (totals/spread label needs it). _get_or_create_market upserts
+        # the title onto a row still stuck at the raw ticker.
+        if market_title:
+            await _get_or_create_market(
+                session, ticker=ticker, title=market_title
+            )
 
     # Bind every fill's bet_fill to this bet and force its price into the held
     # frame. fills_sync already inserted these (by trade_id) at the raw side —

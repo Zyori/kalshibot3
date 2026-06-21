@@ -60,9 +60,11 @@ from src.services.bet_service import (
 from src.sports.combo import uniform_combo_sport
 from src.sports.soccer import (
     is_per_game_soccer_ticker,
+    is_spread_ticker,
     is_total_goals_ticker,
     league_display_name,
     parse_market_ticker,
+    spread_label,
     total_goals_label,
     total_goals_line,
 )
@@ -155,6 +157,12 @@ def _market_label(
             return f"Over {line:g} goals"
         matchup = _totals_matchup(ticker)
         return f"{matchup} — Over goals" if matchup else (ticker or "Over goals")
+    # Spreads (goal handicap): like totals, the favorite + line live in Kalshi's
+    # stored title ("USA wins by more than 1.5 goals" → "USA -1.5"), captured at
+    # import. The side (yes = covers, no = fades) is rendered by the frontend.
+    if ticker and is_spread_ticker(ticker):
+        label = spread_label(ticker, market_title, None, negate=False)
+        return label or ticker
     if b.home_code is None or b.away_code is None:
         return ticker or "—"
     league = league_display_name(b.event_series) or b.event_series or "Soccer"
@@ -730,6 +738,8 @@ def _feed_label(ticker: str, side: BetSide, feed: Any) -> str | None:
     negate = side == BetSide.NO
     if is_total_goals_ticker(ticker):
         return total_goals_label(sub, row.event_title, negate=negate)
+    if is_spread_ticker(ticker):
+        return spread_label(ticker, sub, row.event_title, negate=negate)
     if sub.lower() in ("tie", "draw"):
         base = f"{row.event_title.replace(' vs ', ' - ')} DRAW"
         return f"{base.removesuffix(' DRAW')} NOT DRAW" if negate else base
@@ -764,6 +774,11 @@ def _ticker_label(ticker: str, side: BetSide) -> str | None:
             matchup = _totals_matchup(ticker)
             ou = "Under" if side == BetSide.NO else "Over"
             return f"{matchup} — {ou} goals" if matchup else None
+        # Spread for a market the feed has dropped: the line lives in the title,
+        # which an aged-out market no longer carries, so show favorite + side
+        # without it (the ledger row backfills the line from the stored title).
+        if is_spread_ticker(ticker):
+            return spread_label(ticker, None, None, negate=side == BetSide.NO)
         return None
     league = league_display_name(parsed.series) or parsed.series
     matchup = f"{parsed.home_code} v {parsed.away_code}"
@@ -838,6 +853,19 @@ async def _resolved_settlement_cents(
         if row.settlement_value_cents is not None:
             return row.settlement_value_cents
     return None
+
+
+async def _market_title(client: KalshiRestClient, ticker: str) -> str | None:
+    """Kalshi's human market title ("USA wins by more than 1.5 goals"), where a
+    totals/spread line is the only authoritative source. None on any error — the
+    caller falls back to a line-less label rather than failing the import."""
+    try:
+        data = await client.get_market(ticker)
+    except Exception as e:  # noqa: BLE001
+        log.warning("market_title_fetch_failed", ticker=ticker, error=str(e)[:120])
+        return None
+    title = data.get("market", {}).get("title")
+    return title if isinstance(title, str) else None
 
 
 async def _gather_positions(
@@ -1024,10 +1052,19 @@ async def import_fills(
 
             # Settlement status — fetched outside the lock (network).
             settle_value = await _resolved_settlement_cents(client, ticker)
+            # Totals/spread lines live only in Kalshi's market title — fetch it
+            # so the ledger label can show the line. Moneylines label off the
+            # ticker codes, so skip the extra call for them.
+            market_title = (
+                await _market_title(client, ticker)
+                if is_total_goals_ticker(ticker) or is_spread_ticker(ticker)
+                else None
+            )
 
             async with ledger_guard(lock):
                 bet = await record_external_position(
                     session, ticker=ticker, side=side, fills=fills,
+                    market_title=market_title,
                 )
                 # Settle only a still-open held remainder. A position fully
                 # closed via sells is already terminal (CLOSED_EARLY) from
