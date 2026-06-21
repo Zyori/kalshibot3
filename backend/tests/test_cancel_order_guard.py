@@ -35,9 +35,10 @@ def _mock_client(*, resting_order: dict | None) -> AsyncMock:
     client.get_orders = AsyncMock(
         return_value={"orders": [resting_order] if resting_order else []}
     )
+    # V2 cancel ack: flat order_id + reduced_by, no nested order (the route
+    # uses the ticker it already looked up and a definitionally-canceled status).
     client.cancel_order = AsyncMock(return_value=SimpleNamespace(
-        order=SimpleNamespace(order_id="o1", ticker=SOCCER, status="canceled"),
-        reduced_by=10,
+        order_id="o1", reduced_by=10,
     ))
     return client
 

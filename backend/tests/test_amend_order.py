@@ -31,9 +31,10 @@ def _mock_client(*, resting_order: dict | None, new_order_id: str = "new123") ->
     client.__aexit__ = AsyncMock(return_value=False)
     orders = [resting_order] if resting_order is not None else []
     client.get_orders = AsyncMock(return_value={"orders": orders})
+    # V2 amend response: the synthesized NEW order (fresh order_id, resting).
+    # V2 doesn't echo the retired order and the route doesn't read one.
     client.amend_order = AsyncMock(return_value=SimpleNamespace(
         order=SimpleNamespace(order_id=new_order_id, status="resting"),
-        old_order=SimpleNamespace(order_id="old", status="canceled"),
     ))
     return client
 

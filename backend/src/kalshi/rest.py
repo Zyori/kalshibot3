@@ -50,6 +50,8 @@ from src.kalshi.schemas import (
     PositionsResponse,
     SelectedMarket,
     SettlementsResponse,
+    V2OrderAck,
+    synthesize_order_from_ack,
 )
 
 log = get_logger(__name__)
@@ -503,19 +505,30 @@ class KalshiRestClient:
             client_order_id=req.client_order_id,
         )
         data = await self._request(
-            "POST", "/portfolio/orders", json=req.model_dump(exclude_none=True)
+            "POST", "/portfolio/events/orders", json=req.to_v2_wire()
         )
-        return PlaceOrderResponse.model_validate(data)
+        ack = V2OrderAck.model_validate(data)
+        order = synthesize_order_from_ack(
+            ack=ack,
+            ticker=req.ticker,
+            side=req.side,
+            action=req.action,
+            held_price_cents=req._held_price_cents(),
+            count=req.count,
+            client_order_id=req.client_order_id,
+        )
+        return PlaceOrderResponse(order=order)
 
     async def cancel_order(self, order_id: str) -> CancelOrderResponse:
         log.info("cancel_order", order_id=order_id)
-        data = await self._request("DELETE", f"/portfolio/orders/{order_id}")
+        data = await self._request("DELETE", f"/portfolio/events/orders/{order_id}")
         return CancelOrderResponse.model_validate(data)
 
     async def amend_order(self, order_id: str, req: AmendOrderRequest) -> AmendOrderResponse:
         """Amend a resting order's price/count. Kalshi retires `order_id` and
-        returns a NEW order in the response — the caller must re-track that id.
-        Port: V1 amendOrder, POST /portfolio/orders/{id}/amend."""
+        issues a NEW order_id (in the ack) — the caller must re-track it. The V2
+        ack carries only counts, so we synthesize the new Order from the request
+        + the new order_id. POST /portfolio/events/orders/{id}/amend."""
         log.info(
             "amend_order",
             order_id=order_id,
@@ -526,7 +539,17 @@ class KalshiRestClient:
         )
         data = await self._request(
             "POST",
-            f"/portfolio/orders/{order_id}/amend",
-            json=req.model_dump(exclude_none=True),
+            f"/portfolio/events/orders/{order_id}/amend",
+            json=req.to_v2_wire(),
         )
-        return AmendOrderResponse.model_validate(data)
+        ack = V2OrderAck.model_validate(data)
+        order = synthesize_order_from_ack(
+            ack=ack,
+            ticker=req.ticker,
+            side=req.side,
+            action=req.action,
+            held_price_cents=req._held_price_cents(),
+            count=req.count,
+            client_order_id=req.updated_client_order_id,
+        )
+        return AmendOrderResponse(order=order)

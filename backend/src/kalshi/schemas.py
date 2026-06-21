@@ -22,7 +22,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.core.types import dollars_str_to_cents as _dollar_str_to_cents
+from src.core.types import (
+    cents_to_dollars_str as _cents_to_dollars_str,
+    dollars_str_to_cents as _dollar_str_to_cents,
+)
 
 
 # === Common base ===
@@ -359,9 +362,49 @@ class SettlementsResponse(WireModelLoose):
 
 
 # === Orders: place / response ===
+#
+# V2 wire (POST /portfolio/events/orders) speaks a single YES-book: side is
+# bid/ask (bid = buy YES) and price is ALWAYS the YES-leg price as a fixed-point
+# dollar string. Our internal model stays the human yes/no + buy/sell + integer
+# cents (in the held side's frame). _to_v2_book() is the single translation
+# between the two — the money-critical mapping, exhaustively unit-tested.
+
+# V2 self-trade prevention: cancel the INCOMING order if it would cross our own
+# resting order. This app shares the live Kalshi account, so the user may have a
+# resting exit/entry on the same market — taker_at_cross never silently kills it
+# (vs `maker`, which would cancel the resting order). Project decision 2026-06-21.
+_V2_SELF_TRADE_PREVENTION = "taker_at_cross"
+
+
+def _to_v2_book(
+    side: Literal["yes", "no"],
+    action: Literal["buy", "sell"],
+    price_cents: int,
+) -> tuple[Literal["bid", "ask"], str]:
+    """Translate our (held side, action, held-frame cents) into the V2 single
+    YES-book (side, YES-price dollar string).
+
+      buy  YES → bid, yes price          sell YES → ask, yes price
+      buy  NO  → ask, 100−price (YES)    sell NO  → bid, 100−price (YES)
+
+    The book side is `bid` when we end up buying YES, `ask` when selling YES;
+    buying NO is selling YES and vice-versa. The price is always the YES-leg
+    price, so a NO order's held-frame cents become their complement. Inverting
+    this places the OPPOSITE side of the intended trade — the single most
+    dangerous bug in the order path, so it lives in one tested function."""
+    if side == "yes":
+        book_side: Literal["bid", "ask"] = "bid" if action == "buy" else "ask"
+        yes_cents = price_cents
+    else:
+        book_side = "ask" if action == "buy" else "bid"
+        yes_cents = 100 - price_cents
+    return book_side, _cents_to_dollars_str(yes_cents)
+
 
 class PlaceOrderRequest(WireModel):
-    """`POST /portfolio/orders` body. All prices in integer cents.
+    """A new order in our internal frame: human yes/no side + buy/sell action +
+    integer-cent price (in the held side's frame). `.to_v2_wire()` renders the
+    V2 `POST /portfolio/events/orders` body.
 
     `client_order_id` is the idempotency key — supply a UUID and Kalshi will
     reject duplicate submissions with the same key. CLAUDE.md hard rule 6.
@@ -377,6 +420,35 @@ class PlaceOrderRequest(WireModel):
     client_order_id: str
     post_only: bool = False
     expiration_ts: int | None = None  # epoch seconds; None = good-til-cancel
+
+    def _held_price_cents(self) -> int:
+        """The order price in the held side's frame — the field matching `side`.
+        Exactly one of yes_price/no_price is set by the caller for that side."""
+        price = self.yes_price if self.side == "yes" else self.no_price
+        if price is None:
+            raise ValueError(f"{self.side} order missing {self.side}_price")
+        return price
+
+    def to_v2_wire(self) -> dict[str, Any]:
+        """The V2 `POST /portfolio/events/orders` request body.
+
+        time_in_force is good_till_canceled — we only place resting limits today
+        (V1's implicit GTC). A marketable/IOC path would set this differently;
+        out of scope until we add it."""
+        book_side, price = _to_v2_book(self.side, self.action, self._held_price_cents())
+        body: dict[str, Any] = {
+            "ticker": self.ticker,
+            "side": book_side,
+            "count": f"{self.count}.00",
+            "price": price,
+            "time_in_force": "good_till_canceled",
+            "self_trade_prevention_type": _V2_SELF_TRADE_PREVENTION,
+            "client_order_id": self.client_order_id,
+            "post_only": self.post_only,
+        }
+        if self.expiration_ts is not None:
+            body["expiration_time"] = self.expiration_ts
+        return body
 
 
 class Order(WireModelLoose):
@@ -431,15 +503,82 @@ class Order(WireModelLoose):
         return out
 
 
+class V2OrderAck(WireModelLoose):
+    """The V2 create/amend response (`POST /portfolio/events/orders[...]`).
+
+    Deliberately thin: V2 echoes only the order_id, the post-placement fill /
+    remaining counts (fixed-point strings), and the client_order_id — NOT the
+    side, price, ticker, or status. Those we already know from the request we
+    sent, so we synthesize the full Order from request + this ack rather than
+    parse a shape that no longer carries them (see synthesize_order_from_ack)."""
+
+    order_id: str
+    client_order_id: str | None = ""
+    fill_count: str | None = None
+    remaining_count: str | None = None
+    average_fill_price: str | None = None
+    average_fee_paid: str | None = None
+    ts_ms: int | None = None
+
+    def fill_count_int(self) -> int:
+        return int(float(self.fill_count)) if self.fill_count is not None else 0
+
+    def remaining_count_int(self, total: int) -> int:
+        """Resting contracts after placement. V2 may omit remaining_count when
+        the order rests untouched (no immediate fill); fall back to total−filled
+        so the synthesized Order's count math stays exact."""
+        if self.remaining_count is not None:
+            return int(float(self.remaining_count))
+        return max(0, total - self.fill_count_int())
+
+
+def synthesize_order_from_ack(
+    *,
+    ack: V2OrderAck,
+    ticker: str,
+    side: Literal["yes", "no"],
+    action: Literal["buy", "sell"],
+    held_price_cents: int,
+    count: int,
+    client_order_id: str,
+) -> Order:
+    """Build our canonical Order from a V2 ack + the request fields we sent.
+
+    The V2 response dropped side/price/ticker/status, but every downstream
+    consumer (record_placed_order, the amend route) still reads them off Order.
+    We hold all of them from the request, so reconstruct rather than re-shape
+    the consumers. status is derived from the counts: fully-filled → executed,
+    otherwise resting (the only states a freshly-acked limit can be in)."""
+    filled = ack.fill_count_int()
+    remaining = ack.remaining_count_int(count)
+    status: Literal["resting", "canceled", "executed", "pending"] = (
+        "executed" if remaining == 0 and filled > 0 else "resting"
+    )
+    return Order(
+        order_id=ack.order_id,
+        client_order_id=client_order_id,
+        ticker=ticker,
+        side=side,
+        action=action,
+        type="limit",
+        status=status,
+        yes_price=held_price_cents if side == "yes" else None,
+        no_price=held_price_cents if side == "no" else None,
+        count=count,
+        remaining_count=remaining,
+    )
+
+
 class PlaceOrderResponse(WireModelLoose):
     order: Order
 
 
 class AmendOrderRequest(WireModel):
-    """`POST /portfolio/orders/{order_id}/amend` body. Changes a resting order's
-    price and/or count. Kalshi retires the old order and issues a NEW order_id
-    (returned as `order`), re-queued at the (possibly new) price level. Side and
-    action are unchanged — those would be a different order, not an amend.
+    """Amend a resting order's price and/or count, in our internal frame.
+    `.to_v2_wire()` renders the V2 `POST /portfolio/events/orders/{id}/amend`
+    body. Kalshi retires the old order and issues a NEW order_id (which the
+    caller must re-track), re-queued at the new price level. Side and action are
+    unchanged — those would be a different order, not an amend.
 
     `updated_client_order_id` is the idempotency key for the amend, same role as
     client_order_id on a place (CLAUDE.md rule 6). All prices integer cents.
@@ -453,19 +592,44 @@ class AmendOrderRequest(WireModel):
     count: int = Field(ge=1)
     updated_client_order_id: str
 
+    def _held_price_cents(self) -> int:
+        price = self.yes_price if self.side == "yes" else self.no_price
+        if price is None:
+            raise ValueError(f"{self.side} amend missing {self.side}_price")
+        return price
+
+    def to_v2_wire(self) -> dict[str, Any]:
+        """The V2 amend body. Same single-YES-book mapping as a place; the V2
+        amend takes the absolute new side/price/count (not a delta)."""
+        book_side, price = _to_v2_book(self.side, self.action, self._held_price_cents())
+        return {
+            "ticker": self.ticker,
+            "side": book_side,
+            "price": price,
+            "count": f"{self.count}.00",
+            "updated_client_order_id": self.updated_client_order_id,
+        }
+
 
 class AmendOrderResponse(WireModelLoose):
-    """Amend returns both the retired order and the new one. `order` carries the
-    NEW order_id the caller must now track; `old_order` is the superseded one."""
+    """`order` is the synthesized NEW order the caller must now track (the V2
+    amend issues a fresh order_id; we rebuild the Order from the request + ack).
+    V2 doesn't echo the retired order, and nothing downstream needs it — the
+    amend route already holds the old order_id in its own scope."""
     order: Order
-    old_order: Order | None = None
 
 
 class CancelOrderResponse(WireModelLoose):
-    order: Order
+    """V2 cancel ack (`DELETE /portfolio/events/orders/{id}`). Carries only the
+    order_id, how many contracts the cancel removed (`reduced_by`, a fixed-point
+    string), and a timestamp — NOT the order's ticker/side/status. The cancel
+    route already holds the ticker (it looked the order up first) and the status
+    is definitionally canceled, so we don't reconstruct a full Order here."""
+
+    order_id: str
+    client_order_id: str | None = ""
     reduced_by: int | None = None
-    """Legacy int field. Kalshi also sends `reduced_by_fp` (float string);
-    we accept either via the validator below."""
+    ts_ms: int | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -473,7 +637,12 @@ class CancelOrderResponse(WireModelLoose):
         if not isinstance(obj, dict):
             return obj
         out = dict(obj)
-        if "reduced_by" not in out and "reduced_by_fp" in out:
+        # reduced_by arrives as a fixed-point string ("10.00"); legacy int also
+        # accepted. Either way land an int contract count.
+        raw = out.get("reduced_by")
+        if isinstance(raw, str):
+            out["reduced_by"] = int(float(raw))
+        elif "reduced_by" not in out and "reduced_by_fp" in out:
             out["reduced_by"] = int(float(out["reduced_by_fp"]))
         return out
 

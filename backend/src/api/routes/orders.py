@@ -405,9 +405,9 @@ async def cancel_order(
     await session.commit()
 
     return {
-        "kalshi_order_id": resp.order.order_id,
-        "ticker": resp.order.ticker,
-        "status": resp.order.status,
+        "kalshi_order_id": resp.order_id,
+        "ticker": ticker,
+        "status": "canceled",
         "reduced_by": resp.reduced_by,
     }
 

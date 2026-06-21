@@ -59,6 +59,17 @@ def dollars_str_to_cents(s: str) -> int:
     return int(round(float(s) * 100))
 
 
+def cents_to_dollars_str(cents: int) -> str:
+    """Integer cents (56) → Kalshi V2 fixed-point dollar string ('0.5600').
+
+    The inverse of dollars_str_to_cents, and the only cents→dollars converter.
+    Used solely at the V2 order wire boundary (schemas.PlaceOrderRequest /
+    AmendOrderRequest .to_v2_wire), where Kalshi requires a fixed-point dollar
+    string. The four-decimal format covers the 1¢ grid exactly; no float is
+    retained past this string."""
+    return f"{cents / 100:.4f}"
+
+
 def position_avg_entry_price(
     cost_basis_cents: int | None,
     fees_paid_cents: int | None,
