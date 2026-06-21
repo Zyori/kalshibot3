@@ -402,14 +402,31 @@ def spread_favorite_code(ticker: str) -> str | None:
     return m.group("fav") if m else None
 
 
+# The {date}{HOME}{AWAY} block is identical across per-game series (moneyline,
+# totals, spread); only the suffix after it differs (a 3-letter selection, a
+# numeric line slot, or a code+digit). This matches the block alone so one
+# function serves every series' "HOME - AWAY" extraction.
+_MATCHUP_CODES_RE = re.compile(r"-\d{2}[A-Z]{3}\d{2}([A-Z]{3})([A-Z]{3})-")
+
+
+def matchup_codes(ticker: str) -> str | None:
+    """'HOME - AWAY' from any per-game ticker's matchup block, or None if the
+    ticker doesn't carry one. Suffix-agnostic — the same block shape backs the
+    moneyline, totals, and spread tickers, so this is the single extractor for
+    all three (used as the code fallback when full team names aren't available)."""
+    m = _MATCHUP_CODES_RE.search(ticker)
+    return f"{m.group(1)} - {m.group(2)}" if m else None
+
+
 def spread_label(
     ticker: str, yes_sub_title: str | None, event_title: str | None, *, negate: bool
 ) -> str | None:
     """Side-aware spread label: a YES hold backs the favorite to cover, a NO hold
-    fades it. '{Home - Away} — USA -1.5' / '... — USA +1.5 (NO)'. The favorite
-    code comes from the ticker; the line from the title (None → line-less). The
-    matchup prefers the event title's team names, falling back to the ticker
-    codes. Shared by the importable picker and the ledger so both read the same."""
+    fades it. '{Home - Away} — USA -1.5' (YES) / '... — USA +1.5' (NO) — the sign
+    carries the direction, so no extra side suffix. The favorite code comes from
+    the ticker; the line from the title (None → line-less). The matchup prefers
+    the event title's team names, falling back to the ticker codes. Shared by the
+    importable picker and the ledger so both read the same."""
     fav = spread_favorite_code(ticker)
     if fav is None:
         return None
@@ -426,8 +443,7 @@ def _spread_matchup(ticker: str, event_title: str | None) -> str | None:
     else the ticker's 3-letter codes."""
     if event_title:
         return event_title.replace(" vs ", " - ")
-    m = _SPREAD_TICKER_RE.search(ticker)
-    return f"{m.group('home')} - {m.group('away')}" if m else None
+    return matchup_codes(ticker)
 
 
 def parse_market_ticker(ticker: str) -> ParsedMarketTicker | None:

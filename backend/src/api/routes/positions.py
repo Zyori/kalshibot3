@@ -21,7 +21,12 @@ from src.core.types import BetSide, Sport, position_base_fields, utc_iso
 from src.ingestion.market_discovery import MarketFeed
 from src.models import Bet, ComboLeg, Position
 from src.sports.combo import combo_leg_pick, uniform_combo_sport
-from src.sports.soccer import is_total_goals_ticker, total_goals_label
+from src.sports.soccer import (
+    is_spread_ticker,
+    is_total_goals_ticker,
+    spread_label,
+    total_goals_label,
+)
 
 router = APIRouter()
 
@@ -103,6 +108,8 @@ def _position_label(ticker: str, side: BetSide, feed: MarketFeed | None) -> str 
     negate = side == BetSide.NO
     if is_total_goals_ticker(ticker):
         return total_goals_label(sub, row.event_title, negate=negate)
+    if is_spread_ticker(ticker):
+        return spread_label(ticker, sub, row.event_title, negate=negate)
     if sub.lower() in ("tie", "draw"):
         # Derive "Poland - Nigeria" from the event title ("Poland vs Nigeria").
         base = f"{row.event_title.replace(' vs ', ' - ')} DRAW"

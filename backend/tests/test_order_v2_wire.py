@@ -46,6 +46,11 @@ class TestPlaceOrderV2Mapping:
             ("yes", "sell", 56, "ask", "0.5600"),  # sell YES → ask, yes price
             ("no",  "buy",  44, "ask", "0.5600"),  # buy NO   → ask, 100−44 = 56
             ("no",  "sell", 44, "bid", "0.5600"),  # sell NO  → bid, 100−44 = 56
+            # Boundaries: the NO complement is the error-prone arithmetic.
+            ("no",  "buy",  99, "ask", "0.0100"),  # buy NO @99 → sell YES @1
+            ("no",  "sell",  1, "bid", "0.9900"),  # sell NO @1 → buy YES @99
+            ("yes", "buy",   1, "bid", "0.0100"),
+            ("yes", "buy",  99, "bid", "0.9900"),
         ],
     )
     def test_four_rows(
@@ -147,4 +152,29 @@ class TestSynthesizeOrderFromAck:
             held_price_cents=60, count=10, client_order_id="c",
         )
         assert order.remaining_count == 8
+        assert order.status == "resting"
+
+    def test_stp_cancel_is_canceled_not_resting(self) -> None:
+        # self_trade_prevention (taker_at_cross) kills an order that would cross
+        # our own resting order: the ack 201s with fill=0 AND remaining=0. This
+        # MUST be 'canceled' — labeling it 'resting' makes record_placed_order
+        # book a phantom OPEN bet for a position that doesn't exist.
+        ack = V2OrderAck(order_id="o", fill_count="0.00", remaining_count="0.00")
+        order = synthesize_order_from_ack(
+            ack=ack, ticker="X", side="no", action="buy",
+            held_price_cents=44, count=5, client_order_id="c",
+        )
+        assert order.status == "canceled"
+        assert order.remaining_count == 0
+
+    def test_both_counts_absent_is_resting(self) -> None:
+        # Both fields omitted (order rests untouched, nothing filled): fall back
+        # to remaining = count, status resting. Distinct from the STP-cancel case
+        # where remaining is explicitly 0.
+        ack = V2OrderAck(order_id="o")
+        order = synthesize_order_from_ack(
+            ack=ack, ticker="X", side="yes", action="buy",
+            held_price_cents=60, count=4, client_order_id="c",
+        )
+        assert order.remaining_count == 4
         assert order.status == "resting"

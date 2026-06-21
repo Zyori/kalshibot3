@@ -513,7 +513,7 @@ class KalshiRestClient:
             ticker=req.ticker,
             side=req.side,
             action=req.action,
-            held_price_cents=req._held_price_cents(),
+            held_price_cents=req.held_price_cents(),
             count=req.count,
             client_order_id=req.client_order_id,
         )
@@ -548,7 +548,7 @@ class KalshiRestClient:
             ticker=req.ticker,
             side=req.side,
             action=req.action,
-            held_price_cents=req._held_price_cents(),
+            held_price_cents=req.held_price_cents(),
             count=req.count,
             client_order_id=req.updated_client_order_id,
         )

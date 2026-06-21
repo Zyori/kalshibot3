@@ -373,7 +373,7 @@ class SettlementsResponse(WireModelLoose):
 # resting order. This app shares the live Kalshi account, so the user may have a
 # resting exit/entry on the same market — taker_at_cross never silently kills it
 # (vs `maker`, which would cancel the resting order). Project decision 2026-06-21.
-_V2_SELF_TRADE_PREVENTION = "taker_at_cross"
+_V2_SELF_TRADE_PREVENTION: Literal["taker_at_cross"] = "taker_at_cross"
 
 
 def _to_v2_book(
@@ -401,6 +401,24 @@ def _to_v2_book(
     return book_side, _cents_to_dollars_str(yes_cents)
 
 
+def _count_fp(count: int) -> str:
+    """Integer contract count → V2 fixed-point count string ('10.00'). Counts are
+    whole contracts here, so the two trailing zeros are always exact."""
+    return f"{count}.00"
+
+
+def _held_price_cents(
+    side: Literal["yes", "no"], yes_price: int | None, no_price: int | None
+) -> int:
+    """The order price in the held side's frame — the field matching `side`.
+    Exactly one of yes_price/no_price is set by the caller for that side. Shared
+    by both order request models so the held-frame selection lives in one place."""
+    price = yes_price if side == "yes" else no_price
+    if price is None:
+        raise ValueError(f"{side} order missing {side}_price")
+    return price
+
+
 class PlaceOrderRequest(WireModel):
     """A new order in our internal frame: human yes/no side + buy/sell action +
     integer-cent price (in the held side's frame). `.to_v2_wire()` renders the
@@ -421,13 +439,10 @@ class PlaceOrderRequest(WireModel):
     post_only: bool = False
     expiration_ts: int | None = None  # epoch seconds; None = good-til-cancel
 
-    def _held_price_cents(self) -> int:
-        """The order price in the held side's frame — the field matching `side`.
-        Exactly one of yes_price/no_price is set by the caller for that side."""
-        price = self.yes_price if self.side == "yes" else self.no_price
-        if price is None:
-            raise ValueError(f"{self.side} order missing {self.side}_price")
-        return price
+    def held_price_cents(self) -> int:
+        """The order price in the held side's frame. Public so rest.py can seed
+        the synthesized Order's entry price without re-deriving the mapping."""
+        return _held_price_cents(self.side, self.yes_price, self.no_price)
 
     def to_v2_wire(self) -> dict[str, Any]:
         """The V2 `POST /portfolio/events/orders` request body.
@@ -435,11 +450,11 @@ class PlaceOrderRequest(WireModel):
         time_in_force is good_till_canceled — we only place resting limits today
         (V1's implicit GTC). A marketable/IOC path would set this differently;
         out of scope until we add it."""
-        book_side, price = _to_v2_book(self.side, self.action, self._held_price_cents())
+        book_side, price = _to_v2_book(self.side, self.action, self.held_price_cents())
         body: dict[str, Any] = {
             "ticker": self.ticker,
             "side": book_side,
-            "count": f"{self.count}.00",
+            "count": _count_fp(self.count),
             "price": price,
             "time_in_force": "good_till_canceled",
             "self_trade_prevention_type": _V2_SELF_TRADE_PREVENTION,
@@ -547,13 +562,23 @@ def synthesize_order_from_ack(
     The V2 response dropped side/price/ticker/status, but every downstream
     consumer (record_placed_order, the amend route) still reads them off Order.
     We hold all of them from the request, so reconstruct rather than re-shape
-    the consumers. status is derived from the counts: fully-filled → executed,
-    otherwise resting (the only states a freshly-acked limit can be in)."""
+    the consumers. status is derived from the counts:
+      * filled, nothing left            → executed
+      * nothing filled, nothing left    → canceled (self_trade_prevention killed
+                                          the order before any fill — taker_at_cross
+                                          cancels an order that would cross our own
+                                          resting one; the ack still 201s with both
+                                          counts zero). record_placed_order must NOT
+                                          create an OPEN bet for this — there's no
+                                          position.
+      * anything still resting          → resting"""
     filled = ack.fill_count_int()
     remaining = ack.remaining_count_int(count)
-    status: Literal["resting", "canceled", "executed", "pending"] = (
-        "executed" if remaining == 0 and filled > 0 else "resting"
-    )
+    status: Literal["resting", "canceled", "executed", "pending"]
+    if remaining == 0:
+        status = "executed" if filled > 0 else "canceled"
+    else:
+        status = "resting"
     return Order(
         order_id=ack.order_id,
         client_order_id=client_order_id,
@@ -592,21 +617,20 @@ class AmendOrderRequest(WireModel):
     count: int = Field(ge=1)
     updated_client_order_id: str
 
-    def _held_price_cents(self) -> int:
-        price = self.yes_price if self.side == "yes" else self.no_price
-        if price is None:
-            raise ValueError(f"{self.side} amend missing {self.side}_price")
-        return price
+    def held_price_cents(self) -> int:
+        """The amend price in the held side's frame. Public so rest.py can seed
+        the synthesized Order without re-deriving the mapping."""
+        return _held_price_cents(self.side, self.yes_price, self.no_price)
 
     def to_v2_wire(self) -> dict[str, Any]:
         """The V2 amend body. Same single-YES-book mapping as a place; the V2
         amend takes the absolute new side/price/count (not a delta)."""
-        book_side, price = _to_v2_book(self.side, self.action, self._held_price_cents())
+        book_side, price = _to_v2_book(self.side, self.action, self.held_price_cents())
         return {
             "ticker": self.ticker,
             "side": book_side,
             "price": price,
-            "count": f"{self.count}.00",
+            "count": _count_fp(self.count),
             "updated_client_order_id": self.updated_client_order_id,
         }
 

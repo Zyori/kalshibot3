@@ -26,7 +26,6 @@ bug worth surfacing, not silently hiding.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -63,6 +62,7 @@ from src.sports.soccer import (
     is_spread_ticker,
     is_total_goals_ticker,
     league_display_name,
+    matchup_codes,
     parse_market_ticker,
     spread_label,
     total_goals_label,
@@ -155,7 +155,7 @@ def _market_label(
         line = total_goals_line(market_title)
         if line is not None:
             return f"Over {line:g} goals"
-        matchup = _totals_matchup(ticker)
+        matchup = matchup_codes(ticker)
         return f"{matchup} — Over goals" if matchup else (ticker or "Over goals")
     # Spreads (goal handicap): like totals, the favorite + line live in Kalshi's
     # stored title ("USA wins by more than 1.5 goals" → "USA -1.5"), captured at
@@ -748,17 +748,6 @@ def _feed_label(ticker: str, side: BetSide, feed: Any) -> str | None:
     return f"{sub} NOT WIN" if negate else f"{sub} WIN"
 
 
-_TOTALS_MATCHUP_RE = re.compile(r"-\d{2}[A-Z]{3}\d{2}([A-Z]{3})([A-Z]{3})-\d+$")
-
-
-def _totals_matchup(ticker: str) -> str | None:
-    """The 'HOME - AWAY' codes from a totals ticker's matchup block, or None if
-    it doesn't match. Same {date}{HOME}{AWAY} block as a game ticker; only the
-    suffix (a numeric line slot, not a 3-letter selection) differs."""
-    m = _TOTALS_MATCHUP_RE.search(ticker)
-    return f"{m.group(1)} - {m.group(2)}" if m else None
-
-
 def _ticker_label(ticker: str, side: BetSide) -> str | None:
     """Label from the ticker alone (3-letter codes), for markets the feed has
     dropped: 'Intl Friendly — VEN v TUR — Draw'. None for an unparseable ticker.
@@ -771,7 +760,7 @@ def _ticker_label(ticker: str, side: BetSide) -> str | None:
         # label, which an aged-out market no longer carries. Identify it as
         # Over/Under on the matchup so the row isn't a raw ticker.
         if is_total_goals_ticker(ticker):
-            matchup = _totals_matchup(ticker)
+            matchup = matchup_codes(ticker)
             ou = "Under" if side == BetSide.NO else "Over"
             return f"{matchup} — {ou} goals" if matchup else None
         # Spread for a market the feed has dropped: the line lives in the title,
@@ -861,10 +850,14 @@ async def _market_title(client: KalshiRestClient, ticker: str) -> str | None:
     caller falls back to a line-less label rather than failing the import."""
     try:
         data = await client.get_market(ticker)
+        market = data.get("market")
+        title = market.get("title") if isinstance(market, dict) else None
     except Exception as e:  # noqa: BLE001
+        # Network error OR a malformed envelope (non-dict "market") — either way
+        # the import must not fail on a label lookup, so degrade to a line-less
+        # label rather than 500 the whole batch.
         log.warning("market_title_fetch_failed", ticker=ticker, error=str(e)[:120])
         return None
-    title = data.get("market", {}).get("title")
     return title if isinstance(title, str) else None
 
 

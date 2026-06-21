@@ -290,6 +290,13 @@ async def record_placed_order(
     if not is_tradeable_ticker(order.ticker):
         raise ValueError(f"refusing to record untracked ticker {order.ticker}")
 
+    # An order Kalshi canceled at placement (self_trade_prevention killed it
+    # before any fill) holds no position — recording an OPEN bet for it would
+    # count phantom stake as deployed until a manual reconcile. Nothing to book.
+    if order.status == "canceled":
+        log.info("place_order_canceled_at_placement", order_id=order.order_id, ticker=order.ticker)
+        return None
+
     if action == "sell":
         # Sells don't create a bet row. Return the opener for the API echo.
         market_id = await _get_or_create_market(session, ticker=order.ticker)
