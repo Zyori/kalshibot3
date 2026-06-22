@@ -31,6 +31,9 @@ def _team_stats_dict(s: TeamStats) -> dict[str, Any]:
         "blocked_shots": s.blocked_shots,
         "penalty_kicks_taken": s.penalty_kicks_taken,
         "penalty_goals": s.penalty_goals,
+        # Team-total expected goals (float), from the core stats endpoint. None
+        # until a live game's xG is fetched, and for games ESPN ships no xG for.
+        "xg": s.xg,
     }
 
 

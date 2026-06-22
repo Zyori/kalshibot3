@@ -37,6 +37,9 @@ from src.sports.soccer import SOCCER_ESPN_SLUGS
 log = get_logger(__name__)
 
 ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer"
+# Team-total xG isn't in the /summary boxscore — only the core stats endpoint
+# (different host) carries it, one statistics doc per competitor.
+CORE_BASE = "https://sports.core.api.espn.com/v2/sports/soccer/leagues"
 HTTP_TIMEOUT_S = 8.0
 REFRESH_CEILING_S = 120.0  # hard cap on one full poll pass; a pass that exceeds
                           # this is hung (not just slow) and is abandoned so the
@@ -78,7 +81,11 @@ class TeamStats:
     `saves`/`blocked_shots`/`penalty_kicks_taken`/`penalty_goals` come from the
     richer /summary boxscore (not the /scoreboard payload) — None until a live
     game's summary is fetched. The penalty fields are the coarse PK signal LUTZ
-    asked for: they say a spot-kick was taken, not that one is imminent."""
+    asked for: they say a spot-kick was taken, not that one is imminent.
+
+    `xg` (expected goals, float) comes from the core stats endpoint — a
+    different host than /summary, fetched per competitor. None until a live
+    game's xG is fetched, and for leagues/games ESPN ships no xG for."""
     score: int | None = None
     shots: int | None = None
     shots_on_target: int | None = None
@@ -91,6 +98,7 @@ class TeamStats:
     blocked_shots: int | None = None
     penalty_kicks_taken: int | None = None
     penalty_goals: int | None = None
+    xg: float | None = None
 
 
 @dataclass(frozen=True)
@@ -452,10 +460,44 @@ def _parse_summary_boxscore_side(stats: list[dict[str, Any]]) -> dict[str, int]:
     return out
 
 
-_CARRY_FORWARD_FIELDS = ("saves", "blocked_shots", "penalty_kicks_taken", "penalty_goals")
-"""Boxscore extras (from /summary, not /scoreboard) that carry forward across
-polls when ESPN ships an empty boxscore. Monotonic counts — a stale-low carried
-value is harmless; a flickering null is not."""
+def _summary_competitors(payload: dict[str, Any]) -> dict[str, str]:
+    """Map competitor id -> 'home'|'away' from a /summary header. The core xG
+    fetch needs the competitor ids; homeAway lets us attach each to the right
+    side without trusting list order. Empty when the header is missing."""
+    comps = (payload.get("header") or {}).get("competitions") or []
+    if not comps:
+        return {}
+    out: dict[str, str] = {}
+    for c in comps[0].get("competitors") or []:
+        cid, ha = c.get("id"), c.get("homeAway")
+        if cid and ha in ("home", "away"):
+            out[str(cid)] = ha
+    return out
+
+
+def _parse_core_xg(payload: dict[str, Any]) -> float | None:
+    """Pull team-total expected goals out of a core competitor-statistics doc.
+    xG sits in `splits.categories[*].stats[]` keyed by name="expectedGoals" —
+    matched by name, never index (the category/stat order shifts per game).
+    None when ESPN didn't ship it (most non-WC leagues, very-early minutes)."""
+    for cat in ((payload.get("splits") or {}).get("categories") or []):
+        for st in cat.get("stats") or []:
+            if st.get("name") == "expectedGoals":
+                raw = st.get("value", st.get("displayValue"))
+                if raw is None:
+                    return None
+                try:
+                    return float(raw)
+                except (TypeError, ValueError):
+                    return None
+    return None
+
+
+_CARRY_FORWARD_FIELDS = ("saves", "blocked_shots", "penalty_kicks_taken", "penalty_goals", "xg")
+"""Boxscore/core extras (from /summary + the core stats endpoint, not
+/scoreboard) that carry forward across polls when ESPN ships them empty.
+Monotonic within a match (counts only climb; xG only accumulates) — a stale-low
+carried value is harmless; a flickering null is not."""
 
 
 def _carry_forward(fresh: TeamStats, prev: TeamStats | None) -> TeamStats:
@@ -786,15 +828,57 @@ class EspnScoreboard:
         self, client: httpx.AsyncClient, event: EspnEvent, prev: EspnEvent | None = None,
     ) -> EspnEvent:
         """Fetch /summary for one live game and return the event enriched with
-        its shot stream + extra boxscore stats. `prev` is last poll's version of
-        the same game — its boxscore extras carry forward when this poll's are
-        empty. On a non-200, returns the event unchanged (caller wraps transport
-        errors)."""
+        its shot stream + extra boxscore stats + per-team xG. `prev` is last
+        poll's version of the same game — its boxscore/xG extras carry forward
+        when this poll's are empty. On a non-200, returns the event unchanged
+        (caller wraps transport errors)."""
         url = f"{ESPN_BASE}/{event.slug}/summary?event={event.espn_id}"
         r = await client.get(url)
         if r.status_code != 200:
             return event
-        return _enrich_with_summary(event, r.json(), prev)
+        payload = r.json()
+        enriched = _enrich_with_summary(event, payload, prev)
+        return await self._enrich_with_xg(client, enriched, payload)
+
+    async def _enrich_with_xg(
+        self, client: httpx.AsyncClient, event: EspnEvent, summary: dict[str, Any],
+    ) -> EspnEvent:
+        """Attach per-team xG from the core stats endpoint (a different host than
+        /summary, one statistics doc per competitor). Best-effort: a missing
+        competitor map or a failed/empty fetch leaves the side's xG untouched, so
+        carry-forward keeps the prior value. Never raises — the caller's whole
+        enrichment must survive an xG hiccup."""
+        competitors = _summary_competitors(summary)
+        if not competitors:
+            return event
+        results = await asyncio.gather(*(
+            self._fetch_team_xg(client, event.slug, event.espn_id, cid)
+            for cid in competitors
+        ), return_exceptions=True)
+        home_stats, away_stats = event.home_stats, event.away_stats
+        for cid, xg in zip(competitors, results):
+            if isinstance(xg, BaseException) or xg is None:
+                continue
+            if competitors[cid] == "home":
+                home_stats = replace(home_stats, xg=xg)
+            else:
+                away_stats = replace(away_stats, xg=xg)
+        return replace(event, home_stats=home_stats, away_stats=away_stats)
+
+    async def _fetch_team_xg(
+        self, client: httpx.AsyncClient, slug: str, espn_id: str, competitor_id: str,
+    ) -> float | None:
+        """One competitor's team-total xG from the core stats endpoint. The
+        competition id equals the event id for soccer. None on non-200 or when
+        ESPN ships no xG for this competitor."""
+        url = (
+            f"{CORE_BASE}/{slug}/events/{espn_id}/competitions/{espn_id}"
+            f"/competitors/{competitor_id}/statistics?lang=en"
+        )
+        r = await client.get(url)
+        if r.status_code != 200:
+            return None
+        return _parse_core_xg(r.json())
 
     async def _fetch_one(
         self, client: httpx.AsyncClient, slug: str, date_str: str,

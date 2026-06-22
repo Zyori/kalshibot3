@@ -14,7 +14,9 @@ from src.ingestion.espn_scoreboard import (
     EspnEvent,
     _enrich_with_summary,
     _parse_commentary_shots,
+    _parse_core_xg,
     _parse_summary_boxscore_side,
+    _summary_competitors,
 )
 from datetime import datetime, timezone
 
@@ -245,3 +247,82 @@ def test_fresh_boxscore_overwrites_carried():
     }
     out = _enrich_with_summary(_bare_event(), payload, prev)
     assert out.home_stats.saves == 7  # fresh value, not the carried 3
+
+
+# === core stats endpoint: team-total xG (different host than /summary) ===
+# Fixtures mirror the live shape verified against NED-JPN (event 760425):
+# xG lives in splits.categories[*].stats[] keyed by name="expectedGoals".
+
+
+def _core_stats(xg: float | None) -> dict:
+    """A minimal core competitor-statistics doc with xG nested as ESPN ships it.
+    `xg=None` omits the stat entirely (the shape for a game with no xG)."""
+    offensive_stats: list[dict] = [
+        {"name": "totalShots", "value": 4.0, "displayValue": "4"},
+    ]
+    if xg is not None:
+        offensive_stats.append(
+            {"name": "expectedGoals", "value": xg, "displayValue": f"{xg:.2f}"}
+        )
+    return {
+        "splits": {
+            "categories": [
+                {"name": "general", "stats": [{"name": "foulsCommitted", "value": 2.0}]},
+                {"name": "offensive", "stats": offensive_stats},
+            ]
+        }
+    }
+
+
+def test_core_xg_parsed_by_name():
+    """xG is found by stat name, not category/stat index (order shifts per game)."""
+    assert _parse_core_xg(_core_stats(0.34)) == 0.34
+
+
+def test_core_xg_absent_returns_none():
+    """A doc with no expectedGoals stat → None (game/league ships no xG)."""
+    assert _parse_core_xg(_core_stats(None)) is None
+
+
+def test_core_xg_empty_payload_returns_none():
+    """A malformed/empty doc → None, never raises."""
+    assert _parse_core_xg({}) is None
+    assert _parse_core_xg({"splits": {}}) is None
+
+
+def test_summary_competitors_maps_id_to_homeaway():
+    """Competitor id → home/away comes off the /summary header, ignoring order."""
+    payload = {
+        "header": {
+            "competitions": [
+                {
+                    "competitors": [
+                        {"id": "627", "homeAway": "away"},
+                        {"id": "449", "homeAway": "home"},
+                    ]
+                }
+            ]
+        }
+    }
+    assert _summary_competitors(payload) == {"627": "away", "449": "home"}
+
+
+def test_summary_competitors_missing_header_empty():
+    """No header → empty map (no xG fetch attempted), no error."""
+    assert _summary_competitors({}) == {}
+
+
+def test_xg_carries_forward_when_absent():
+    """xG carries forward like the boxscore counts: when a poll's enrich leaves
+    it None, the previous poll's value survives instead of nulling."""
+    from dataclasses import replace
+    prev = _bare_event()
+    prev = replace(
+        prev,
+        home_stats=replace(prev.home_stats, xg=1.24),
+        away_stats=replace(prev.away_stats, xg=0.41),
+    )
+    # An enrich pass that attaches no xG (no header → no competitors fetched).
+    out = _enrich_with_summary(_bare_event(), {"commentary": []}, prev)
+    assert out.home_stats.xg == 1.24
+    assert out.away_stats.xg == 0.41

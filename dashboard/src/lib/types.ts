@@ -108,6 +108,7 @@ export type TeamLiveStats = {
   fouls: number | null
   yellow_cards: number
   red_cards: number
+  xg: number | null
 }
 
 export type MatchEvent = {

@@ -149,6 +149,13 @@ function LiveStats({ live }: { live: NonNullable<EventDetail['live']> }) {
       away: String(away.corners ?? '—'),
     })
   }
+  if (home.xg !== null || away.xg !== null) {
+    items.push({
+      label: 'xG',
+      home: home.xg === null ? '—' : home.xg.toFixed(2),
+      away: away.xg === null ? '—' : away.xg.toFixed(2),
+    })
+  }
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-text-muted">
