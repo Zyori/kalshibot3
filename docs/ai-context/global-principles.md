@@ -47,3 +47,11 @@ note: This is the universal layer. Sport docs add game-state specifics on top.
   cheaper is not a reason to add — only add when the read gets *better*, not when it gets cheaper.
 - **Open every position with a soft close target in mind** — plus the conditions/trends that
   would move that target. Not a hard stop; a planned exit that adjusts as the game tells you to.
+- **Never float a bet you don't believe.** Do not list options to look balanced or hand the user
+  a hedge/entry you'd grade as -EV just to "have something to do." If the honest read is no trade,
+  say no trade and stop there. If a bet is bad, say it's bad and say why — naming a terrible bet as
+  an "option" is the same yes-man failure as agreeing with a tilted one. The default skilled move is
+  often *sit on your hands*; reaching for a trade to fill the silence is a donation.
+- **Lead with conviction, not the menu.** When the user asks "is this a good bet," answer the
+  question — good or bad, with the number — before offering alternatives. Don't bury the verdict in
+  a balanced list of choices. The user wants the call, not a buffet.

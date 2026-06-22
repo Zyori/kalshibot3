@@ -48,6 +48,72 @@ mispriced floor and selling the bounce.
   Do not hold it as a thesis that the game finishes under — the run of play is against you, so the
   exit discipline carries the whole trade.
 
+**Scalp-exit discipline — the asymmetry is the whole trade; do NOT cap the upside.** These under/draw
+scalps are bought cheap (single-digit to ~20¢) precisely for the fat tail — a 17¢ entry pays ~5.9:1.
+If you bank most of the position early for a small win and still eat the full loss on the misses, the
+book goes **objectively −EV**: the math only works when the moon-bag rungs actually print. So ride for
+the tail, don't flee from it. **Default shape: let it run to ~2x (sell ~1/3 to retire risk and bank a
+real profit), then MOON-BAG the rest toward settlement.** The free roll **rides through 75-90' by
+default** — on a No / under bet that window is your *upside*, not a danger to escape. You bail the bag
+early ONLY when the thesis actually dies (the goal that breaks the under goes in), never because the
+clock got scary or decay felt slow. The timid "closed by halftime, scratch the rest" exit is the
+error that turns a +EV entry into a losing book — it collects the small wins and pays the full losses. Two guards: (a) the exit trigger is the **clock + game state,
+not a fixed cent value** — a resting limit fills on drift but knows nothing about the 75' window,
+so if the bag's still live and unfilled approaching ~72', dump it at market rather than ride it
+into 75-90'; (b) price the top rung against reality — a No-1.5 rung up near ~59¢ needs the market
+to nearly give up on a second goal, which it won't after real inside-box threat (e.g. posts), so
+treat a high rung as a freeroll, not a fill you're counting on.
+
+**Catalyst scalps (buy-into-the-goal) exit on game state, NOT the price clock.** This is the
+*opposite* trade from the decay scalp above — name the contrast so you never apply decay-exit logic
+to it. A "buy the team that just conceded, sell the equalizer spike" scalp waits for an **event**
+(the goal back), not for the game to stall. So the exit logic inverts. You knew going in the
+catalyst might not fire for 10, 20, 40 minutes — that wait is priced into the entry, not a reason to
+bail. **The thesis breaks when the chances against it dry up, the enemy extends the lead, or the
+clock kills the danger windows — never because decay ran against you while you waited.** Your team
+putting up shots and pressure is the thesis *working*; the price drifting red during the wait is the
+cost of the option, not a stop-loss trigger. Cutting a catalyst scalp because "the goal didn't come
+fast enough" is selling the bottom by rule — you lock the loss right before the windows where the
+goal is most likely (40-45', 75-90'), capturing all the downside and cutting yourself out of the
+upside. **Hold while the better side is still creating real chances; cut only when they stop
+creating, the opponent scores again, or the clock runs out of danger windows.** A red price on a
+position the run of play still favors is a hold, not a sell — the number being against you is not the
+same as the read being against you.
+
+**5. Fade the narrative — buy the boring side the public underprices (the user's core edge).**
+The market overprices two-bad-teams-that-look-exciting and underprices the boring result. The edge is
+buying the **DRAW or UNDER** when the public is paying for a goal the run of play says isn't coming.
+Aggressively contrarian on *price*; the bet itself is the unsexy outcome. This is the user's most
+profitable pattern — back it hard. (Proof from the June '26 group stage: ECU-CUW draw 13¢→99¢,
+Belgium-Iran draw 20¢→97¢, Belgium No-0.5 7¢→85¢, ECU No-1.5 10¢→67¢. Same shape every time.)
+
+*Two tiers, ranked:*
+
+- **TIER 1 (primary, proven +EV) — boring-side fade.** Buy the **DRAW or UNDER** when ALL hit:
+  (a) a fan-favorite / "should win" team is **overpriced** (the logbook's fade-the-outright list —
+  Ecuador, Brazil, Belgium, Switzerland); (b) the underrated/desperate side is **organized and
+  holding** — defending with structure, not just parked (Curaçao, Morocco, Iran "horrid but
+  holding"); (c) the run of play **confirms nobody's finishing** — possession / corners / shot
+  *volume* but **few clean inside-box looks** (territory without threat is the green light, not the
+  warning); (d) the boring side is **cheap** (draw ≤ ~28¢, or an under at a panicked number). This is
+  where the money is — size it like you mean it.
+
+- **TIER 2 (secondary, higher bar) — dog-to-win / upset.** Back the underdog **to win outright**
+  only when Tier-1 conditions hold AND there's a **live run-of-play trigger**: the dog is the one
+  creating the clean inside-box chances, or the favorite is visibly broken (keeper shipping softs, no
+  end product, late-game fragility — Switzerland's 90+5' collapse). "They're desperate so they'll
+  push" is **NOT** a trigger by itself — desperation is territory, territory isn't threat. Wait for
+  the dog to actually threaten, *then* take the win; absent the trigger, take the Tier-1 draw instead
+  (same read, better price, lower variance).
+
+*The hard guardrail — no setup, no fade.* The losses in this family are all "catch the bottom"
+stabs: buying a falling No-totals at 10-13¢ with no read, just hoping for a 1¢→14¢ lottery. **A cheap
+under is not a setup; it's a wish.** The fade requires the narrative mismatch above — name the
+overpriced favorite you're fading and why the run of play backs you, or it's not Setup 5, it's a
+donation. (Counter-examples that bled: a dog-to-win with no chance-creation trigger; a "torn,
+no-clean-read" draw.) When in doubt between the draw and the dog-to-win, the draw is the higher-EV
+expression of the same read.
+
 ## Reading the run of play
 
 - **Real threat = shots on target, big chances, shots from inside the box, posts, dangerous
