@@ -130,8 +130,13 @@ class UserOrderPayload(WireBase):
     client_order_id: str | None = None
     ticker: str
     side: Literal["yes", "no"]
+    """The HELD side (Kalshi's `outcome_side`), not the YES-book leg. V2 reports
+    every order on the single YES book, so the top-level `side` field is always
+    "yes" and `action` flips to "sell" for a NO order — reading that would label
+    a buy-NO as a sell-YES. `outcome_side` is the human side the user chose."""
     status: Literal["resting", "canceled", "executed", "pending"]
     yes_price_cents: int | None = Field(default=None, ge=1, le=99)
+    no_price_cents: int | None = Field(default=None, ge=1, le=99)
     remaining_count: int = Field(ge=0)
 
 
@@ -322,6 +327,16 @@ def parse_kalshi_ws_message(raw: dict[str, Any]) -> KalshiWsMessage | None:
     if msg_type == "user_order":
         msg = raw.get("msg", {})
         yes_cents = _parse_optional_price_cents(msg.get("yes_price_dollars") or msg.get("yes_price"))
+        no_cents = _parse_optional_price_cents(msg.get("no_price_dollars") or msg.get("no_price"))
+        # V2 reports only the YES-leg price; derive the complement so the held
+        # side always has its own-frame price (a buy-NO carries only yes_price).
+        if no_cents is None and yes_cents is not None:
+            no_cents = 100 - yes_cents
+        elif yes_cents is None and no_cents is not None:
+            yes_cents = 100 - no_cents
+        # `outcome_side` is the human/held side; the top-level `side` is the
+        # YES-book leg and is always "yes" under V2 (see UserOrderPayload.side).
+        held_side = msg.get("outcome_side") or msg["side"]
         # remaining_count can also be missing (e.g. on a terminal-state event
         # where the order is fully executed). Treat None as 0.
         remaining_raw = msg.get("remaining_count_fp") or msg.get("remaining_count") or 0
@@ -333,9 +348,10 @@ def parse_kalshi_ws_message(raw: dict[str, Any]) -> KalshiWsMessage | None:
                 order_id=msg["order_id"],
                 client_order_id=msg.get("client_order_id"),
                 ticker=msg["ticker"],
-                side=msg["side"],
+                side=held_side,
                 status=msg["status"],
                 yes_price_cents=yes_cents,
+                no_price_cents=no_cents,
                 remaining_count=remaining,
             ),
         )

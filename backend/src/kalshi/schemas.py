@@ -401,6 +401,30 @@ def _to_v2_book(
     return book_side, _cents_to_dollars_str(yes_cents)
 
 
+def held_frame_from_v2_readback(
+    outcome_side: Literal["yes", "no"],
+    book_side: Literal["bid", "ask"],
+) -> Literal["buy", "sell"]:
+    """The held-frame action for an order Kalshi reports in its V2 read-back.
+
+    The exact inverse of `_to_v2_book`'s (held side, action) -> book_side map,
+    which is a bijection:
+
+      yes/buy  ↔ bid     yes/sell ↔ ask
+      no/buy   ↔ ask     no/sell  ↔ bid
+
+    Kalshi's /portfolio/orders and WS user_order report `outcome_side` (the held
+    side) and `book_side` (bid/ask on the single YES book); the top-level `side`
+    is the YES-leg and `action` is in that YES frame (a buy-NO reads as
+    sell-YES). To amend in our own frame we must recover the held-frame action
+    from these two fields — using Kalshi's YES-frame `action` directly would flip
+    a NO order to its complement. Same dangerous-inversion class as _to_v2_book,
+    so it lives beside it and is tested against the same four-row table."""
+    if outcome_side == "yes":
+        return "buy" if book_side == "bid" else "sell"
+    return "buy" if book_side == "ask" else "sell"
+
+
 def _count_fp(count: int) -> str:
     """Integer contract count → V2 fixed-point count string ('10.00'). Counts are
     whole contracts here, so the two trailing zeros are always exact."""

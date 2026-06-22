@@ -209,11 +209,29 @@ class TestUserOrderIngestion:
             msg=UserOrderPayload(
                 order_id="o1", client_order_id="c1",
                 ticker="KX-1", side="yes", status="resting",
-                yes_price_cents=42, remaining_count=10,
+                yes_price_cents=42, no_price_cents=58, remaining_count=10,
             ),
         ))
         assert "o1" in s.open_orders
         assert s.open_orders["o1"].remaining_count == 10
+        # YES order: own-frame price is the yes price.
+        assert s.open_orders["o1"].price_cents == 42
+
+    def test_no_order_stores_own_side_price(self) -> None:
+        """A buy-NO @58¢ must store 58 (its own frame), not the YES leg's 42.
+        side here is the HELD side (Kalshi's outcome_side), so the price the row
+        renders is the NO price — the inversion that showed 'YES 42¢' for a NO
+        order lived in reading the YES leg instead of the held side."""
+        s = LiveState()
+        s.apply_user_order(UserOrder(
+            type="user_order", sid=1,
+            msg=UserOrderPayload(
+                order_id="o2", ticker="KX-1", side="no", status="resting",
+                yes_price_cents=42, no_price_cents=58, remaining_count=1,
+            ),
+        ))
+        assert s.open_orders["o2"].side == "no"
+        assert s.open_orders["o2"].price_cents == 58
 
     def test_executed_order_removed(self) -> None:
         s = LiveState()

@@ -17,6 +17,8 @@ from src.kalshi.schemas import (
     AmendOrderRequest,
     PlaceOrderRequest,
     V2OrderAck,
+    _to_v2_book,
+    held_frame_from_v2_readback,
     synthesize_order_from_ack,
 )
 
@@ -71,6 +73,25 @@ class TestPlaceOrderV2Mapping:
         assert wire["time_in_force"] == "good_till_canceled"
         assert wire["self_trade_prevention_type"] == "taker_at_cross"
         assert wire["client_order_id"] == "cid-1"
+
+    @pytest.mark.parametrize(
+        "outcome_side,book_side,want_action",
+        [
+            ("yes", "bid", "buy"),   # buy YES rests as a YES bid
+            ("yes", "ask", "sell"),  # sell YES rests as a YES ask
+            ("no",  "ask", "buy"),   # buy NO  rests as a YES ask
+            ("no",  "bid", "sell"),  # sell NO rests as a YES bid
+        ],
+    )
+    def test_held_frame_readback_is_inverse(
+        self, outcome_side: str, book_side: str, want_action: str,
+    ) -> None:
+        """held_frame_from_v2_readback recovers the held action — the exact
+        inverse of _to_v2_book's (held side, action) -> book_side map. Mapping
+        through forward then back must return the original action."""
+        assert held_frame_from_v2_readback(outcome_side, book_side) == want_action
+        forward, _ = _to_v2_book(outcome_side, want_action, 50)
+        assert forward == book_side
 
     def test_expiration_time_passed_through(self) -> None:
         req = PlaceOrderRequest(

@@ -56,7 +56,7 @@ type UserOrderEvent = {
   ticker: string
   side: 'yes' | 'no'
   status: 'resting' | 'canceled' | 'executed' | 'pending'
-  yes_price: number | null
+  price_cents: number | null
   remaining_count: number
 }
 
@@ -126,7 +126,9 @@ export type OpenOrder = {
   ticker: string
   side: 'yes' | 'no'
   status: 'resting' | 'canceled' | 'executed' | 'pending'
-  yes_price: number | null
+  // Price in the held side's own frame (a NO order's NO price), already
+  // un-inverted from Kalshi's YES-book read-back by the backend.
+  price_cents: number | null
   remaining_count: number
 }
 
@@ -266,7 +268,7 @@ function applyEvent(qc: ReturnType<typeof useQueryClient>, event: WsEvent) {
             ticker: event.ticker,
             side: event.side,
             status: event.status,
-            yes_price: event.yes_price,
+            price_cents: event.price_cents,
             remaining_count: event.remaining_count,
           }
         }

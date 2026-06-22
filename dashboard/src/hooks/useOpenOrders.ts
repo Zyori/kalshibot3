@@ -9,8 +9,7 @@ type OrdersResponse = {
     ticker: string
     side: 'yes' | 'no'
     status: string
-    yes_price_cents: number | null
-    no_price_cents: number | null
+    price_cents: number | null
     remaining_count: number
   }>
 }
@@ -59,7 +58,7 @@ export function useOpenOrders(filterTicker?: string) {
               ticker: o.ticker,
               side: o.side,
               status: o.status as OpenOrder['status'],
-              yes_price: o.yes_price_cents,
+              price_cents: o.price_cents,
               remaining_count: o.remaining_count,
             }
           }

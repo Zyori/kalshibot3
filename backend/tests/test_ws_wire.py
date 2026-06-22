@@ -190,6 +190,28 @@ class TestUserOrder:
         assert msg.msg.status == "executed"
         assert msg.msg.remaining_count == 0
 
+    def test_buy_no_uses_outcome_side_and_own_price(self) -> None:
+        """Real V2 shape for a buy-NO @58¢ (captured live): the top-level `side`
+        is the YES-book leg ("yes") and only the YES price is sent. The parser
+        must report the HELD side ("no", from `outcome_side`) and derive the NO
+        price (100−42=58). Reading the raw `side`/yes_price labeled the order
+        'YES 42¢' — the inversion bug this fixes."""
+        msg = parse_kalshi_ws_message({
+            "type": "user_order",
+            "sid": 1,
+            "msg": {
+                "order_id": "o1", "ticker": "X",
+                "side": "yes", "outcome_side": "no", "book_side": "ask",
+                "status": "resting",
+                "yes_price_dollars": "0.42",
+                "remaining_count_fp": "1",
+            },
+        })
+        assert isinstance(msg, UserOrder)
+        assert msg.msg.side == "no"
+        assert msg.msg.yes_price_cents == 42
+        assert msg.msg.no_price_cents == 58
+
 
 class TestMarketLifecycle:
     def test_lifecycle_settled(self) -> None:

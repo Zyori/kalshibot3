@@ -166,9 +166,9 @@ class OpenOrder:
     order_id: str
     client_order_id: str | None
     ticker: str
-    side: str  # "yes" / "no"
+    side: str  # held side: "yes" / "no" (Kalshi's outcome_side, not the book leg)
     status: str  # "resting" / "canceled" / "executed" / "pending"
-    yes_price_cents: int | None
+    price_cents: int | None  # in the held side's own frame
     remaining_count: int
 
 
@@ -225,13 +225,15 @@ class LiveState:
         if m.msg.status in ("canceled", "executed"):
             return self.open_orders.pop(m.msg.order_id, None)
 
+        # Own-side price: the held side is m.msg.side (Kalshi's outcome_side).
+        price = m.msg.yes_price_cents if m.msg.side == "yes" else m.msg.no_price_cents
         order = OpenOrder(
             order_id=m.msg.order_id,
             client_order_id=m.msg.client_order_id,
             ticker=m.msg.ticker,
             side=m.msg.side,
             status=m.msg.status,
-            yes_price_cents=m.msg.yes_price_cents,
+            price_cents=price,
             remaining_count=m.msg.remaining_count,
         )
         self.open_orders[m.msg.order_id] = order

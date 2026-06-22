@@ -90,6 +90,10 @@ def _serialize(msg: KalshiWsMessage, live_state: LiveState) -> dict[str, Any] | 
             "no_price": msg.msg.no_price_cents,
         }
     if isinstance(msg, UserOrder):
+        # side is the HELD side (outcome_side); price is in that side's own frame.
+        # A buy-NO @58¢ is reported by V2 as the YES-book leg (yes_price 42¢) —
+        # the parser already inverted it back, so we ship NO/58¢ here, not YES/42¢.
+        price = msg.msg.yes_price_cents if msg.msg.side == "yes" else msg.msg.no_price_cents
         return {
             "type": "user_order",
             "order_id": msg.msg.order_id,
@@ -97,7 +101,7 @@ def _serialize(msg: KalshiWsMessage, live_state: LiveState) -> dict[str, Any] | 
             "ticker": msg.msg.ticker,
             "side": msg.msg.side,
             "status": msg.msg.status,
-            "yes_price": msg.msg.yes_price_cents,
+            "price_cents": price,
             "remaining_count": msg.msg.remaining_count,
         }
     if isinstance(msg, MarketLifecycle):

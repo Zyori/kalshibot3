@@ -14,6 +14,7 @@ import pytest
 from fastapi import HTTPException
 
 from src.api.routes.orders import AmendBody, amend_order
+from src.kalshi.schemas import _to_v2_book
 
 SOCCER = "KXWCGAME-26JUN11MEXRSA-MEX"
 NON_SOCCER = "KXPRES-2028-DEM"
@@ -40,7 +41,17 @@ def _mock_client(*, resting_order: dict | None, new_order_id: str = "new123") ->
 
 
 def _resting(order_id: str, ticker: str, side: str = "yes", action: str = "buy") -> dict:
-    return {"order_id": order_id, "ticker": ticker, "side": side, "action": action,
+    """A resting order in Kalshi's REAL V2 /portfolio/orders read-back shape.
+
+    `side`/`action` are the HELD frame (what the user placed). V2 reports every
+    order on the single YES book: top-level `side` is always "yes", `outcome_side`
+    is the held side, and `book_side` is bid/ask. We build that wire shape from
+    the held frame via the same forward map the placement path uses, so the
+    fixture matches what Kalshi actually returns (the amend route reads
+    outcome_side + book_side, not the misleading top-level side/action)."""
+    book_side, _ = _to_v2_book(side, action, 50)  # price irrelevant to side/book_side
+    return {"order_id": order_id, "ticker": ticker,
+            "side": "yes", "outcome_side": side, "book_side": book_side,
             "status": "resting"}
 
 
@@ -79,8 +90,9 @@ async def test_amend_soccer_order_swaps_bet_id() -> None:
 
 
 async def test_amend_passes_authoritative_side_action_to_kalshi() -> None:
-    """The amend request to Kalshi carries the side/action READ FROM KALSHI,
-    not anything the client supplied (which is only price+count)."""
+    """The amend request to Kalshi carries the held side/action recovered from
+    Kalshi's read-back (outcome_side + book_side), not anything the client
+    supplied (which is only price+count)."""
     client = _mock_client(resting_order=_resting("o", SOCCER, side="no", action="sell"))
     session = _session()
     with patch("src.api.routes.orders.KalshiRestClient", return_value=client), \
@@ -89,6 +101,24 @@ async def test_amend_passes_authoritative_side_action_to_kalshi() -> None:
     sent_req = client.amend_order.await_args.args[1]
     assert sent_req.side == "no" and sent_req.action == "sell"
     assert sent_req.no_price == 30 and sent_req.yes_price is None  # NO side → no_price set
+
+
+async def test_amend_buy_no_keeps_no_price_frame() -> None:
+    """Regression for the inverted amend: a resting buy-NO reads back from Kalshi
+    as side="yes"/book_side="ask"/outcome_side="no". Editing it to 58¢ must amend
+    NO @ 58¢ (no_price=58 → YES leg 42¢), NOT YES @ 58¢ (which would move the
+    order to NO @ 42¢ — the complement, real money at the wrong price)."""
+    client = _mock_client(resting_order=_resting("o", SOCCER, side="no", action="buy"))
+    session = _session()
+    with patch("src.api.routes.orders.KalshiRestClient", return_value=client), \
+         patch("src.api.routes.orders.reprice_bet_for_amend", new=AsyncMock(return_value=None)):
+        await amend_order("o", AmendBody(price_cents=58, count=1), _request(), session)  # type: ignore[arg-type]
+    sent_req = client.amend_order.await_args.args[1]
+    assert sent_req.side == "no" and sent_req.action == "buy"
+    assert sent_req.no_price == 58 and sent_req.yes_price is None
+    # And the V2 wire it renders is the YES-book ask at the complement (42¢).
+    book_side, price = sent_req.to_v2_wire()["side"], sent_req.to_v2_wire()["price"]
+    assert book_side == "ask" and price == "0.4200"
 
 
 async def test_amend_non_soccer_refused() -> None:

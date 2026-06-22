@@ -36,18 +36,13 @@ export default function OpenOrdersCard({ ticker }: { ticker: string }) {
   )
 }
 
-/** The resting price on THIS order's own side. The cache stores yes_price; a
- *  NO order's own-side price is its complement. The amend body's `price_cents`
- *  is the side's price (backend maps it to yes_price/no_price). */
-function ownSidePrice(o: OpenOrder): number | null {
-  if (o.yes_price === null) return null
-  return o.side === 'yes' ? o.yes_price : 100 - o.yes_price
-}
-
 function OrderRow({ order: o }: { order: OpenOrder }) {
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState(false)
-  const [price, setPrice] = useState<number>(ownSidePrice(o) ?? 0)
+  // price_cents is already in the held side's own frame (backend un-inverts
+  // Kalshi's YES-book read-back), and the amend body's `price_cents` is that
+  // same side's price (the backend maps it back to yes_price/no_price).
+  const [price, setPrice] = useState<number>(o.price_cents ?? 0)
   const [count, setCount] = useState<number>(o.remaining_count)
 
   const invalidateAll = () => {
@@ -98,7 +93,7 @@ function OrderRow({ order: o }: { order: OpenOrder }) {
     onError: () => {},
   })
 
-  const displayPrice = ownSidePrice(o)
+  const displayPrice = o.price_cents
 
   return (
     <li className="rounded-md border border-border bg-bg p-2 text-xs">
@@ -115,7 +110,7 @@ function OrderRow({ order: o }: { order: OpenOrder }) {
           onClick={() => {
             // Reset inputs to the live values whenever opening the editor.
             if (!editing) {
-              setPrice(ownSidePrice(o) ?? 0)
+              setPrice(o.price_cents ?? 0)
               setCount(o.remaining_count)
             }
             setEditing((v) => !v)
@@ -157,7 +152,7 @@ function OrderRow({ order: o }: { order: OpenOrder }) {
               className="w-16 rounded-md border border-border bg-bg-card px-2 py-1 font-mono text-xs text-text"
             />
           </label>
-          {ownSidePrice(o) === null && (
+          {o.price_cents === null && (
             <span className="text-[10px] text-text-muted">enter a price</span>
           )}
           <button

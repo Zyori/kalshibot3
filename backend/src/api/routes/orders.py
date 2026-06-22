@@ -30,7 +30,11 @@ from src.core.db import get_session
 from src.core.exceptions import KalshiError, PostOnlyRejected
 from src.core.logging import get_logger
 from src.kalshi.rest import KalshiRestClient, new_client_order_id
-from src.kalshi.schemas import AmendOrderRequest, PlaceOrderRequest
+from src.kalshi.schemas import (
+    AmendOrderRequest,
+    PlaceOrderRequest,
+    held_frame_from_v2_readback,
+)
 from src.core.types import BetStatus, dollars_str_to_cents
 from src.models import Bet, BetFill, Market, Position
 from src.services.bet_service import (
@@ -321,19 +325,26 @@ async def list_orders(
         t = o.get("ticker") or o.get("market_ticker") or ""
         if not is_tradeable_ticker(t):
             continue
-        yes_price_raw = o.get("yes_price_dollars") or o.get("yes_price")
-        no_price_raw = o.get("no_price_dollars") or o.get("no_price")
+        yes_cents = _normalize_price_cents(o.get("yes_price_dollars") or o.get("yes_price"))
+        no_cents = _normalize_price_cents(o.get("no_price_dollars") or o.get("no_price"))
+        # `outcome_side` is the held side the user chose. V2 reports every order
+        # on the single YES book, so the top-level `side` is always "yes" and
+        # `action` flips to "sell" for a NO order — labeling a buy-NO off `side`
+        # showed it as a sell-YES at the complement price. Price is the held
+        # side's own frame; derive the complement when V2 sent only the YES leg.
+        held_side = o.get("outcome_side") or o.get("side")
+        if held_side == "no" and no_cents is None and yes_cents is not None:
+            no_cents = 100 - yes_cents
+        price_cents = yes_cents if held_side == "yes" else no_cents
         remaining_raw = o.get("remaining_count_fp") or o.get("remaining_count") or 0
         initial_raw = o.get("initial_count_fp") or o.get("initial_count") or 0
         out.append({
             "order_id": o.get("order_id"),
             "client_order_id": o.get("client_order_id") or None,
             "ticker": t,
-            "side": o.get("side"),
-            "action": o.get("action"),
+            "side": held_side,
             "status": o.get("status"),
-            "yes_price_cents": _normalize_price_cents(yes_price_raw),
-            "no_price_cents": _normalize_price_cents(no_price_raw),
+            "price_cents": price_cents,
             "remaining_count": int(float(remaining_raw)) if remaining_raw is not None else 0,
             "initial_count": int(float(initial_raw)) if initial_raw is not None else 0,
             "created_time": o.get("created_time"),
@@ -481,16 +492,23 @@ async def amend_order(
                 detail="no such resting order — it may have already filled or been cancelled",
             )
         ticker = order.get("ticker") or order.get("market_ticker") or ""
-        order_side = order.get("side")
-        order_action = order.get("action")
+        # Held frame, NOT Kalshi's YES-book leg. V2 reports a buy-NO as
+        # side="yes"/action="sell" with book_side="ask"; using that raw side/
+        # action would amend the order to its complement price (the inversion the
+        # list/display fix also targets). outcome_side is the held side; the
+        # held-frame action is recovered from book_side via the inverse of
+        # _to_v2_book. body.price_cents is the held side's own-frame price.
+        order_side = order.get("outcome_side") or order.get("side")
+        book_side = order.get("book_side")
         if not is_tradeable_ticker(ticker):
             log.warning("amend_order_not_tradeable", order_id=order_id, ticker=ticker)
             raise HTTPException(status_code=400, detail=f"{ticker} is not a market we manage")
-        if order_side not in ("yes", "no") or order_action not in ("buy", "sell"):
+        if order_side not in ("yes", "no") or book_side not in ("bid", "ask"):
             raise HTTPException(
                 status_code=502,
-                detail=f"kalshi order {order_id} missing side/action — can't amend safely",
+                detail=f"kalshi order {order_id} missing side/book_side — can't amend safely",
             )
+        order_action = held_frame_from_v2_readback(order_side, book_side)
 
         # HARD-REFUSE tier only: block bug-level inputs, never nag on a real edit.
         snapshot = _book_snapshot(request, ticker)
