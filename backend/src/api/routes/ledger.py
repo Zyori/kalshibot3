@@ -147,27 +147,38 @@ def _market_label(
             return ticker or "Parlay"
         suffix = f" · {missed_count} missed" if missed_count else ""
         return f"Parlay ({leg_count} legs{suffix})"
-    # Totals (Over/Under): no team selection, so the per-game branch below can't
-    # label them. The line lives in Kalshi's stored title ("Over 1.5 goals
-    # scored" → "Over 1.5 goals"), captured at order time. Older bets without a
-    # stored title fall back to the matchup-only label from the ticker codes.
+    # The match context ("League — Home v Away") prefix, when the per-game codes
+    # are present (they are for every per-game bet — moneyline, totals, spread).
+    # Totals/spreads carry the same team fields as a moneyline bet, so they get
+    # the same prefix; only the selection differs (Over X / Fav -X vs a team).
+    match_prefix: str | None = None
+    home = away = ""  # resolved display names, used by the moneyline tail too
+    if b.home_code is not None and b.away_code is not None:
+        league = league_display_name(b.event_series) or b.event_series or "Soccer"
+        home = b.home_name or b.home_code
+        away = b.away_name or b.away_code
+        match_prefix = f"{league} — {home} v {away}"
+    # Totals (Over/Under): selection is the line, not a team. The line lives in
+    # Kalshi's stored title ("Over 1.5 goals scored" → "Over 1.5 goals"), captured
+    # at order time. Older bets without a stored title fall back to the matchup
+    # codes from the ticker.
     if ticker and is_total_goals_ticker(ticker):
         line = total_goals_line(market_title)
-        if line is not None:
-            return f"Over {line:g} goals"
+        selection = f"Over {line:g} goals" if line is not None else "Over goals"
+        if match_prefix is not None:
+            return f"{match_prefix} — {selection}"
         matchup = matchup_codes(ticker)
-        return f"{matchup} — Over goals" if matchup else (ticker or "Over goals")
+        return f"{matchup} — {selection}" if matchup else (ticker or selection)
     # Spreads (goal handicap): like totals, the favorite + line live in Kalshi's
     # stored title ("USA wins by more than 1.5 goals" → "USA -1.5"), captured at
     # import. The side (yes = covers, no = fades) is rendered by the frontend.
     if ticker and is_spread_ticker(ticker):
-        label = spread_label(ticker, market_title, None, negate=False)
-        return label or ticker
-    if b.home_code is None or b.away_code is None:
+        spread_sel = spread_label(ticker, market_title, None, negate=False)
+        if spread_sel is None:
+            return ticker or "—"
+        return f"{match_prefix} — {spread_sel}" if match_prefix is not None else spread_sel
+    if match_prefix is None:
         return ticker or "—"
-    league = league_display_name(b.event_series) or b.event_series or "Soccer"
-    home = b.home_name or b.home_code
-    away = b.away_name or b.away_code
     # Selection: the team it's on by name/code, or "Draw" for the tie.
     sel_code = b.selection_code
     if sel_code == "TIE":
@@ -178,7 +189,7 @@ def _market_label(
         selection = away
     else:
         selection = sel_code or "?"
-    return f"{league} — {home} v {away} — {selection}"
+    return f"{match_prefix} — {selection}"
 
 
 def _bet_to_dict(

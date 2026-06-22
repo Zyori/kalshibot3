@@ -61,3 +61,20 @@ def test_combo_without_legs_falls_back_to_ticker():
     b = _bet(sport=Sport.COMBO, home_code=None, away_code=None,
              event_series=None, selection_code=None)
     assert _market_label(b, "KXMVE-RAW", leg_count=0) == "KXMVE-RAW"
+
+
+def test_totals_include_match_context():
+    """A totals bet carries the same team fields as a moneyline bet, so its label
+    gets the full 'League — Home v Away — Over X goals' context, not a bare line."""
+    b = _bet(event_series="KXWCGAME", home_name="Argentina", away_name="Austria",
+             home_code="ARG", away_code="AUT")
+    label = _market_label(b, "KXWCTOTAL-26JUN22ARGAUT-3", market_title="Over 1.5 goals scored")
+    assert label == "World Cup — Argentina v Austria — Over 1.5 goals"
+
+
+def test_totals_without_codes_falls_back_to_matchup():
+    """Older totals bet missing team codes: fall back to the ticker matchup codes."""
+    b = _bet(home_code=None, away_code=None, home_name=None, away_name=None,
+             event_series=None, selection_code=None)
+    label = _market_label(b, "KXWCTOTAL-26JUN22ARGAUT-3", market_title="Over 2.5 goals scored")
+    assert label == "ARG - AUT — Over 2.5 goals"
