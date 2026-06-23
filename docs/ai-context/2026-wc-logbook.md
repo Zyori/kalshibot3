@@ -52,6 +52,9 @@ tendencies, ref behavior). This is **the user's knowledge**, captured over time.
 ## Senegal
 - 2026-06-10: Chumpy — lacking offensively. Will get slaughtered against real
   teams. Don't back them into quality opposition.
+- 2026-06-23: Reversed read — very solid, well-rounded and explosive. Unpopular, so
+  the market underprices them. Good to back for draws or upsets where the public is
+  paying for the favorite. (Supersedes the 06-10 "chumpy" read.)
 
 ## Croatia
 - 2026-06-10: Market doesn't understand how to price them. Great draw team or
@@ -115,6 +118,16 @@ tendencies, ref behavior). This is **the user's knowledge**, captured over time.
 - 2026-06-22: Utter dogshit so far, on the brink of bombing out. Could go for broke
   in future games (nothing to lose) — watch for a desperate, open style that swings
   toward higher-scoring / upset lines if they're already eliminated.
+
+## Iran
+- 2026-06-23: Old but not bad — lots of experience and decently explosive. Don't
+  fade them on age alone; the veteran composure plus burst means they can punish a
+  sloppy side. Respect them as a live threat.
+
+## Iraq
+- 2026-06-23: Dogshit — noob keeper, much sloppier. Give up fluke goals. The trade:
+  back the over / the opponent's scoring against them, and don't trust a clean sheet
+  on their end — the keeper hands out goals.
 
 <!-- Template — one section per team:
 ## Team Name
